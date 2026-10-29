@@ -1,0 +1,15 @@
+[submodule "external/JUCE"]
+	path = external/JUCE
+	url = https://github.com/juce-framework/JUCE.git
+[submodule "external/tracktion_engine"]
+	path = external/tracktion_engine
+	url = https://github.com/Tracktion/tracktion_engine.git
+[submodule "external/IXWebSocket"]
+	path = external/IXWebSocket
+	url = https://github.com/machinezone/IXWebSocket.git
+[submodule "external/json"]
+	path = external/json
+	url = https://github.com/nlohmann/json.git
+[submodule "external/doctest"]
+	path = external/doctest
+	url = https://github.com/doctest/doctest.git
