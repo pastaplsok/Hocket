@@ -98,4 +98,6 @@ set(JSON_Install OFF)
 add_subdirectory("${HOCKET_EXTERNAL_DIR}/json" EXCLUDE_FROM_ALL)
 
 set(DOCTEST_NO_INSTALL ON)
+# doctest's forward-declared std::ostream breaks printing std::string_view on MSVC.
+set(DOCTEST_USE_STD_HEADERS ON)
 add_subdirectory("${HOCKET_EXTERNAL_DIR}/doctest" EXCLUDE_FROM_ALL)

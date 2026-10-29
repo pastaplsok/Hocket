@@ -154,18 +154,18 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 
 | Field | Format | Notes |
 |---|---|---|
-| Position | `bar.beat[.sixteenth][+ticks]` | 1-based. `+ticks` allows micro-timing (960 ticks per beat). |
-| Pitch | Note name + octave (`C2`, `F#4`, `Bb3`) | No key-signature inference — the written name is the pitch. |
-| Length | Fraction (`1/8`, `1/16`, `3/8`), triplets (`1/8t`), or ticks | |
-| Velocity | `v1`–`v127` | |
+| Position | `bar.beat[.sixteenth][+ticks]` | 1-based, relative to the clip start. `+ticks` allows micro-timing (960 ticks per beat). |
+| Pitch | Note name + octave (`C2`, `F#4`, `Bb3`) | Uppercase letter, optional `#` or `b`, octave. `C4` = MIDI 60 (middle C); range `C-1` to `G9`. No key-signature inference — the written name is the pitch, and its spelling (`Eb2` vs `D#2`) is kept. Lowercase names are drum-map names (§5.2). |
+| Length | Fraction of a whole note (`1/8`, `1/16`, `3/8`), triplets (`1/8t`), or ticks (`250tk`) | |
+| Velocity | `v1`–`v127` | Required on every note line. |
 | Controllers | `ccN`, `pb`, aftertouch | Values or shapes, same shape syntax as automation. |
-| Comments | `#` to end of line | Preserved on canonical rewrite. |
+| Comments | `#` to end of line | `#` starts a comment at the start of a line or after whitespace, so the `#` in `F#4` is not one. Preserved on canonical rewrite. |
 
 ### 5.1 Decided details
 - **Timing resolution:** 960 ticks per beat. `+ticks` offsets are for human feel and micro-timing.
 - **Chords:** one note per entry internally. The canonical writer collapses notes sharing position, length, and velocity into bracket form, and the parser accepts either form:
   ```
-  1.1    [C3 E3 G3]   1/2   v80
+  1.1      [C3 E3 G3]  1/2   v80
   ```
 - **Swing:** a clip- or track-level setting, applied at playback. Notes are stored straight, so edits stay simple:
   ```
@@ -195,6 +195,25 @@ Drum tracks define a **drum map** in `project.json` that maps names to MIDI note
 - Internally, the engine converts `.notes` to MIDI events for instruments and plugins.
 - ABC import: possible later extra, not a design driver.
 - DAWproject import/export: planned for later, for moving songs between this and other DAWs.
+
+### 5.4 Canonical form
+The writer always produces exactly this form. The parser accepts looser input: any spaces or tabs between fields, CRLF line endings, a UTF-8 BOM, lines in any order, and a chord split across several lines.
+
+- **File:** UTF-8, LF line endings, no BOM, no trailing whitespace, ends with one newline.
+- **Layout:** header comments, then `@length`, then a blank line, then the note lines, with a blank line between bars. Comments after the last note line come last.
+- **Order:** by position. Notes at one position that share length and velocity form one chord line, pitches low to high. Lines at the same position are ordered by their lowest pitch.
+- **Columns:** fixed-width and left-aligned: position 9 characters, pitch 6, length 6, then velocity. A field that fills or overflows its column is followed by two spaces. Widths never depend on the rest of the file, so editing one line never reformats another.
+- **Position:** shortest form: `bar.beat`, plus `.sixteenth` only when it isn't 1, plus `+ticks` only when they aren't 0 (always under 240).
+- **Pitch:** as written, except `Cb`, `Fb`, `B#` and `E#`, which are written as the natural note (`Cb4` → `B3`).
+- **Length:** a reduced fraction with a power-of-two denominator up to 64, if there is one (`2/8` → `1/4`); otherwise such a fraction as a triplet (`1/12` → `1/8t`); otherwise ticks (`250tk`).
+- **`@length`:** always written, in bars (`@length 1bar`, `@length 4bars`). A file without it gets the smallest whole number of bars that holds every note's start (at least one).
+- **Comments:**
+  - Comments before the first directive or note line are the file header and stay at the top.
+  - Any other full-line comment belongs to the line after it and moves with that line. A trailing comment belongs to its own line.
+  - Text is kept exactly, minus trailing whitespace. Full-line comments lose indentation; trailing comments go two spaces after the line.
+  - When lines merge into a chord, all their comments are kept: full-line comments in their original order, trailing comments joined with `; `.
+
+Validity rules: a note may not start at or after the clip's end, but may extend past it (cut off at playback). Two notes with the same position and pitch are an error.
 
 ---
 
@@ -323,6 +342,8 @@ A command-line program that:
 Purpose: prove the riskiest architecture pieces work together early — text format, command bus, Tracktion sync, and real-time safety.
 
 The native synth for Milestone 0 is Tracktion's built-in 4OSC, as a stand-in; Hocket's own synth comes in v1 (§10.1).
+
+Milestone 0 `.notes` subset: note lines, chords, comments and `@length`, in 4/4 only. Controller lines (`cc`, `pb`, aftertouch), `@swing`, `@ch`, per-note `chN` and drum names are rejected with an error saying they aren't supported yet.
 
 ### 10.1 v1 — "Lee and Claude can make a complete song in it, start to finish, with native instruments"
 - Engine on Tracktion; ASIO/WASAPI; transport and looping; one tempo and time signature per song

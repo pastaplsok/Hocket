@@ -2,7 +2,7 @@
 
 Hocket is AGPL-3.0. Every dependency must be AGPLv3-compatible (see CLAUDE.md). Add a row here in the same change that adds a dependency.
 
-All source dependencies are git submodules under `external/`, each pinned to an exact commit. Clone with `git submodule update --init` (**not** `--recursive`; see the JUCE note below).
+All source dependencies are git submodules under `external/`, each pinned to an exact commit. Clone with `git submodule update --init` (**not** `--recursive`; see the JUCE note below). On Windows, clones deeper than about 95 characters hit the 260-character path limit on a few JUCE files under `extras/` (not part of the build); `git config --global core.longpaths true` fixes it.
 
 | Dependency | Pin | License | Used by |
 |---|---|---|---|

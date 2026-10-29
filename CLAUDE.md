@@ -7,6 +7,8 @@
 ## Current phase
 Milestone 0 (SPEC.md §10.0): headless proof. No GUI code until Milestone 0 passes.
 
+Read PROGRESS.md at the start of a session; update it at the end of each step (step status, the next step, loose ends).
+
 ## Build & run
 - Toolchain: Visual Studio 2026 (v18, MSVC 14.51), CMake ≥ 3.25 (VS ships 4.3), Git. `cmake` isn't on PATH by default; use the "Developer PowerShell for VS" or add `<VS>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
 - Dependencies: git submodules under `external/`, pinned to exact commits. Versions and licenses: `DEPENDENCIES.md`.
@@ -19,6 +21,7 @@ ctest --preset vs2026-release
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
 ```
 
+- If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.
 - JUCE and Tracktion compile once into the `hocket_juce` static library; Hocket targets link it. Our own targets get warnings via `hocket_enable_warnings()` (`cmake/HocketWarnings.cmake`); never apply those to third-party code.
 
 ## Non-negotiable rules

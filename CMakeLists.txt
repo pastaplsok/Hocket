@@ -19,6 +19,11 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(HocketWarnings)
 include(HocketDependencies)
 
-enable_testing()
+option(HOCKET_BUILD_TESTS "Build Hocket's tests" ON)
 
 add_subdirectory(src)
+
+if(HOCKET_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
