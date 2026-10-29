@@ -1,0 +1,54 @@
+# ---- Build output ----
+build/
+builds/
+out/
+cmake-build-*/
+_deps/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+
+# ---- Visual Studio / MSVC ----
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.tlog
+*.lastbuildstate
+*.exe
+*.dll
+*.lib
+*.exp
+
+# ---- Other editors / IDEs ----
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
+
+# ---- OS clutter ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Claude Code (personal settings only; shared .claude/ config stays tracked) ----
+.claude/settings.local.json
+
+# ---- Hocket runtime / scratch ----
+# Local API session token written by the DAW (SPEC §6.3) — never commit
+*.hocket-token
+# Scratch renders and analysis output
+renders/
+scratch/
+# NOTE: audio files are NOT ignored globally — test fixtures may need them.
