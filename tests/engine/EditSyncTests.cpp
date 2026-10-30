@@ -98,17 +98,17 @@ TEST_CASE ("write_clip, undo and redo update the Tracktion clip, and nothing els
     auto& bass = clipNamed (edit, "clp-bass-a");
     auto& lead = clipNamed (edit, "clp-lead");
 
-    REQUIRE (bus.execute (commands::WriteClip { "clp-lead", "@length 1bar\n\n1.3 A4 1/8 v60\n" }, "Claude").ok);
+    REQUIRE (bus.execute (commands::WriteClip { "clp-lead", "@length 1bar\n\n1.3 A4 1/8 v60\n" }, testing::claude).ok);
 
     REQUIRE (lead.getSequence().getNumNotes() == 1);
     CHECK (lead.getSequence().getNotes()[0]->getNoteNumber() == 69);
     CHECK (lead.getSequence().getNotes()[0]->getStartBeat().inBeats() == doctest::Approx (2.0));
     CHECK (bass.getSequence().getNumNotes() == 2);
 
-    REQUIRE (bus.undo ("Claude", commands::UndoScope::callersOwn).ok);
+    REQUIRE (bus.undo (testing::claude, commands::UndoScope::callersOwn).ok);
     CHECK (lead.getSequence().getNumNotes() == 3);
 
-    REQUIRE (bus.redo ("Claude").ok);
+    REQUIRE (bus.redo (testing::claude).ok);
     CHECK (lead.getSequence().getNumNotes() == 1);
 
     CHECK_FALSE (edit.getUndoManager().canUndo());
@@ -122,7 +122,7 @@ TEST_CASE ("a new @length changes the clip's length and the loop")
 
     CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (2.0));
 
-    REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 3bars\n\n1.1 C2 1/4 v100\n" }, "Claude").ok);
+    REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 3bars\n\n1.1 C2 1/4 v100\n" }, testing::claude).ok);
 
     CHECK (clipNamed (edit, "clp-bass").getPosition().getLength().inSeconds() == doctest::Approx (6.0));
     CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (6.0));
@@ -152,22 +152,22 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
         engine::EditSync sync (testEngine(), bus);
         auto& tracktionTransport = sync.edit().getTransport();
 
-        const auto played = bus.execute (commands::Play {}, "Claude");
+        const auto played = bus.execute (commands::Play {}, testing::claude);
         CHECK (played.ok);
         CHECK (played.message == "playing 1.1 to 6.1 on a loop");
         CHECK (tracktionTransport.isPlaying());
         CHECK (tracktionTransport.looping.get());
         CHECK (tracktionTransport.getLoopRange() == sync.loopRange());
 
-        CHECK (bus.execute (commands::Play {}, "Lee").message == "already playing");
+        CHECK (bus.execute (commands::Play {}, testing::lee).message == "already playing");
 
-        CHECK (bus.execute (commands::Stop {}, "Lee").message == "stopped");
+        CHECK (bus.execute (commands::Stop {}, testing::lee).message == "stopped");
         CHECK_FALSE (tracktionTransport.isPlaying());
-        CHECK (bus.execute (commands::Stop {}, "Lee").message == "already stopped");
+        CHECK (bus.execute (commands::Stop {}, testing::lee).message == "already stopped");
 
         CHECK (bus.history().empty());
     }
 
     // Once the EditSync is gone, the bus has no transport again.
-    CHECK_FALSE (bus.execute (commands::Play {}, "Claude").ok);
+    CHECK_FALSE (bus.execute (commands::Play {}, testing::claude).ok);
 }

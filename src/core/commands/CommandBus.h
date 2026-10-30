@@ -38,6 +38,27 @@ namespace hocket::commands
 
     using Command = std::variant<WriteClip, Play, Stop>;
 
+    // Who sends a command (SPEC §3.1). Two authors are the same when their names
+    // and sessions match, so two Claude sessions are different authors, and a
+    // client that reconnects with its session ID is still the author of its own
+    // changes. The label only tells same-named authors apart in messages.
+    struct Author
+    {
+        std::string name;    // "Lee", "Claude", "script:walking-bass"
+        std::string session; // the client's session ID; empty for the person at the DAW
+        std::string label;   // optional, chosen by the client, e.g. "drums"
+
+        bool operator== (const Author& other) const { return name == other.name && session == other.session; }
+    };
+
+    // "Claude", or "Claude (drums)" with a label.
+    std::string displayName (const Author& author);
+
+    // How a message to `reader` names `author`: "you" for the reader; otherwise
+    // the display name, plus " in another session" when it alone would look
+    // like the reader's own.
+    std::string nameFor (const Author& author, const Author& reader);
+
     struct Result
     {
         bool ok = false;
@@ -58,10 +79,18 @@ namespace hocket::commands
     struct HistoryEntry
     {
         int id = 0;              // stable: "#7"
-        std::string author;      // "Lee", "Claude", "script:walking-bass", ...
+        Author author;
         std::string description; // "wrote clip clp-bass (14 notes)"
 
         bool operator== (const HistoryEntry&) const = default;
+    };
+
+    struct OpenTransaction
+    {
+        Author author;
+        std::string name;      // "wrote bridge"
+        int part = 1;          // > 1 once another author's command has split it
+        bool hasEdits = false; // in the current part
     };
 
     // What changed in the project, so the engine can update just that (SPEC §3.3).
@@ -87,17 +116,27 @@ namespace hocket::commands
 
         const project::Project& project() const { return currentProject; }
 
-        Result execute (const Command& command, const std::string& author);
+        Result execute (const Command& command, const Author& author);
 
-        Result beginTransaction (const std::string& author, const std::string& name);
-        Result commitTransaction (const std::string& author);
-        Result rollbackTransaction (const std::string& author);
+        Result beginTransaction (const Author& author, const std::string& name);
+        Result commitTransaction (const Author& author);
+        Result rollbackTransaction (const Author& author);
 
-        Result undo (const std::string& author, UndoScope scope);
-        Result redo (const std::string& author);
+        // Closes the author's open transaction when its client can't: it
+        // disconnected, or stopped sending requests (SPEC §3.1). The current
+        // part's edits become an entry marked "(interrupted)" that keeps the
+        // transaction's author, so it can be undone like any other; a part with
+        // no edits just closes. The message says what became of it, starting
+        // with "transaction \"<name>\" was closed".
+        Result interruptTransaction (const Author& author);
+
+        Result undo (const Author& author, UndoScope scope);
+        Result redo (const Author& author);
 
         // Newest first. An open transaction's edits aren't listed until they're committed.
         std::vector<HistoryEntry> history() const;
+
+        std::optional<OpenTransaction> openTransaction() const;
 
         // Called after every change to the project, including undo, redo and rollback.
         // Returns an ID for removeListener. Listeners mustn't add or remove listeners.
@@ -126,7 +165,7 @@ namespace hocket::commands
 
         struct Transaction
         {
-            std::string author;
+            Author author;
             std::string name;
             int part = 1;              // > 1 once another author's command has split it
             std::vector<Edit> forward; // the current part's edits
@@ -145,7 +184,7 @@ namespace hocket::commands
         Result runTransportCommand (const Command&);
         Result validate (const WriteClip&, std::vector<Edit>& edits, std::string& description) const;
         Edit apply (const Edit&);
-        void record (const std::string& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse);
+        void record (const Author& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse);
         void closeTransactionPart();
         void notify (const Change&);
     };

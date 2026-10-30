@@ -24,7 +24,9 @@ build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --pla
 ```
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
-- `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`. Tests never open a real device or touch that settings file.
+- `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`. `--user <name>` is your name in the history (default `user`).
+- While `--play` runs, it serves the WebSocket API (SPEC §6.3) on 127.0.0.1, port 46253 or the next free one; the port and token are in `%LOCALAPPDATA%\Hocket\api.json`, and API activity is printed with an `API:` prefix. A second `--play` refuses to start while one is running.
+- Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300.
 - `--play` makes sound. Don't run it on someone's machine without asking; a project with an empty clip plays silence, which is enough to check that the device opens.
 
 - If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.

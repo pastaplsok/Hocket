@@ -77,7 +77,7 @@ TEST_CASE ("undo and redo always match a reference history of whole-project copi
                     const auto clipIndex = static_cast<std::size_t> (randomInt (rng, 0, 1));
                     const auto clipId = clipIndex == 0 ? "clp-a" : "clp-b";
                     const auto text = notes::write (randomClip (rng, clipIndex == 0 ? 4 : 3)); // clp-a must stay clear of clp-b
-                    const auto author = randomInt (rng, 0, 1) == 0 ? "Lee" : "Claude";
+                    const auto author = randomInt (rng, 0, 1) == 0 ? Author { "Lee" } : Author { "Claude", "session-1" };
 
                     const auto result = bus.execute (WriteClip { clipId, text }, author);
                     REQUIRE_MESSAGE (result.ok, result.message);
@@ -102,7 +102,7 @@ TEST_CASE ("undo and redo always match a reference history of whole-project copi
                 }
 
                 case 2:
-                    CHECK (bus.undo ("Lee", UndoScope::anyAuthor).ok == ! undoStates.empty());
+                    CHECK (bus.undo (Author { "Lee" }, UndoScope::anyAuthor).ok == ! undoStates.empty());
 
                     if (! undoStates.empty())
                     {
@@ -115,7 +115,7 @@ TEST_CASE ("undo and redo always match a reference history of whole-project copi
                     break;
 
                 default:
-                    CHECK (bus.redo ("Lee").ok == ! redoStates.empty());
+                    CHECK (bus.redo (Author { "Lee" }).ok == ! redoStates.empty());
 
                     if (! redoStates.empty())
                     {

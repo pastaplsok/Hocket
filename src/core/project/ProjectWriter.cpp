@@ -15,26 +15,6 @@ namespace
     // ordered_json keeps keys in insertion order, which is the canonical order (SPEC §4.4).
     using Json = nlohmann::ordered_json;
 
-    const char* trackTypeName (TrackType type)
-    {
-        switch (type)
-        {
-            case TrackType::midi: return "midi";
-        }
-
-        return "midi";
-    }
-
-    const char* deviceTypeName (DeviceType type)
-    {
-        switch (type)
-        {
-            case DeviceType::fourOsc: return "tracktion:4osc";
-        }
-
-        return "tracktion:4osc";
-    }
-
     Json tempoValue (double tempo)
     {
         // Whole-number tempos are written without a decimal point: 120, not 120.0.

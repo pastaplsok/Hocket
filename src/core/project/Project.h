@@ -98,4 +98,22 @@ namespace hocket::project
 
     // "clips/bass.notes:6:10: message", "project.json: message", or just the message.
     std::string formatDiagnostic (const Diagnostic& diagnostic);
+
+    // Where a clip ends: its start plus its @length.
+    notes::Ticks clipEnd (const Clip& clip, notes::Meter meter);
+
+    // The end of the last clip, rounded up to a bar line; at least one bar. The
+    // song plays from 1.1 to here.
+    notes::Ticks songEnd (const Project& project);
+
+    // The clip with this ID, or nullptr. Sets *track to the clip's track if asked.
+    const Clip* findClip (const Project& project, std::string_view id, const Track** track = nullptr);
+
+    // Why `id` isn't a clip, for a tool's error message: "there's no clip 'clp-x';
+    // the clips are 'clp-a', 'clp-b'", or a hint when it's a track or device ID.
+    std::string unknownClipMessage (const Project& project, std::string_view id, std::string_view toolName);
+
+    // As written in project.json: "midi", "tracktion:4osc".
+    const char* trackTypeName (TrackType type);
+    const char* deviceTypeName (DeviceType type);
 }

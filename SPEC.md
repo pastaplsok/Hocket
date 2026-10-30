@@ -69,9 +69,9 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - Multi-step operations can be grouped into a **transaction** that appears as a single named undo step (e.g. "Claude: wrote bridge").
 - **One linear undo history**, shared by every client. Undo always takes back the newest entry. Entries have stable numbers (`#7`).
 - **AI undo checks the author.** The MCP `undo` tool refuses when the newest entry isn't the caller's, with a message naming who made that change and what it was (e.g. `the most recent change, #7 "wrote clip clp-bass (14 notes)", was made by Lee, not Claude`). Passing `force` undoes it anyway. Undo from the GUI works normally, whoever made the change.
-- **Authors are compared by identity: name + session ID.** The MCP bridge generates a session ID at startup and keeps it across reconnects to the DAW, so two Claude sessions are different authors, and a client that reconnects is still the author of its own entries. Display names stay friendly ("Claude"), optionally with a label the client provides; when two authors share a name, messages say which one made the change.
+- **Authors are compared by identity: name + session ID.** The MCP bridge generates a session ID at startup and keeps it across reconnects to the DAW, so two Claude sessions are different authors, and a client that reconnects is still the author of its own entries. Display names stay friendly ("Claude"), optionally with a label the client provides when it connects (§6.3); when two authors share a name, messages say which one made the change ("Claude in another session", "Claude (drums)"). The person at the DAW has one fixed identity; `hocket-headless` takes its display name from `--user`.
 - **Transactions and other authors.** One transaction can be open at a time. A command from another author never waits for it: the transaction's edits so far become their own history entry ("wrote bridge (part 1)"), the other command follows, and the transaction carries on as part 2. History stays linear, and every entry can be undone on its own. Rolling back takes back only the current part.
-- **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request and must be long enough to cover a model thinking between calls (minutes, not seconds).
+- **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request of any kind and is **10 minutes**, long enough to cover a model thinking between calls. Erring long costs little: an open transaction never makes anyone's single edits wait. The client's next tool result says what happened to its transaction, even after a reconnect.
 - A command that changes nothing (e.g. writing a clip's current text again) adds no history entry.
 - **Continuous gestures coalesce.** A knob drag or fader move is one undo step, not one step per value change.
 - **Transport actions** (play, stop, seek, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
@@ -275,13 +275,24 @@ Milestone 0's headless host has an opt-in exception for development, `--play --w
 
 ### 6.2 The API speaks the text format
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.
+- `read_clip` returns the stored text in canonical form, verbatim, in a content block of its own; the clip's details (ID, track, file, position, length) come in the block before it. A model can edit the text and send it straight back.
+- `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date.
 
 ### 6.3 Transport
-- The DAW exposes a **localhost WebSocket API**. (Chosen over Windows named pipes: easier to debug and not platform-specific.)
+- The DAW exposes a **localhost WebSocket API**, on 127.0.0.1 only. (Chosen over Windows named pipes: easier to debug and not platform-specific.)
 - A small **MCP server** bridges MCP clients (Claude Desktop, Claude Code, local-model agents) to that API.
   - The bridge (`hocket-mcp`, C++, stdio transport) is a thin adapter: it reads the token file, connects to the WebSocket API, and forwards tool calls. **Tool definitions live in the DAW**, next to the command bus, so there is one list of tools.
   - Chosen over the DAW serving MCP over HTTP itself: the bridge reads each session's token and port from the file, so a client is registered once rather than every session; stdio is the transport every local MCP client supports; and the bridge can report "Hocket isn't running" as a readable tool error and reconnect when the DAW restarts.
+- **Protocol:** JSON-RPC 2.0, one request per message (no batches).
+  - The first request must be `hello`, with params `{"token", "client", "session", "label"}`; `label` is optional. `client` is the display name ("Claude"); `session` is the bridge's session ID (§3.1). Anything else first, or a wrong token, gets an error and the connection is closed.
+  - Then `tools/list` and `tools/call`, shaped like MCP's: results are `{"content": [{"type": "text", "text": ...}], "isError": ...}`, so the bridge forwards them unchanged.
+  - A tool that fails (invalid `.notes`, bad arguments, an undo that isn't the caller's) returns an `isError` result, so the model reads the message. JSON-RPC errors are only for protocol mistakes: malformed requests, unknown methods or tools.
+- **Port:** 46253, or the next free one up to 46262. The one in use is in the token file.
 - **Token auth:** the DAW writes a per-session token to a local file; clients must present it. Prevents arbitrary local software from controlling the DAW.
+  - The token is 32 bytes from the OS's secure random source, as 64 hex digits, new each time the DAW starts.
+  - The file is `%LOCALAPPDATA%\Hocket\api.json` on Windows: `{"pid", "port", "program", "token"}`. It's written atomically when the API starts and deleted on exit.
+  - One DAW serves the API at a time. If the file names a running Hocket (same process ID and program name, so a reused ID doesn't count), a second one refuses to start. A file left behind by a crash is replaced.
+- **No web pages.** Any web page can open a WebSocket to 127.0.0.1, and browsers always send the page's origin. The token keeps pages out anyway; on top of that, a connection whose `Origin` isn't a `ws://` or `wss://` URL is closed before it can send anything. Native clients send no `Origin`, or their own `ws://` URL (IXWebSocket's client does).
 
 ### 6.4 Tool set (initial sketch)
 Prefer a small set of expressive tools over many tiny ones.
@@ -298,6 +309,8 @@ Prefer a small set of expressive tools over many tiny ones.
 | `render_section` | Render a time range to audio for analysis. |
 | `analyze` | Run analysis tools on a render (see §7). |
 | `undo` / `history` | Inspect and revert history, filterable by author. `undo` refuses when the newest entry isn't the caller's, unless `force` is passed (§3.1). |
+
+Milestone 0 has `get_project_overview`, `read_clip`, `write_clip`, `undo`, `history` (no author filter yet), `begin_transaction` / `commit` / `rollback`, and `transport` (play, stop). Tool descriptions, results and errors are written for an LLM reader; `write_clip`'s description includes a short reference to the `.notes` format.
 
 ### 6.5 Proposal mode
 Optional toggle: AI edits arrive as **pending** — shown as ghost notes / highlighted changes — and the user accepts or rejects them, individually or as a batch.

@@ -1,28 +1,30 @@
 // hocket-headless: the Milestone 0 command-line host (SPEC §10.0).
 //
 // It can check a project folder, list audio devices, and play a project on a
-// loop. The API for MCP clients comes in a later step.
+// loop. While it plays, it serves the WebSocket API that MCP clients reach
+// through hocket-mcp (SPEC §6.3).
 
 #include "Console.h"
 
+#include "api/Handler.h"
+#include "api/Server.h"
+#include "api/TokenFile.h"
 #include "core/Paths.h"
 #include "core/commands/CommandBus.h"
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "engine/EditSync.h"
+#include "platform/Platform.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <functional>
 #include <iostream>
 #include <optional>
 #include <string_view>
 
 namespace
 {
-    // The author of the commands hocket-headless sends itself. The human's
-    // display name becomes a setting with step 6's author identities.
-    const std::string localUser = "user";
-
     // Listing devices must not open one, so Tracktion's device manager isn't
     // initialised on startup.
     struct ListDevicesBehaviour final : tracktion::EngineBehaviour
@@ -39,10 +41,13 @@ namespace
     void printUsage (std::ostream& out)
     {
         out << "usage: hocket-headless --check <project-folder>   validate a project; errors go to stderr\n"
-               "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>] [--watch]\n"
+               "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>] [--watch] [--user <name>]\n"
                "                                                  play the project on a loop until Ctrl+C\n"
                "       hocket-headless --list-devices             list audio devices by driver type\n"
                "       hocket-headless --version                  print version numbers\n"
+               "\n"
+               "While --play plays, AI clients can work on the project through its API on 127.0.0.1;\n"
+               "the port and token are in %LOCALAPPDATA%\\Hocket\\api.json until it stops.\n"
                "\n"
                "--play options:\n"
                "  --driver <type>   a driver type as --list-devices prints it, e.g. ASIO\n"
@@ -50,7 +55,9 @@ namespace
                "                    Without these, it plays on the device used last time, or the\n"
                "                    system default. --device alone picks the first driver listing it.\n"
                "  --watch           when a clip's .notes file is saved, play the change: it's sent\n"
-               "                    as a write_clip, so it can be undone like any other edit\n";
+               "                    as a write_clip, so it can be undone like any other edit\n"
+               "  --user <name>     your name in the history and in messages to AI clients, e.g. \"was\n"
+               "                    made by Lee, not Claude\". Default: user\n";
     }
 
     juce::String juceString (const std::string& utf8)
@@ -114,6 +121,7 @@ namespace
         std::string driver; // empty: the last one used, or the system default
         std::string device;
         bool watch = false;
+        std::string user = "user"; // the display name of the person at the DAW (SPEC §3.1)
     };
 
     std::optional<PlayOptions> parsePlayOptions (const std::vector<std::string>& arguments)
@@ -133,6 +141,8 @@ namespace
                 options.driver = arguments[++i];
             else if (arguments[i] == "--device" && hasValue)
                 options.device = arguments[++i];
+            else if (arguments[i] == "--user" && hasValue && ! arguments[i + 1].empty())
+                options.user = arguments[++i];
             else
                 return {};
         }
@@ -201,12 +211,24 @@ namespace
         return {};
     }
 
+    // Deletes the token file when --play ends, unless another instance has replaced it since.
+    struct TokenFileGuard
+    {
+        std::filesystem::path file;
+        hocket::api::ApiInfo info;
+
+        ~TokenFileGuard() { hocket::api::removeTokenFile (file, info); }
+    };
+
     // Runs on the message thread while --play plays: stops the message loop on
-    // Ctrl+C and, with --watch, sends each saved clip file to the bus.
+    // Ctrl+C, closes API transactions left idle, and, with --watch, sends each
+    // saved clip file to the bus.
     class PlayLoop final : private juce::Timer
     {
     public:
-        PlayLoop (hocket::commands::CommandBus& commandBus, const std::filesystem::path& folder, bool watch) : bus (commandBus)
+        PlayLoop (hocket::commands::CommandBus& commandBus, hocket::api::Handler& apiHandler, const std::filesystem::path& folder, bool watch,
+                  hocket::commands::Author localUser)
+            : bus (commandBus), api (apiHandler), user (std::move (localUser))
         {
             if (watch)
                 watcher.emplace (folder, bus.project());
@@ -218,6 +240,8 @@ namespace
 
     private:
         hocket::commands::CommandBus& bus;
+        hocket::api::Handler& api;
+        hocket::commands::Author user;
         std::optional<hocket::project::ClipFileWatcher> watcher;
 
         void timerCallback() override
@@ -228,6 +252,8 @@ namespace
                 juce::MessageManager::getInstance()->stopDispatchLoop();
                 return;
             }
+
+            api.checkIdle();
 
             if (! watcher)
                 return;
@@ -240,7 +266,7 @@ namespace
                     continue;
                 }
 
-                const auto result = bus.execute (hocket::commands::WriteClip { change.clipId, *change.text }, localUser);
+                const auto result = bus.execute (hocket::commands::WriteClip { change.clipId, *change.text }, user);
                 (result.ok ? std::cout : std::cerr) << change.file << ": " << result.message << std::endl;
             }
         }
@@ -256,6 +282,22 @@ namespace
 
         if (! loaded.project)
             return 1;
+
+        // Clients find the API through the token file, so only one Hocket at a time can serve it.
+        const auto tokenFile = hocket::api::defaultTokenFilePath();
+
+        if (! tokenFile)
+        {
+            std::cerr << "can't find the folder for the API's token file (%LOCALAPPDATA% on Windows)\n";
+            return 1;
+        }
+
+        if (const auto running = hocket::api::runningInstance (*tokenFile))
+        {
+            std::cerr << "another Hocket is already running (" << running->program << ", process " << running->processId
+                      << ", API on port " << running->port << "); stop it first\n";
+            return 1;
+        }
 
         // Opens the device used last time, or the system default. Tracktion
         // keeps its settings in %APPDATA%\Hocket\Settings.xml.
@@ -293,8 +335,49 @@ namespace
                   << sampleRate << " Hz, " << bufferSize << " samples ("
                   << juce::String (1000.0 * bufferSize / sampleRate, 1).toStdString() << " ms)\n";
 
+        // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
+        const hocket::commands::Author localUser { options.user };
+
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         hocket::engine::EditSync sync (engine, bus);
+
+        // The API for MCP clients (SPEC §6.3), with a new token each run.
+        const auto token = hocket::api::makeToken();
+
+        if (token.empty())
+        {
+            std::cerr << "couldn't get random bytes from the OS for the API's token\n";
+            return 1;
+        }
+
+        const auto log = [] (const std::string& line) { std::cout << "API: " << line << std::endl; };
+
+        hocket::api::HandlerOptions apiOptions;
+        apiOptions.token = token;
+        apiOptions.serverName = "hocket-headless";
+        apiOptions.serverVersion = HOCKET_VERSION;
+        apiOptions.log = log;
+        hocket::api::Handler api (bus, std::move (apiOptions));
+
+        hocket::api::Server server (api, [] (std::function<void()> function) { juce::MessageManager::callAsync (std::move (function)); },
+                                    { .log = log });
+
+        if (const auto error = server.start(); ! error.empty())
+        {
+            std::cerr << error << "\n";
+            return 1;
+        }
+
+        const hocket::api::ApiInfo apiInfo { server.port(), token, hocket::platform::currentProcessId(), hocket::platform::currentProgramName() };
+
+        if (const auto error = hocket::api::writeTokenFile (*tokenFile, apiInfo); ! error.empty())
+        {
+            std::cerr << "couldn't write the API's token file: " << error << "\n";
+            return 1;
+        }
+
+        const TokenFileGuard tokenFileGuard { *tokenFile, apiInfo };
+        std::cout << "API: ws://127.0.0.1:" << server.port() << " (token in " << hocket::utf8FromPath (*tokenFile) << ")\n";
 
         const auto played = bus.execute (hocket::commands::Play {}, localUser);
 
@@ -308,7 +391,7 @@ namespace
 
         hocket::catchInterrupts();
         {
-            PlayLoop loop (bus, folder, options.watch);
+            PlayLoop loop (bus, api, folder, options.watch, localUser);
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 

@@ -14,6 +14,7 @@ add_library(hocket_core STATIC
     project/ClipFileWatcher.h
     project/JsonText.cpp
     project/JsonText.h
+    project/Project.cpp
     project/Project.h
     project/ProjectReader.cpp
     project/ProjectWriter.cpp)

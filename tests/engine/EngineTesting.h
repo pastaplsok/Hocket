@@ -4,6 +4,7 @@
 // projects built in code, offline renders, and a fake audio device for testing
 // live playback.
 
+#include "core/commands/CommandBus.h"
 #include "core/project/Project.h"
 #include "engine/EditSync.h"
 
@@ -35,6 +36,9 @@ namespace hocket::testing
 
     // A 4/4 project.
     project::Project makeProject (std::vector<project::Track> tracks, double tempo = 120.0);
+
+    inline const commands::Author lee { "Lee" };
+    inline const commands::Author claude { "Claude", "test-session" };
 
     //==============================================================================
     struct Audio

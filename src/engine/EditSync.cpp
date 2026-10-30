@@ -26,34 +26,6 @@ namespace
         return tracktion::BeatDuration::fromBeats (static_cast<double> (ticks) / notes::ticksPerBeat);
     }
 
-    const project::Clip* findClip (const project::Project& project, std::string_view id)
-    {
-        for (const auto& track : project.tracks)
-            for (const auto& clip : track.clips)
-                if (clip.id == id)
-                    return &clip;
-
-        return nullptr;
-    }
-
-    notes::Ticks clipEnd (const project::Clip& clip, notes::Meter meter)
-    {
-        return clip.start + clip.content.lengthInBars * meter.ticksPerBar();
-    }
-
-    // The end of the last clip, rounded up to a bar line; at least one bar.
-    notes::Ticks loopEnd (const project::Project& project)
-    {
-        const auto barTicks = project.meter.ticksPerBar();
-        notes::Ticks end = 0;
-
-        for (const auto& track : project.tracks)
-            for (const auto& clip : track.clips)
-                end = std::max (end, clipEnd (clip, project.meter));
-
-        return std::max<notes::Ticks> (1, (end + barTicks - 1) / barTicks) * barTicks;
-    }
-
     tracktion::Plugin::Ptr createDevice (tracktion::Edit& edit, const project::Device& device)
     {
         switch (device.type)
@@ -68,7 +40,7 @@ namespace
     // Makes the Tracktion clip match the model's: position, length and notes.
     void writeClip (tracktion::MidiClip& target, const project::Clip& clip, notes::Meter meter)
     {
-        const tracktion::BeatRange beats { beatPosition (clip.start), beatPosition (clipEnd (clip, meter)) };
+        const tracktion::BeatRange beats { beatPosition (clip.start), beatPosition (hocket::project::clipEnd (clip, meter)) };
         target.setPosition ({ target.edit.tempoSequence.toTime (beats) });
 
         // Undo is Hocket's job (SPEC §3.3), so no UndoManager. Notes that run past
@@ -119,7 +91,7 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
 
         for (const auto& clip : source.clips)
         {
-            const tracktion::BeatRange beats { beatPosition (clip.start), beatPosition (clipEnd (clip, project.meter)) };
+            const tracktion::BeatRange beats { beatPosition (clip.start), beatPosition (hocket::project::clipEnd (clip, project.meter)) };
             auto midiClip = track.insertMIDIClip (juceString (clip.id), tempo.toTime (beats), nullptr);
             writeClip (*midiClip, clip, project.meter);
             clips.emplace (clip.id, midiClip);
@@ -145,13 +117,13 @@ EditSync::~EditSync()
 
 tracktion::TimeRange EditSync::loopRange() const
 {
-    return tracktionEdit->tempoSequence.toTime ({ tracktion::BeatPosition(), beatPosition (loopEnd (bus.project())) });
+    return tracktionEdit->tempoSequence.toTime ({ tracktion::BeatPosition(), beatPosition (hocket::project::songEnd (bus.project())) });
 }
 
 void EditSync::clipContentChanged (const std::string& clipId)
 {
     const auto target = clips.find (clipId);
-    const auto* clip = findClip (bus.project(), clipId);
+    const auto* clip = hocket::project::findClip (bus.project(), clipId);
 
     // Milestone 0 has no commands that add or remove clips.
     assert (target != clips.end() && clip != nullptr);
@@ -188,7 +160,7 @@ commands::Result EditSync::play()
     transport.play (false);
 
     const auto& project = bus.project();
-    return { true, "playing " + notes::formatPosition (0, project.meter) + " to " + notes::formatPosition (loopEnd (project), project.meter) + " on a loop" };
+    return { true, "playing " + notes::formatPosition (0, project.meter) + " to " + notes::formatPosition (hocket::project::songEnd (project), project.meter) + " on a loop" };
 }
 
 commands::Result EditSync::stop()

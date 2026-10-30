@@ -27,53 +27,26 @@ namespace
         return std::to_string (count) + " " + std::string (noun) + (count == 1 ? "" : "s");
     }
 
-    const project::Clip* findClip (const project::Project& project, std::string_view id, const project::Track** trackFound = nullptr)
-    {
-        for (const auto& track : project.tracks)
-        {
-            for (const auto& clip : track.clips)
-            {
-                if (clip.id == id)
-                {
-                    if (trackFound != nullptr)
-                        *trackFound = &track;
-
-                    return &clip;
-                }
-            }
-        }
-
-        return nullptr;
-    }
-
     project::Clip& clipById (project::Project& project, std::string_view id)
     {
-        auto* clip = const_cast<project::Clip*> (findClip (project, id));
+        auto* clip = const_cast<project::Clip*> (project::findClip (project, id));
         assert (clip != nullptr); // edits are only made for clips that validation found
         return *clip;
     }
+}
 
-    // "there's no clip 'clp-x'; the clips are ...", or a hint when it's another kind of ID.
-    std::string unknownClipMessage (const project::Project& project, std::string_view id)
-    {
-        std::string clipIds;
+std::string displayName (const Author& author)
+{
+    return author.label.empty() ? author.name : author.name + " (" + author.label + ")";
+}
 
-        for (const auto& track : project.tracks)
-        {
-            if (track.id == id)
-                return singleQuoted (id) + " is a track ID; write_clip needs a clip ID like 'clp-bass'";
+std::string nameFor (const Author& author, const Author& reader)
+{
+    if (author == reader)
+        return "you";
 
-            for (const auto& device : track.devices)
-                if (device.id == id)
-                    return singleQuoted (id) + " is a device ID; write_clip needs a clip ID like 'clp-bass'";
-
-            for (const auto& clip : track.clips)
-                clipIds += (clipIds.empty() ? "" : ", ") + singleQuoted (clip.id);
-        }
-
-        return "there's no clip " + singleQuoted (id) + "; "
-             + (clipIds.empty() ? std::string ("the project has no clips yet") : "the clips are " + clipIds);
-    }
+    const auto name = displayName (author);
+    return name == displayName (reader) ? name + " in another session" : name;
 }
 
 //==============================================================================
@@ -81,9 +54,9 @@ CommandBus::CommandBus (project::Project project) : currentProject (std::move (p
 {
 }
 
-Result CommandBus::execute (const Command& command, const std::string& author)
+Result CommandBus::execute (const Command& command, const Author& author)
 {
-    if (author.empty())
+    if (author.name.empty())
         return { false, "commands need an author, e.g. \"Lee\" or \"Claude\"" };
 
     if (std::holds_alternative<Play> (command) || std::holds_alternative<Stop> (command))
@@ -113,7 +86,8 @@ Result CommandBus::execute (const Command& command, const std::string& author)
     {
         transaction->forward.insert (transaction->forward.end(), edits.begin(), edits.end());
         transaction->inverse.insert (transaction->inverse.end(), inverse.begin(), inverse.end());
-        return { true, description + " (in transaction " + doubleQuoted (transaction->name) + ")" };
+        return { true, description + " in your open transaction " + doubleQuoted (transaction->name)
+                           + "; it becomes a history entry when you commit" };
     }
 
     const auto id = nextEntryId;
@@ -134,10 +108,10 @@ Result CommandBus::runTransportCommand (const Command& command)
 Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits, std::string& description) const
 {
     const project::Track* track = nullptr;
-    const auto* clip = findClip (currentProject, command.clipId, &track);
+    const auto* clip = project::findClip (currentProject, command.clipId, &track);
 
     if (clip == nullptr)
-        return { false, "write_clip: " + unknownClipMessage (currentProject, command.clipId) };
+        return { false, "write_clip: " + project::unknownClipMessage (currentProject, command.clipId, "write_clip") };
 
     auto parsed = notes::parse (command.notes, currentProject.meter);
 
@@ -172,7 +146,7 @@ Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits,
     }
 
     if (*parsed.clip == clip->content)
-        return { true, "clip " + singleQuoted (clip->id) + " already has exactly this text; nothing changed" };
+        return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
 
     description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
     edits.push_back (SetClipContent { clip->id, std::move (*parsed.clip) });
@@ -191,7 +165,7 @@ CommandBus::Edit CommandBus::apply (const Edit& edit)
     }, edit);
 }
 
-void CommandBus::record (const std::string& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse)
+void CommandBus::record (const Author& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse)
 {
     done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (forward), std::move (inverse) });
     undone.clear();
@@ -211,9 +185,9 @@ void CommandBus::closeTransactionPart()
 }
 
 //==============================================================================
-Result CommandBus::beginTransaction (const std::string& author, const std::string& name)
+Result CommandBus::beginTransaction (const Author& author, const std::string& name)
 {
-    if (author.empty())
+    if (author.name.empty())
         return { false, "transactions need an author, e.g. \"Lee\" or \"Claude\"" };
 
     if (name.empty())
@@ -224,7 +198,7 @@ Result CommandBus::beginTransaction (const std::string& author, const std::strin
         if (transaction->author == author)
             return { false, "you already have an open transaction " + doubleQuoted (transaction->name) + "; commit or roll it back first" };
 
-        return { false, transaction->author + " has an open transaction " + doubleQuoted (transaction->name)
+        return { false, nameFor (transaction->author, author) + " has an open transaction " + doubleQuoted (transaction->name)
                             + ", and only one can be open at a time. Try again once it's committed or rolled back; "
                               "single commands don't need to wait" };
     }
@@ -233,7 +207,7 @@ Result CommandBus::beginTransaction (const std::string& author, const std::strin
     return { true, "began transaction " + doubleQuoted (name) };
 }
 
-Result CommandBus::commitTransaction (const std::string& author)
+Result CommandBus::commitTransaction (const Author& author)
 {
     if (! transaction || transaction->author != author)
         return { false, "you don't have an open transaction to commit" };
@@ -251,7 +225,30 @@ Result CommandBus::commitTransaction (const std::string& author)
     return { true, "#" + std::to_string (id) + " " + name };
 }
 
-Result CommandBus::rollbackTransaction (const std::string& author)
+Result CommandBus::interruptTransaction (const Author& author)
+{
+    if (! transaction || transaction->author != author)
+        return { false, displayName (author) + " has no open transaction to interrupt" };
+
+    auto finished = std::move (*transaction);
+    transaction.reset();
+
+    const auto closed = "transaction " + doubleQuoted (finished.name) + " was closed";
+
+    if (finished.forward.empty())
+        return { true, closed + (finished.part == 1 ? " with no edits, so nothing was added to the history"
+                                                    : "; its earlier parts are already in the history, and the last part had no edits") };
+
+    const auto name = finished.part == 1 ? finished.name + " (interrupted)"
+                                         : finished.name + " (part " + std::to_string (finished.part) + ", interrupted)";
+    const auto id = nextEntryId;
+    record (finished.author, name, std::move (finished.forward), std::move (finished.inverse));
+
+    return { true, closed + (finished.part == 1 ? "; its edits are " : "; its earlier parts are already in the history, and the last part is ")
+                       + "#" + std::to_string (id) + " " + doubleQuoted (name) };
+}
+
+Result CommandBus::rollbackTransaction (const Author& author)
 {
     if (! transaction || transaction->author != author)
         return { false, "you don't have an open transaction to roll back" };
@@ -271,7 +268,7 @@ Result CommandBus::rollbackTransaction (const std::string& author)
 }
 
 //==============================================================================
-Result CommandBus::undo (const std::string& author, UndoScope scope)
+Result CommandBus::undo (const Author& author, UndoScope scope)
 {
     if (transaction)
     {
@@ -279,8 +276,8 @@ Result CommandBus::undo (const std::string& author, UndoScope scope)
             return { false, "can't undo while your transaction " + doubleQuoted (transaction->name) + " is open; roll it back instead, or commit it first" };
 
         if (scope == UndoScope::callersOwn && ! transaction->forward.empty())
-            return { false, "didn't undo: the most recent change is part of " + transaction->author + "'s open transaction "
-                                + doubleQuoted (transaction->name) + ", not yours. Leave it, or undo with force to undo it anyway" };
+            return { false, "didn't undo: the most recent change is part of the open transaction " + doubleQuoted (transaction->name) + " by "
+                                + nameFor (transaction->author, author) + ", not yours. Leave it, or undo with force to undo it anyway" };
 
         closeTransactionPart();
     }
@@ -291,9 +288,14 @@ Result CommandBus::undo (const std::string& author, UndoScope scope)
     const auto& top = done.back().info;
 
     if (scope == UndoScope::callersOwn && top.author != author)
+    {
+        const auto maker = nameFor (top.author, author);
+        const auto caller = maker == displayName (top.author) ? displayName (author) : "this one";
+
         return { false, "didn't undo: the most recent change, #" + std::to_string (top.id) + " " + doubleQuoted (top.description)
-                            + ", was made by " + top.author + ", not " + author + ". Undo only takes back the most recent change, so this would undo "
-                            + top.author + "'s work. Leave it, or undo with force to undo it anyway" };
+                            + ", was made by " + maker + ", not " + caller + ". Undo only takes back the most recent change, "
+                              "so this would undo their work. Leave it, or undo with force to undo it anyway" };
+    }
 
     auto entry = std::move (done.back());
     done.pop_back();
@@ -301,12 +303,12 @@ Result CommandBus::undo (const std::string& author, UndoScope scope)
     for (auto i = entry.inverse.size(); i-- > 0;)
         apply (entry.inverse[i]);
 
-    const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + entry.info.author;
+    const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     undone.push_back (std::move (entry));
     return { true, message };
 }
 
-Result CommandBus::redo (const std::string& author)
+Result CommandBus::redo (const Author& author)
 {
     if (transaction && transaction->author == author)
         return { false, "can't redo while your transaction " + doubleQuoted (transaction->name) + " is open; commit or roll it back first" };
@@ -320,7 +322,7 @@ Result CommandBus::redo (const std::string& author)
     for (const auto& edit : entry.forward)
         apply (edit);
 
-    const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + entry.info.author;
+    const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     done.push_back (std::move (entry));
     return { true, message };
 }
@@ -333,6 +335,14 @@ std::vector<HistoryEntry> CommandBus::history() const
         entries.push_back (done[i].info);
 
     return entries;
+}
+
+std::optional<OpenTransaction> CommandBus::openTransaction() const
+{
+    if (! transaction)
+        return {};
+
+    return OpenTransaction { transaction->author, transaction->name, transaction->part, ! transaction->forward.empty() };
 }
 
 int CommandBus::addListener (std::function<void (const Change&)> listener)
