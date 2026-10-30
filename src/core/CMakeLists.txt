@@ -5,9 +5,15 @@ add_library(hocket_core STATIC
     notes/NotesParser.cpp
     notes/NotesSyntax.cpp
     notes/NotesSyntax.h
-    notes/NotesWriter.cpp)
+    notes/NotesWriter.cpp
+    project/JsonText.cpp
+    project/JsonText.h
+    project/Project.h
+    project/ProjectReader.cpp
+    project/ProjectWriter.cpp)
 
 target_include_directories(hocket_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(hocket_core PUBLIC cxx_std_20)
+target_link_libraries(hocket_core PRIVATE nlohmann_json::nlohmann_json)
 
 hocket_enable_warnings(hocket_core)

@@ -19,6 +19,6 @@ target_compile_definitions(hocket_headless PRIVATE
     HOCKET_VERSION="${PROJECT_VERSION}"
     HOCKET_TRACKTION_VERSION="${HOCKET_TRACKTION_VERSION}")
 
-target_link_libraries(hocket_headless PRIVATE hocket_juce)
+target_link_libraries(hocket_headless PRIVATE hocket_core hocket_juce)
 
 hocket_enable_warnings(hocket_headless)

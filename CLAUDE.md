@@ -19,7 +19,10 @@ cmake --preset vs2026
 cmake --build --preset vs2026-release
 ctest --preset vs2026-release
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
+build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
 ```
+
+- `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 
 - If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.
 - JUCE and Tracktion compile once into the `hocket_juce` static library; Hocket targets link it. Our own targets get warnings via `hocket_enable_warnings()` (`cmake/HocketWarnings.cmake`); never apply those to third-party code.

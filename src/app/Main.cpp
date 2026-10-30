@@ -1,9 +1,11 @@
 // hocket-headless: the Milestone 0 command-line host (SPEC §10.0).
 //
-// So far it can start Tracktion Engine and list audio devices. Loading and
-// playing a project, and the API for MCP clients, come in later steps.
+// So far it can list audio devices and check a project folder. Playing a
+// project, and the API for MCP clients, come in later steps.
 
 #include "Console.h"
+
+#include "core/project/Project.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
@@ -21,8 +23,31 @@ namespace
 
     void printUsage (std::ostream& out)
     {
-        out << "usage: hocket-headless --list-devices   list audio devices by driver type\n"
-               "       hocket-headless --version        print version numbers\n";
+        out << "usage: hocket-headless --check <project-folder>   validate a project; errors go to stderr\n"
+               "       hocket-headless --list-devices             list audio devices by driver type\n"
+               "       hocket-headless --version                  print version numbers\n";
+    }
+
+    int checkProject (const char* folder)
+    {
+        const auto result = hocket::project::load (std::filesystem::path (folder));
+
+        for (const auto& error : result.errors)
+            std::cerr << hocket::project::formatDiagnostic (error) << "\n";
+
+        if (! result.project)
+            return 1;
+
+        const auto& project = *result.project;
+        std::size_t clipCount = 0;
+
+        for (const auto& track : project.tracks)
+            clipCount += track.clips.size();
+
+        std::cout << "OK: " << project.tempo << " BPM, " << project.meter.beatsPerBar << "/4, "
+                  << project.tracks.size() << (project.tracks.size() == 1 ? " track, " : " tracks, ")
+                  << clipCount << (clipCount == 1 ? " clip\n" : " clips\n");
+        return 0;
     }
 
     void printDeviceNames (const juce::StringArray& names, std::string_view label)
@@ -78,6 +103,9 @@ int main (int argc, char* argv[])
         if (option == "--version")
             return printVersion();
     }
+
+    if (argc == 3 && std::string_view { argv[1] } == "--check")
+        return checkProject (argv[2]);
 
     printUsage (std::cerr);
     return 1;

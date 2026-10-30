@@ -21,6 +21,8 @@ namespace hocket::notes
         int beatsPerBar = 4;
 
         Ticks ticksPerBar() const { return beatsPerBar * ticksPerBeat; }
+
+        bool operator== (const Meter&) const = default;
     };
 
     // How a black key is written: Eb2 and D#2 are the same pitch.

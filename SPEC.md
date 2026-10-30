@@ -111,14 +111,16 @@ my-song/
 ```
 
 ### 4.1 Rules
-1. **JSON for structure** (`project.json`): strict, universally supported, reliably written by models. Validated against a published **JSON Schema**.
+1. **JSON for structure** (`project.json`): strict, universally supported, reliably written by models. Validated against a published **JSON Schema** (comes in v1; until then the loader's validation, §4.4, is the reference).
 2. **Compact text notation for notes** (`.notes`) — see §5. Note data is where size explodes; a JSON object per note would cost ~6× the tokens.
 3. **Musical units everywhere**: bars/beats, note names, real parameter units (`"cutoff": "2.4kHz"`) for native devices.
 4. **VST parameters** stored as normalized value **plus** the plugin's display string, so a model sees `Attack: 12 ms`, not `Param 4: 0.0347`.
 5. **Stable IDs, never list positions.** Every track, clip, device, and send has an ID (`trk-bass`, `dev-pad-filter`). References are by ID.
+   - **IDs are permanent:** assigned once and never changed, even when the display name changes. Names are free text and can change at any time.
+   - **Format:** a type prefix (`trk-`, `clp-`, `dev-`), then lowercase letters and digits in hyphen-separated words, at most 64 characters. Unique across the whole project, so an ID always names exactly one thing.
 6. **Canonical formatting.** The DAW always writes files in a fixed order and style so diffs are minimal and meaningful.
 7. **Binary stays out of text.** Audio, recordings, and plugin state live in their own files, referenced by relative path.
-8. **Schema versioning.** `project.json` carries a format version; the DAW migrates older projects forward.
+8. **Schema versioning.** `project.json` carries a format version; the DAW migrates older projects forward. Version 0 is the pre-release format: it may change without migrations until v1, which starts at version 1.
 
 ### 4.2 Automation (`.auto`)
 Lanes may be written as **breakpoints or shapes**; the DAW expands shapes internally.
@@ -133,6 +135,42 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - An audio clip references a file in `audio/` with offset, length, fade in/out, and gain.
 - **Comping:** a clip can hold a list of take references, with the chosen segment of each take marked.
 - Recording writes new files into `audio/` and adds take references; it never modifies existing audio files.
+
+### 4.4 `project.json` (Milestone 0 subset)
+```json
+{
+  "format": "hocket-project",
+  "formatVersion": 0,
+  "tempo": 120,
+  "timeSignature": "4/4",
+  "tracks": [
+    {
+      "id": "trk-bass",
+      "name": "Bass",
+      "type": "midi",
+      "devices": [
+        {
+          "id": "dev-bass-synth",
+          "type": "tracktion:4osc"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clp-bass-verse",
+          "file": "clips/bass-verse.notes",
+          "start": "1.1"
+        }
+      ]
+    }
+  ]
+}
+```
+- **Strict:** every key shown is required. Unknown keys and duplicate keys are errors, so a typo is never silently ignored.
+- **Order:** `tracks` is in display order, `devices` in signal-chain order.
+- **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name. A clip's length comes from its `.notes` file (`@length`), never from `project.json`. Clips on one track may not overlap.
+- **Milestone 0 only:** each clip has its own file. **Linked clips** come in v1: several clips sharing one `.notes` file, pattern-style as in FL Studio, so editing it once changes every instance. Nothing may be designed around a file belonging to exactly one clip.
+- **Milestone 0 limits:** `"midi"` tracks with exactly one device, `"tracktion:4osc"`; time signature `"4/4"`; tempo 20–999 BPM.
+- **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
 
 ---
 
@@ -343,7 +381,7 @@ Purpose: prove the riskiest architecture pieces work together early — text for
 
 The native synth for Milestone 0 is Tracktion's built-in 4OSC, as a stand-in; Hocket's own synth comes in v1 (§10.1).
 
-Milestone 0 `.notes` subset: note lines, chords, comments and `@length`, in 4/4 only. Controller lines (`cc`, `pb`, aftertouch), `@swing`, `@ch`, per-note `chN` and drum names are rejected with an error saying they aren't supported yet.
+Milestone 0 `project.json` subset: §4.4. Milestone 0 `.notes` subset: note lines, chords, comments and `@length`, in 4/4 only. Controller lines (`cc`, `pb`, aftertouch), `@swing`, `@ch`, per-note `chN` and drum names are rejected with an error saying they aren't supported yet.
 
 ### 10.1 v1 — "Lee and Claude can make a complete song in it, start to finish, with native instruments"
 - Engine on Tracktion; ASIO/WASAPI; transport and looping; one tempo and time signature per song
@@ -352,7 +390,8 @@ Milestone 0 `.notes` subset: note lines, chords, comments and `@length`, in 4/4 
 - Audio tracks: audio import and **recording** (arm a track, record takes — vocals are a v1 requirement)
 - Mixer: volume, pan, sends, master bus; basic automation
 - Command bus, undo with author tags, transactions
-- Project format with canonical writer and round-trip tests
+- Project format with canonical writer and round-trip tests; published JSON Schema for `project.json` (§4.1)
+- Linked clips: several clips sharing one `.notes` file (§4.4)
 - MCP server with the core tool set (§6.4)
 - Analysis toolkit core: loudness, spectrum, masking, before/after comparison
 - Export to WAV/FLAC, including **seamless loop export** (for game music) and per-track stem export

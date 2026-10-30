@@ -8,8 +8,8 @@ Status board for the current milestone. Read it at the start of a session; updat
 |---|---|---|
 | 1 | Build skeleton: pinned submodules, CMake + VS 2026 presets, `hocket-headless --list-devices` | ✅ Done |
 | 2 | `.notes` parser + canonical writer (M0 subset), round-trip / error / property / fuzz tests | ✅ Done |
-| 3 | `project.json` loader, project model, validation tests | ⏭ Next |
-| 4 | Command bus: `write_clip`, undo/redo, history, author tags, transaction grouping | ⬜ |
+| 3 | `project.json` loader + canonical writer, project model, `hocket-headless --check`, tests | ✅ Done |
+| 4 | Command bus: `write_clip`, undo/redo, history, author tags, transaction grouping | ⏭ Next |
 | 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; offline-render test | ⬜ |
 | 6 | WebSocket API on 127.0.0.1 + token file | ⬜ |
 | 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ⬜ |
@@ -22,14 +22,16 @@ Status board for the current milestone. Read it at the start of a session; updat
 - 200 rewrites at 20/sec during playback cause zero xruns (where the driver reports them) and no audible dropouts;
 - all tests pass.
 
-## Next: step 3 — `project.json` loader
-- M0 subset: format version, tempo, 4/4 time signature, MIDI tracks with stable IDs, one 4OSC device per track, clips (`id`, `file`, `start`).
-- Loads each clip's `.notes` file through the parser; errors name the file (`clips/bass.notes:6:10: …`).
-- Validation errors in the same LLM-readable style: where in the JSON, what's wrong, a valid example.
-- Uses nlohmann/json (already pinned). Add `examples/m0-demo/`.
+## Next: step 4 — command bus
+- Lives in `hocket_core` and operates on `project::Project` (SPEC §3.3: our model is the source of truth).
+- Commands are validated before they apply; failures change nothing and return an LLM-readable error (SPEC §3.1).
+- `write_clip` takes `.notes` text (SPEC §6.2), parsed with the project's meter; clips are addressed by ID.
+- Undo history with author tags (`Lee`, `Claude`, …) and named transactions; transport commands go through the bus but stay out of undo history (SPEC §3.1).
+- Tests: command validation, undo/redo, transactions.
 
 ## Loose ends
-- **Line endings:** add a `.gitattributes` forcing `eol=lf` for `*.notes`, `*.auto`, `project.json` and test fixtures before committing any such files. This machine has `core.autocrlf=true`, which would check them out as CRLF and break byte-identical comparisons.
+- **Saving to disk:** `project::write()` produces every file in memory; writing them to the folder (atomically, plus SPEC §6.1's external-change detection) isn't built. Milestone 0 doesn't need it.
+- **Non-ASCII folder paths:** `--check` takes the folder from narrow `argv`, which Windows encodes in the ANSI code page; paths outside it won't open. Fix with wide arguments when the app grows a real command line.
 - **Tracktion settings file:** the default `PropertyStorage` writes `%APPDATA%\Hocket\Settings.xml`. Decide in step 5 whether to supply our own.
 - **Dropout test device:** the Magni DAC has no ASIO driver of its own; run steps 5 and 8 through ASIO4ALL.
 - **Tracktion pin:** `develop` at 3.5.0 is untagged. Move to the 3.5.0 tag when it exists (JUCE pin follows; see DEPENDENCIES.md).

@@ -1,0 +1,6 @@
+# Hocket project files are canonical text, compared byte for byte (SPEC §5.4,
+# §4.4), so they're always checked out with LF, whatever core.autocrlf says.
+# Name the text formats only: audio and plugin state in project folders are binary.
+*.notes       text eol=lf
+*.auto        text eol=lf
+project.json  text eol=lf

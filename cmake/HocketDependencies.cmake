@@ -95,6 +95,11 @@ set(IXWEBSOCKET_INSTALL OFF)
 add_subdirectory("${HOCKET_EXTERNAL_DIR}/IXWebSocket" EXCLUDE_FROM_ALL)
 
 set(JSON_Install OFF)
+# Byte offsets on parsed values, so project.json errors can give line and column.
+# Set here, on the library target, so every user of nlohmann sees the same layout.
+set(JSON_Diagnostic_Positions ON)
+# Conversions must be spelled out with get<T>().
+set(JSON_ImplicitConversions OFF)
 add_subdirectory("${HOCKET_EXTERNAL_DIR}/json" EXCLUDE_FROM_ALL)
 
 set(DOCTEST_NO_INSTALL ON)

@@ -1,0 +1,26 @@
+{
+  "format": "hocket-project",
+  "formatVersion": 0,
+  "tempo": 120,
+  "timeSignature": "4/4",
+  "tracks": [
+    {
+      "id": "trk-bass",
+      "name": "Bass",
+      "type": "midi",
+      "devices": [
+        {
+          "id": "dev-bass-synth",
+          "type": "tracktion:4osc"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clp-bass",
+          "file": "clips/bass.notes",
+          "start": "1.1"
+        }
+      ]
+    }
+  ]
+}
