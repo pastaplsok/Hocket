@@ -77,9 +77,10 @@ Not done yet: it needs Lee at the laptop with the Magni. `--play` has only been 
   - `begin_transaction`'s description gives the idle timeout, so the bridge and the DAW must use the same value. Make the 10 minutes a shared constant in `hocket_api`; today it's only `HandlerOptions::idleTimeout`'s default.
 - **Finding the DAW:** re-read the token file on every connection attempt (`api::runningInstance`), so a restarted DAW, with a new port and token, is found. Connect on the first tool call, and again after a disconnect.
 - **When Hocket isn't running,** a call returns an `isError` result such as "Hocket isn't running: start it with `hocket-headless --play <project folder>`, then try again". The same goes for a token file left by a crash, or a refused connection.
-- **Version check in `hello`:** the bridge sends its version; the DAW refuses a mismatch with a clear error and closes the connection, and the bridge returns that error from the tool call, e.g. "hocket-mcp 0.0.1 and Hocket 0.0.2 come from different builds; use the hocket-mcp built with this Hocket".
+- **Version check in `hello`:** the bridge sends its version and a fingerprint; the DAW refuses a mismatch with a clear error and closes the connection, and the bridge returns that error from the tool call.
+  - **What's compared:** the Hocket version, plus a hash of a protocol version constant and `toolDefinitions()` as JSON. The version alone stays 0.0.1 through development; the hash catches changed tools and handshake or format changes (bump the protocol constant for those). Each side computes it from its own compiled-in code, so it lives in `hocket_api` next to the tool definitions.
+  - **The error says what to do:** e.g. "hocket-mcp and this Hocket come from different builds (tools or protocol differ). Rebuild hocket-mcp from the same source as Hocket and reinstall it, then restart the MCP client." Give both versions when they differ.
   - The DAW's handler refuses unknown `hello` params, so both sides change together.
-  - **To confirm with Lee before building:** what to compare. The version number stays 0.0.1 through development, so it alone won't catch a DAW rebuilt with changed tools and a stale bridge. Recommendation: compare the version plus a fingerprint of the tool definitions (a hash of `toolDefinitions()` as JSON), which both sides compute from their own compiled-in copy.
 - **SPEC §6.3** gets updated with the build: `hello`'s new params, the bridge serving the tool list itself (still one list in the source), and the two errors.
 
 ### Suggested shape
