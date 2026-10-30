@@ -6,10 +6,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <fstream>
 #include <set>
 #include <span>
-#include <sstream>
 #include <tuple>
 
 namespace hocket::project
@@ -606,23 +604,6 @@ namespace
             }
         }
     };
-
-    std::optional<std::string> readTextFile (const std::filesystem::path& path)
-    {
-        std::error_code error;
-
-        if (! std::filesystem::is_regular_file (path, error))
-            return {};
-
-        std::ifstream in (path, std::ios::binary);
-
-        if (! in)
-            return {};
-
-        std::ostringstream contents;
-        contents << in.rdbuf();
-        return contents.str();
-    }
 }
 
 LoadResult parse (std::string_view projectJson, const FileReader& readFile)

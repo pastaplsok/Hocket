@@ -74,7 +74,7 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request and must be long enough to cover a model thinking between calls (minutes, not seconds).
 - A command that changes nothing (e.g. writing a clip's current text again) adds no history entry.
 - **Continuous gestures coalesce.** A knob drag or fader move is one undo step, not one step per value change.
-- **Transport actions** (play, stop, seek, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history.
+- **Transport actions** (play, stop, seek, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
 
 ### 3.2 Real-time safety
 - The audio thread is never touched directly by any client.
@@ -91,7 +91,7 @@ Why our model and not Tracktion's:
 
 Keeping the Edit in sync with our model is the area most likely to produce early bugs.
 - Requirement: round-trip tests — load text → Hocket model → save text must produce byte-identical output for canonical files.
-- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render).
+- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device).
 - Requirement: property/fuzz tests on the serializer.
 
 **Changes that start inside the engine.** Some state originates in Tracktion or a plugin rather than in a client: recorded takes (v1, §10.1) and parameter changes made in a VST3 plugin's own GUI (Phase 2, §10.3). These must be captured back into the command bus as commands, authored by the user, so they're validated, undoable, and serialized like everything else. Continuous plugin-GUI knob moves are coalesced into one undo step (§3.1). Nothing may change the Edit without a matching change to our model.
@@ -270,6 +270,8 @@ Validity rules: a note may not start at or after the clip's end, but may extend 
 | **Closed** | The project folder | Directly on files (e.g. Claude Code scaffolds a song from scratch); DAW loads it on open. |
 
 If the project folder is modified externally while the DAW is open, the DAW **detects it and asks** the user whether to reload or merge. It never silently overwrites either side.
+
+Milestone 0's headless host has an opt-in exception for development, `--play --watch`: each saved clip file is sent as a `write_clip`, so it's validated and undoable like any other edit. Milestone 0 never writes the folder, so nothing on disk is overwritten.
 
 ### 6.2 The API speaks the text format
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.

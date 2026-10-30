@@ -5,10 +5,24 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <atomic>
+
 namespace hocket
 {
 namespace
 {
+    std::atomic<bool> interrupted { false };
+
+    // Windows calls this on a thread of its own.
+    BOOL WINAPI handleConsoleControl (DWORD event)
+    {
+        if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
+            return FALSE; // closing the console window etc.: the default, which ends the process
+
+        interrupted = true;
+        return TRUE;
+    }
+
     std::string utf8FromWide (const wchar_t* text)
     {
         const auto size = WideCharToMultiByte (CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
@@ -43,5 +57,15 @@ std::vector<std::string> utf8Arguments (int, char*[])
 
     LocalFree (wide);
     return arguments;
+}
+
+void catchInterrupts()
+{
+    SetConsoleCtrlHandler (handleConsoleControl, TRUE);
+}
+
+bool interruptRequested()
+{
+    return interrupted;
 }
 }

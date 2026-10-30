@@ -329,3 +329,84 @@ TEST_CASE ("undo and redo announce each clip they change")
     bus.redo ("Lee");
     CHECK (log.changes == std::vector<std::string> { "clp-b", "clp-a", "clp-a", "clp-b" });
 }
+
+TEST_CASE ("removed listeners hear nothing more")
+{
+    CommandBus bus (makeProject());
+    std::vector<std::string> heard;
+    const auto id = bus.addListener ([&heard] (const Change& change) { heard.push_back (std::get<ClipContentChanged> (change).clipId); });
+
+    bus.execute (WriteClip { "clp-a", twoNotes }, "Claude");
+    bus.removeListener (id);
+    bus.execute (WriteClip { "clp-a", threeNotes }, "Claude");
+
+    CHECK (heard == std::vector<std::string> { "clp-a" });
+}
+
+namespace
+{
+    // Records the transport commands it's given.
+    struct FakeTransport final : Transport
+    {
+        Result play() override
+        {
+            calls.push_back ("play");
+            return { true, "playing" };
+        }
+
+        Result stop() override
+        {
+            calls.push_back ("stop");
+            return { true, "stopped" };
+        }
+
+        std::vector<std::string> calls;
+    };
+}
+
+TEST_CASE ("transport commands go to the transport and never enter the history")
+{
+    CommandBus bus (makeProject());
+    FakeTransport transport;
+    bus.setTransport (&transport);
+    ChangeLog log (bus);
+
+    CHECK (bus.execute (Play {}, "Claude").message == "playing");
+    CHECK (bus.execute (Stop {}, "Lee").message == "stopped");
+
+    CHECK (transport.calls == std::vector<std::string> { "play", "stop" });
+    CHECK (bus.history().empty());
+    CHECK (log.changes.empty());
+    CHECK_FALSE (bus.undo ("Lee", UndoScope::anyAuthor).ok);
+}
+
+TEST_CASE ("a transport command doesn't split another author's transaction")
+{
+    CommandBus bus (makeProject());
+    FakeTransport transport;
+    bus.setTransport (&transport);
+
+    bus.beginTransaction ("Claude", "wrote bridge");
+    bus.execute (WriteClip { "clp-a", twoNotes }, "Claude");
+    bus.execute (Play {}, "Lee");
+    bus.execute (WriteClip { "clp-a", threeNotes }, "Claude");
+
+    CHECK (bus.commitTransaction ("Claude").message == "#1 wrote bridge");
+}
+
+TEST_CASE ("transport commands fail clearly when there's no engine, and still need an author")
+{
+    CommandBus bus (makeProject());
+
+    const auto result = bus.execute (Play {}, "Claude");
+    CHECK_FALSE (result.ok);
+    CHECK (result.message == "play: there's no audio engine running, so playback can't be started or stopped here");
+
+    FakeTransport transport;
+    bus.setTransport (&transport);
+    CHECK_FALSE (bus.execute (Stop {}, "").ok);
+    CHECK (transport.calls.empty());
+
+    bus.setTransport (nullptr);
+    CHECK_FALSE (bus.execute (Stop {}, "Claude").ok);
+}

@@ -76,7 +76,10 @@ target_compile_definitions(hocket_juce PUBLIC
     $<$<PLATFORM_ID:Windows>:JUCE_ASIO=1>
     $<$<PLATFORM_ID:Windows>:JUCE_DIRECTSOUND=0>
     # Hocket prints its own device list.
-    TRACKTION_LOG_DEVICES=0)
+    TRACKTION_LOG_DEVICES=0
+    # MessageManager::runDispatchLoopUntil: the engine tests run the message
+    # thread between audio blocks, as it runs during real playback.
+    JUCE_MODAL_LOOPS_PERMITTED=1)
 
 # Hand the modules' include paths and definitions (including those inherited from
 # the JUCE module targets) on to anything that links hocket_juce.

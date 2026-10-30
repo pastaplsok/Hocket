@@ -8,6 +8,7 @@
 // represent most non-ASCII folder names.
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -17,4 +18,7 @@ namespace hocket
     std::filesystem::path pathFromUtf8 (std::string_view utf8);
 
     std::string utf8FromPath (const std::filesystem::path& path);
+
+    // A file's bytes, unchanged, or nullopt if it isn't a regular file or can't be read.
+    std::optional<std::string> readTextFile (const std::filesystem::path& path);
 }

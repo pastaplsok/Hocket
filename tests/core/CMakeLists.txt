@@ -1,4 +1,5 @@
 add_executable(hocket_core_tests
+    ClipFileWatcherTests.cpp
     CommandBusPropertyTests.cpp
     CommandBusTests.cpp
     JsonTextTests.cpp
@@ -10,6 +11,7 @@ add_executable(hocket_core_tests
     ProjectTests.cpp)
 
 target_link_libraries(hocket_core_tests PRIVATE hocket_core doctest::doctest_with_main)
+target_include_directories(hocket_core_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
 # Tests load the example projects from the source tree, as checked out.
 target_compile_definitions(hocket_core_tests PRIVATE HOCKET_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")

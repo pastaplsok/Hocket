@@ -12,6 +12,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -24,12 +25,34 @@ namespace hocket::commands
         std::string notes;
     };
 
-    using Command = std::variant<WriteClip>;
+    // Transport commands (SPEC §3.1). They don't change the project, so they're
+    // never validated against it, never enter the history, and don't split an
+    // open transaction.
+    struct Play
+    {
+    };
+
+    struct Stop
+    {
+    };
+
+    using Command = std::variant<WriteClip, Play, Stop>;
 
     struct Result
     {
         bool ok = false;
         std::string message; // on success, what happened; on failure, what's wrong and how to fix it
+    };
+
+    // Carries out transport commands for the bus. The engine provides one; without
+    // it, transport commands fail.
+    class Transport
+    {
+    public:
+        virtual ~Transport() = default;
+
+        virtual Result play() = 0;
+        virtual Result stop() = 0;
     };
 
     struct HistoryEntry
@@ -77,7 +100,13 @@ namespace hocket::commands
         std::vector<HistoryEntry> history() const;
 
         // Called after every change to the project, including undo, redo and rollback.
-        void addListener (std::function<void (const Change&)> listener);
+        // Returns an ID for removeListener. Listeners mustn't add or remove listeners.
+        int addListener (std::function<void (const Change&)> listener);
+        void removeListener (int listenerId);
+
+        // Where transport commands go. Pass nullptr to remove it; a transport that
+        // goes away before the bus must do that first.
+        void setTransport (Transport* transport);
 
     private:
         struct SetClipContent
@@ -109,8 +138,11 @@ namespace hocket::commands
         std::vector<Entry> undone;
         std::optional<Transaction> transaction;
         int nextEntryId = 1;
-        std::vector<std::function<void (const Change&)>> listeners;
+        std::vector<std::pair<int, std::function<void (const Change&)>>> listeners;
+        int nextListenerId = 1;
+        Transport* transport = nullptr;
 
+        Result runTransportCommand (const Command&);
         Result validate (const WriteClip&, std::vector<Edit>& edits, std::string& description) const;
         Edit apply (const Edit&);
         void record (const std::string& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse);

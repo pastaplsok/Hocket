@@ -86,9 +86,12 @@ Result CommandBus::execute (const Command& command, const std::string& author)
     if (author.empty())
         return { false, "commands need an author, e.g. \"Lee\" or \"Claude\"" };
 
+    if (std::holds_alternative<Play> (command) || std::holds_alternative<Stop> (command))
+        return runTransportCommand (command);
+
     std::vector<Edit> edits;
     std::string description;
-    auto result = std::visit ([&] (const auto& c) { return validate (c, edits, description); }, command);
+    auto result = validate (std::get<WriteClip> (command), edits, description);
 
     // Invalid, or valid but changes nothing.
     if (! result.ok || edits.empty())
@@ -116,6 +119,16 @@ Result CommandBus::execute (const Command& command, const std::string& author)
     const auto id = nextEntryId;
     record (author, description, std::move (edits), std::move (inverse));
     return { true, "#" + std::to_string (id) + " " + description };
+}
+
+Result CommandBus::runTransportCommand (const Command& command)
+{
+    const auto name = std::holds_alternative<Play> (command) ? "play" : "stop";
+
+    if (transport == nullptr)
+        return { false, std::string (name) + ": there's no audio engine running, so playback can't be started or stopped here" };
+
+    return std::holds_alternative<Play> (command) ? transport->play() : transport->stop();
 }
 
 Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits, std::string& description) const
@@ -322,14 +335,25 @@ std::vector<HistoryEntry> CommandBus::history() const
     return entries;
 }
 
-void CommandBus::addListener (std::function<void (const Change&)> listener)
+int CommandBus::addListener (std::function<void (const Change&)> listener)
 {
-    listeners.push_back (std::move (listener));
+    listeners.emplace_back (nextListenerId, std::move (listener));
+    return nextListenerId++;
+}
+
+void CommandBus::removeListener (int listenerId)
+{
+    std::erase_if (listeners, [listenerId] (const auto& listener) { return listener.first == listenerId; });
+}
+
+void CommandBus::setTransport (Transport* newTransport)
+{
+    transport = newTransport;
 }
 
 void CommandBus::notify (const Change& change)
 {
     for (const auto& listener : listeners)
-        listener (change);
+        listener.second (change);
 }
 }
