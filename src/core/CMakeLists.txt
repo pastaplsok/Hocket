@@ -1,6 +1,8 @@
 # hocket_core: the project model, file formats and command bus. No JUCE, so it
 # builds fast and its tests don't need the engine.
 add_library(hocket_core STATIC
+    Paths.cpp
+    Paths.h
     notes/Notes.h
     notes/NotesParser.cpp
     notes/NotesSyntax.cpp

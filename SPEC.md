@@ -366,6 +366,7 @@ Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova,
 ## 9. Platform notes
 - Windows first: ASIO and WASAPI via JUCE. (ASIO SDK is available under a GPLv3 option; VST3 SDK is MIT since 3.8.)
 - Keep platform-specific code isolated so Linux (JACK/PipeWire) and macOS (CoreAudio, AU) ports are additive.
+- Unicode paths: all text is UTF-8 inside Hocket. On Windows, text from the OS (paths, command line) is converted from UTF-16 at the platform boundary, never through the ANSI code page, so folders with any name work.
 
 ---
 

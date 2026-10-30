@@ -39,6 +39,12 @@ build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --che
 ## Conventions
 - C++20, follow JUCE naming style for JUCE-facing code
 - Platform-specific code isolated behind interfaces (Linux/macOS ports come later)
+- **Text is UTF-8; paths are `std::filesystem::path`.** Every `std::string` holds UTF-8 (we build with `/utf-8`, so narrow literals are UTF-8 too).
+  - Convert between text and paths only with `hocket::pathFromUtf8()` / `hocket::utf8FromPath()` (`src/core/Paths.h`).
+  - Never build a path from a `std::string` or `char*`, never call `path::string()`, and open files only through a `path`. On Windows the narrow forms go through the ANSI code page, which turns most non-ASCII names into `?`.
+  - Text from the OS (command line, environment, Win32 calls) enters through the platform layer as UTF-8: call the wide (`W`) Windows APIs there and convert (see `hocket::utf8Arguments()`). Never use `argv` directly.
+  - In JUCE code, `juce::File` is fine; convert strings with `juce::String::fromUTF8()` and `toStdString()`.
+  - Test new file-handling code with a non-ASCII folder name (see `tests/core/PathsTests.cpp`, `tests/app/CMakeLists.txt`).
 - Tests for: `.notes` parser, `.auto` parser, serializer round-trips, command validation, undo/redo
 - Error messages from validation are written for an LLM reader: say what's wrong, where, and what valid input looks like
 

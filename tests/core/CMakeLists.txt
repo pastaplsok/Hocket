@@ -3,6 +3,7 @@ add_executable(hocket_core_tests
     NotesSyntaxTests.cpp
     NotesFormatTests.cpp
     NotesPropertyTests.cpp
+    PathsTests.cpp
     ProjectPropertyTests.cpp
     ProjectTests.cpp)
 

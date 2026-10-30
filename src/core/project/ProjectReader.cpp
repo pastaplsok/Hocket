@@ -1,3 +1,4 @@
+#include "core/Paths.h"
 #include "core/project/JsonText.h"
 #include "core/project/Project.h"
 #include "core/notes/NotesSyntax.h"
@@ -606,12 +607,6 @@ namespace
         }
     };
 
-    std::string toUtf8 (const std::filesystem::path& path)
-    {
-        const auto text = path.u8string();
-        return { text.begin(), text.end() };
-    }
-
     std::optional<std::string> readTextFile (const std::filesystem::path& path)
     {
         std::error_code error;
@@ -640,17 +635,17 @@ LoadResult load (const std::filesystem::path& folder)
     std::error_code error;
 
     if (! std::filesystem::is_directory (folder, error))
-        return { {}, { { {}, 0, 0, singleQuoted (toUtf8 (folder)) + " isn't a folder; a Hocket project is a folder containing project.json" } } };
+        return { {}, { { {}, 0, 0, singleQuoted (utf8FromPath (folder)) + " isn't a folder; a Hocket project is a folder containing project.json" } } };
 
-    const auto projectJson = readTextFile (folder / projectFileName);
+    const auto projectJson = readTextFile (folder / pathFromUtf8 (projectFileName));
 
     if (! projectJson)
-        return { {}, { { projectFileName, 0, 0, "there's no project.json in " + singleQuoted (toUtf8 (folder))
+        return { {}, { { projectFileName, 0, 0, "there's no project.json in " + singleQuoted (utf8FromPath (folder))
                                                      + "; a Hocket project folder needs one (SPEC §4.4)" } } };
 
     return parse (*projectJson, [&folder] (const std::string& relativePath)
     {
-        return readTextFile (folder / std::filesystem::path (relativePath));
+        return readTextFile (folder / pathFromUtf8 (relativePath));
     });
 }
 

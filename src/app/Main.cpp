@@ -5,6 +5,7 @@
 
 #include "Console.h"
 
+#include "core/Paths.h"
 #include "core/project/Project.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -28,9 +29,9 @@ namespace
                "       hocket-headless --version                  print version numbers\n";
     }
 
-    int checkProject (const char* folder)
+    int checkProject (const std::string& folder)
     {
-        const auto result = hocket::project::load (std::filesystem::path (folder));
+        const auto result = hocket::project::load (hocket::pathFromUtf8 (folder));
 
         for (const auto& error : result.errors)
             std::cerr << hocket::project::formatDiagnostic (error) << "\n";
@@ -89,23 +90,22 @@ namespace
 int main (int argc, char* argv[])
 {
     hocket::initialiseConsole();
+    const auto arguments = hocket::utf8Arguments (argc, argv);
 
     // Tracktion needs JUCE's message manager, even without a GUI.
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
 
-    if (argc == 2)
+    if (arguments.size() == 2)
     {
-        const std::string_view option { argv[1] };
-
-        if (option == "--list-devices")
+        if (arguments[1] == "--list-devices")
             return listDevices();
 
-        if (option == "--version")
+        if (arguments[1] == "--version")
             return printVersion();
     }
 
-    if (argc == 3 && std::string_view { argv[1] } == "--check")
-        return checkProject (argv[2]);
+    if (arguments.size() == 3 && arguments[1] == "--check")
+        return checkProject (arguments[2]);
 
     printUsage (std::cerr);
     return 1;

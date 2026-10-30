@@ -31,7 +31,6 @@ Status board for the current milestone. Read it at the start of a session; updat
 
 ## Loose ends
 - **Saving to disk:** `project::write()` produces every file in memory; writing them to the folder (atomically, plus SPEC §6.1's external-change detection) isn't built. Milestone 0 doesn't need it.
-- **Non-ASCII folder paths:** `--check` takes the folder from narrow `argv`, which Windows encodes in the ANSI code page; paths outside it won't open. Fix with wide arguments when the app grows a real command line.
 - **Tracktion settings file:** the default `PropertyStorage` writes `%APPDATA%\Hocket\Settings.xml`. Decide in step 5 whether to supply our own.
 - **Dropout test device:** the Magni DAC has no ASIO driver of its own; run steps 5 and 8 through ASIO4ALL.
 - **Tracktion pin:** `develop` at 3.5.0 is untagged. Move to the 3.5.0 tag when it exists (JUCE pin follows; see DEPENDENCIES.md).

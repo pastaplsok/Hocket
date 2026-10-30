@@ -1,3 +1,4 @@
+#include "core/Paths.h"
 #include "core/project/Project.h"
 
 #include <doctest/doctest.h>
@@ -206,7 +207,7 @@ TEST_CASE ("whole-number tempos are written without a decimal point")
 
 TEST_CASE ("the example project loads from disk and is in canonical form")
 {
-    const std::filesystem::path folder = HOCKET_EXAMPLES_DIR "/m0-demo";
+    const auto folder = hocket::pathFromUtf8 (HOCKET_EXAMPLES_DIR "/m0-demo");
     const auto result = load (folder);
 
     for (const auto& error : result.errors)
@@ -219,17 +220,17 @@ TEST_CASE ("the example project loads from disk and is in canonical form")
     for (const auto& [path, contents] : write (*result.project))
     {
         CAPTURE (path);
-        CHECK (readFile (folder / path) == contents);
+        CHECK (readFile (folder / hocket::pathFromUtf8 (path)) == contents);
     }
 }
 
 TEST_CASE ("loading a folder that isn't a project explains why")
 {
-    const auto missing = load (HOCKET_EXAMPLES_DIR "/no-such-project");
+    const auto missing = load (hocket::pathFromUtf8 (HOCKET_EXAMPLES_DIR "/no-such-project"));
     REQUIRE (missing.errors.size() == 1);
     CHECK (contains (missing.errors[0].message, "isn't a folder; a Hocket project is a folder containing project.json"));
 
-    const auto noProjectFile = load (HOCKET_EXAMPLES_DIR "/m0-demo/clips");
+    const auto noProjectFile = load (hocket::pathFromUtf8 (HOCKET_EXAMPLES_DIR "/m0-demo/clips"));
     REQUIRE (noProjectFile.errors.size() == 1);
     CHECK (noProjectFile.errors[0].file == "project.json");
     CHECK (contains (formatDiagnostic (noProjectFile.errors[0]), "project.json: there's no project.json in"));
