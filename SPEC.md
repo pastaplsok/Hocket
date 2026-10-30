@@ -67,6 +67,11 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - Every command is validated before it applies. Invalid commands return a clear, human-readable error (important for LLM self-correction).
 - Every applied command becomes part of undo history, **tagged with its author** (`Lee`, `Claude`, `local-model`, `script:<name>`).
 - Multi-step operations can be grouped into a **transaction** that appears as a single named undo step (e.g. "Claude: wrote bridge").
+- **One linear undo history**, shared by every client. Undo always takes back the newest entry. Entries have stable numbers (`#7`).
+- **AI undo checks the author.** The MCP `undo` tool refuses when the newest entry isn't the caller's, with a message naming who made that change and what it was (e.g. `the most recent change, #7 "wrote clip clp-bass (14 notes)", was made by Lee, not Claude`). Passing `force` undoes it anyway. Undo from the GUI works normally, whoever made the change.
+- **Transactions and other authors.** One transaction can be open at a time. A command from another author never waits for it: the transaction's edits so far become their own history entry ("wrote bridge (part 1)"), the other command follows, and the transaction carries on as part 2. History stays linear, and every entry can be undone on its own. Rolling back takes back only the current part.
+- **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request and must be long enough to cover a model thinking between calls (minutes, not seconds).
+- A command that changes nothing (e.g. writing a clip's current text again) adds no history entry.
 - **Continuous gestures coalesce.** A knob drag or fader move is one undo step, not one step per value change.
 - **Transport actions** (play, stop, seek, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history.
 
@@ -289,7 +294,7 @@ Prefer a small set of expressive tools over many tiny ones.
 | `transport` | Play, stop, loop region, position. |
 | `render_section` | Render a time range to audio for analysis. |
 | `analyze` | Run analysis tools on a render (see §7). |
-| `undo` / `history` | Inspect and revert history, filterable by author. |
+| `undo` / `history` | Inspect and revert history, filterable by author. `undo` refuses when the newest entry isn't the caller's, unless `force` is passed (§3.1). |
 
 ### 6.5 Proposal mode
 Optional toggle: AI edits arrive as **pending** — shown as ghost notes / highlighted changes — and the user accepts or rejects them, individually or as a batch.

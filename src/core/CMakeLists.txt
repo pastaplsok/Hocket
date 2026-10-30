@@ -3,6 +3,8 @@
 add_library(hocket_core STATIC
     Paths.cpp
     Paths.h
+    commands/CommandBus.cpp
+    commands/CommandBus.h
     notes/Notes.h
     notes/NotesParser.cpp
     notes/NotesSyntax.cpp

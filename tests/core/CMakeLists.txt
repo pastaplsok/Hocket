@@ -1,4 +1,6 @@
 add_executable(hocket_core_tests
+    CommandBusPropertyTests.cpp
+    CommandBusTests.cpp
     JsonTextTests.cpp
     NotesSyntaxTests.cpp
     NotesFormatTests.cpp
