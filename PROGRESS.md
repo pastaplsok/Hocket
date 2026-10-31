@@ -51,7 +51,7 @@ Status board for the current milestone. Read it at the start of a session; updat
 - `examples/m0-demo`: 120 BPM, 4/4, one track `trk-bass` with a 4OSC `dev-bass-synth`, one 2-bar clip `clp-bass` at 1.1.
 
 ## Waiting for Lee: Claude Code and the by-ear checks (steps 5 and 7)
-They need Lee at the laptop with the Magni, and a change to Lee's Claude Code config.
+They need Lee at the laptop with the Magni.
 
 **What's been checked so far, all silent** (an empty clip over WASAPI, only empty clips written):
 - `--play`: the device opens, it loops, `--watch` applies saves (errors print as `file:line:column`), and Ctrl+C stops cleanly.
@@ -68,7 +68,7 @@ They need Lee at the laptop with the Magni, and a change to Lee's Claude Code co
   - it starts the server in the session's folder, so the label was `m0-demo`.
 
 **To do with Lee:**
-1. Install and register (`docs/connecting-claude-code.md`, steps 1 and 2): `cmake --install build\vs2026 --config Release --component mcp --prefix "$env:LOCALAPPDATA\Hocket"`, then `claude mcp add --scope user hocket -- "$env:LOCALAPPDATA\Hocket\bin\hocket-mcp.exe"`. User scope means every session gets the tools, including the ones developing Hocket here; they just say "Hocket isn't running" until `--play` runs.
+1. ✅ Installed and registered (2026-10-30, after the step 7 commit). `hocket-mcp.exe` is in `%LOCALAPPDATA%\Hocket\bin` (API build `7a9b08d34b2a2d3e`, the same as `hocket-headless`). It's registered as `hocket` at user scope, and `claude mcp get hocket` shows it connected. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
 2. Start a new Claude Code session; `/mcp` should list hocket with 9 tools.
 3. `hocket-headless.exe --list-devices`, and check the Magni shows up under Windows Audio.
 4. `hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch --user Lee`, with ASIO4ALL routed to the Magni in its panel.
