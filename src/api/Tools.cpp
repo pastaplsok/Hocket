@@ -383,7 +383,8 @@ namespace
                "- length: a fraction of a whole note (1/4, 1/8, 3/16), a triplet (1/8t), or ticks (250tk).\n"
                "- velocity: v1 to v127, required on every line.\n"
                "- # starts a comment, kept as written.\n"
-               "Only 4/4 for now. Not supported yet: cc, pb, aftertouch, @swing, @ch.",
+               "Only 4/4 for now, and a clip is at most 999 bars. Not supported yet: controller lines (cc, pb, at for "
+               "aftertouch), @swing, @ch.",
                R"({
                     "type": "object",
                     "properties": {

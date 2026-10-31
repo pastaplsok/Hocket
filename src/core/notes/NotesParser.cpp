@@ -60,9 +60,10 @@ namespace
         return ! text.empty() && std::ranges::all_of (text, [] (char c) { return c >= '0' && c <= '9'; });
     }
 
+    // "cc74", "pb", "at" (channel aftertouch): SPEC §5
     bool looksLikeController (std::string_view text)
     {
-        return text == "pb" || (text.starts_with ("cc") && isDigits (text.substr (2)));
+        return text == "pb" || text == "at" || (text.starts_with ("cc") && isDigits (text.substr (2)));
     }
 
     // e.g. "c2", "f#4", "bb3": a note name with a lowercase letter
@@ -382,7 +383,7 @@ namespace
         {
             if (looksLikeController (field.text))
             {
-                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb') aren't supported yet in Milestone 0; only note lines like ")
+                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb', 'at') aren't supported yet in Milestone 0; only note lines like ")
                                                      + noteLineExample);
                 return false;
             }
