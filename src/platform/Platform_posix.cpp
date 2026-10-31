@@ -38,7 +38,7 @@ std::uint32_t currentProcessId()
 std::string currentProgramName()
 {
     std::error_code error;
-    return utf8FromPath (std::filesystem::read_symlink ("/proc/self/exe", error).filename());
+    return utf8FromPath (std::filesystem::read_symlink (pathFromUtf8 ("/proc/self/exe"), error).filename());
 }
 
 bool isProgramRunning (std::uint32_t processId, std::string_view programName)
@@ -48,7 +48,7 @@ bool isProgramRunning (std::uint32_t processId, std::string_view programName)
 
     // Linux names a process's program in /proc; elsewhere, trust the process ID.
     std::error_code error;
-    const auto program = std::filesystem::read_symlink ("/proc/" + std::to_string (processId) + "/exe", error);
+    const auto program = std::filesystem::read_symlink (pathFromUtf8 ("/proc/" + std::to_string (processId) + "/exe"), error);
     return error || utf8FromPath (program.filename()) == programName;
 }
 
@@ -58,7 +58,7 @@ std::optional<std::filesystem::path> localAppDataFolder()
         return pathFromUtf8 (state);
 
     if (const auto* home = std::getenv ("HOME"); home != nullptr && *home != '\0')
-        return pathFromUtf8 (home) / ".local" / "state";
+        return pathFromUtf8 (home) / pathFromUtf8 (".local/state");
 
     return {};
 }

@@ -82,7 +82,7 @@ TEST_CASE ("a varied rewrite moves every other one's notes an octave, down where
 TEST_CASE ("hocket-stress rewrites a clip in a running Hocket on schedule, then puts it back")
 {
     testing::TemporaryFolder folder { testing::unicodeName };
-    const auto tokenFile = folder.path / "api.json";
+    const auto tokenFile = folder.path / pathFromUtf8 ("api.json");
     testing::FakeHocket hocket (tokenFile, testPort, demoProject());
 
     api::Client client;
@@ -122,7 +122,7 @@ TEST_CASE ("hocket-stress rewrites a clip in a running Hocket on schedule, then 
 TEST_CASE ("hocket-stress says what's wrong when it can't start")
 {
     testing::TemporaryFolder folder { testing::unicodeName };
-    const auto tokenFile = folder.path / "api.json";
+    const auto tokenFile = folder.path / pathFromUtf8 ("api.json");
     api::Client client;
 
     SUBCASE ("Hocket isn't running")

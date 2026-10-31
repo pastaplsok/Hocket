@@ -51,15 +51,15 @@ TEST_CASE ("the default token file is in the user's local app data folder")
 {
     const auto file = api::defaultTokenFilePath();
     REQUIRE (file.has_value());
-    CHECK (file->filename() == "api.json");
-    CHECK (file->parent_path().filename() == "Hocket");
+    CHECK (utf8FromPath (file->filename()) == "api.json");
+    CHECK (utf8FromPath (file->parent_path().filename()) == "Hocket");
     CHECK (std::filesystem::is_directory (file->parent_path().parent_path()));
 }
 
 TEST_CASE ("the token file is written, read back and removed")
 {
     const testing::TemporaryFolder folder (testing::unicodeName);
-    const auto file = folder.path / pathFromUtf8 ("new folder") / "api.json";
+    const auto file = folder.path / pathFromUtf8 ("new folder") / pathFromUtf8 ("api.json");
     const auto info = thisProcess();
 
     REQUIRE (api::writeTokenFile (file, info).empty());
@@ -79,7 +79,7 @@ TEST_CASE ("the token file is written, read back and removed")
 TEST_CASE ("a running instance is spotted, and a file left by a crash isn't one")
 {
     const testing::TemporaryFolder folder (testing::unicodeName);
-    const auto file = folder.path / "api.json";
+    const auto file = folder.path / pathFromUtf8 ("api.json");
 
     CHECK_FALSE (api::runningInstance (file).has_value()); // no file
 
@@ -100,7 +100,7 @@ TEST_CASE ("a running instance is spotted, and a file left by a crash isn't one"
 TEST_CASE ("a file that isn't a token file is ignored")
 {
     const testing::TemporaryFolder folder (testing::unicodeName);
-    const auto file = folder.path / "api.json";
+    const auto file = folder.path / pathFromUtf8 ("api.json");
 
     for (const auto* text : { "", "not json", "{}", R"({"port": "46253", "token": "x", "pid": 1, "program": "p"})" })
     {
