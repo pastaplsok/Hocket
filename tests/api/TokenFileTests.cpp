@@ -97,6 +97,36 @@ TEST_CASE ("a running instance is spotted, and a file left by a crash isn't one"
     CHECK_FALSE (api::runningInstance (file).has_value());
 }
 
+TEST_CASE ("the instance lock sits next to the token file")
+{
+    const testing::TemporaryFolder folder (testing::unicodeName);
+    CHECK (api::instanceLockFile (folder.path / pathFromUtf8 ("api.json")) == folder.path / pathFromUtf8 ("api.lock"));
+}
+
+TEST_CASE ("a file lock has one holder at a time, and is free again once let go")
+{
+    const testing::TemporaryFolder folder (testing::unicodeName);
+    const auto file = folder.path / pathFromUtf8 ("api.lock");
+
+    auto first = platform::FileLock::acquire (file);
+    REQUIRE (first.has_value());
+    CHECK (std::filesystem::exists (file));
+    CHECK_FALSE (platform::FileLock::acquire (file).has_value());
+
+   #ifdef _WIN32
+    CHECK_FALSE (readTextFile (file).has_value()); // nothing else can even read it
+   #endif
+
+    // Moving it keeps it held; letting go of the last holder frees it.
+    auto moved = std::move (first);
+    CHECK_FALSE (platform::FileLock::acquire (file).has_value());
+    moved.reset();
+    CHECK (platform::FileLock::acquire (file).has_value());
+
+    // No folder, no lock: it doesn't make one.
+    CHECK_FALSE (platform::FileLock::acquire (folder.path / pathFromUtf8 ("missing") / pathFromUtf8 ("api.lock")).has_value());
+}
+
 TEST_CASE ("a file that isn't a token file is ignored")
 {
     const testing::TemporaryFolder folder (testing::unicodeName);

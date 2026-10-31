@@ -116,4 +116,11 @@ std::optional<ApiInfo> runningInstance (const std::filesystem::path& file)
 
     return info;
 }
+
+std::filesystem::path instanceLockFile (const std::filesystem::path& tokenFile)
+{
+    auto lockFile = tokenFile;
+    lockFile.replace_extension (pathFromUtf8 (".lock"));
+    return lockFile;
+}
 }

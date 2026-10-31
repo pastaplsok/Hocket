@@ -15,6 +15,7 @@
 #include <io.h>
 
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 namespace hocket::platform
@@ -131,6 +132,42 @@ std::optional<std::filesystem::path> localAppDataFolder()
 
     CoTaskMemFree (folder);
     return path;
+}
+
+std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)
+{
+    // No sharing at all: while it's open here, any other open fails. Windows
+    // closes it when the process ends, however it ends.
+    const auto held = CreateFileW (file.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    if (held == INVALID_HANDLE_VALUE)
+        return {};
+
+    return FileLock (reinterpret_cast<std::intptr_t> (held));
+}
+
+FileLock::FileLock (FileLock&& other) noexcept : handle (std::exchange (other.handle, none)) {}
+
+FileLock& FileLock::operator= (FileLock&& other) noexcept
+{
+    if (this != &other)
+    {
+        release();
+        handle = std::exchange (other.handle, none);
+    }
+
+    return *this;
+}
+
+FileLock::~FileLock()
+{
+    release();
+}
+
+void FileLock::release()
+{
+    if (handle != none)
+        CloseHandle (reinterpret_cast<HANDLE> (std::exchange (handle, none)));
 }
 
 bool isTcpPortFree (int port)

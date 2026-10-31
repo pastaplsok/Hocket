@@ -228,12 +228,36 @@ namespace
             return 1;
         }
 
-        if (const auto running = hocket::api::runningInstance (*tokenFile))
+        const auto reportRunning = [&tokenFile]
         {
-            std::cerr << "another Hocket is already running (" << running->program << ", process " << running->processId
-                      << ", API on port " << running->port << "); stop it first\n";
+            if (const auto running = hocket::api::runningInstance (*tokenFile))
+            {
+                std::cerr << "another Hocket is already running (" << running->program << ", process " << running->processId
+                          << ", API on port " << running->port << "); stop it first\n";
+                return true;
+            }
+
+            return false;
+        };
+
+        // Held until --play ends, so another --play starting now can't also
+        // find none running. Taken first: the checks below take seconds.
+        std::error_code folderError;
+        std::filesystem::create_directories (tokenFile->parent_path(), folderError);
+        const auto lockFile = hocket::api::instanceLockFile (*tokenFile);
+        const auto instanceLock = hocket::platform::FileLock::acquire (lockFile);
+
+        if (! instanceLock)
+        {
+            if (! reportRunning())
+                std::cerr << "another Hocket is starting (it holds " << hocket::utf8FromPath (lockFile) << "); stop it first\n";
+
             return 1;
         }
+
+        // A Hocket without the lock (an older build) still writes the token file.
+        if (reportRunning())
+            return 1;
 
         // Opens the device used last time, or the system default. Tracktion
         // keeps its settings in %APPDATA%\Hocket\Settings.xml.
