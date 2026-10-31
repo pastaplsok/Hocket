@@ -18,6 +18,7 @@ namespace
     constexpr int invalidRequest = -32600;
     constexpr int methodNotFound = -32601;
     constexpr int invalidParams = -32602;
+    constexpr int internalErrorCode = -32603;
     constexpr int notAuthenticated = -32001;
     constexpr int differentBuild = -32002;
 
@@ -171,6 +172,48 @@ void Handler::connectionOpened (int connectionId)
 }
 
 Reply Handler::handleMessage (int connectionId, std::string_view message)
+{
+    // It runs on the message thread, where an exception would end Hocket, music and all.
+    try
+    {
+        return handleRequest (connectionId, message);
+    }
+    catch (const std::exception& error)
+    {
+        return internalError (connectionId, message, error.what());
+    }
+    catch (...)
+    {
+        return internalError (connectionId, message, "an exception that isn't a std::exception");
+    }
+}
+
+Reply Handler::internalError (int connectionId, std::string_view message, const std::string& what)
+{
+    // The request's ID, if it has a usable one.
+    const auto request = Json::parse (message, nullptr, false);
+    const auto id = request.is_object() && request.contains ("id") && (request.at ("id").is_string() || request.at ("id").is_number_integer())
+                      ? request.at ("id")
+                      : Json();
+
+    // Before hello, the connection's state is unclear, so it's closed and the client starts again.
+    const auto connection = connections.find (connectionId);
+    const auto helloDone = connection != connections.end() && connection->second.has_value();
+
+    try
+    {
+        log ("internal error: " + what);
+    }
+    catch (...)
+    {
+    }
+
+    return { errorReply (id, internalErrorCode, "Hocket hit an internal error while handling this request (" + what
+                                                    + "), so it may or may not have been carried out; check history before trying again"),
+             ! helloDone };
+}
+
+Reply Handler::handleRequest (int connectionId, std::string_view message)
 {
     const auto connection = connections.find (connectionId);
     assert (connection != connections.end());

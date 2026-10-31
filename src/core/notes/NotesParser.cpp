@@ -60,9 +60,10 @@ namespace
         return ! text.empty() && std::ranges::all_of (text, [] (char c) { return c >= '0' && c <= '9'; });
     }
 
+    // "cc74", "pb", "at" (channel aftertouch): SPEC §5
     bool looksLikeController (std::string_view text)
     {
-        return text == "pb" || (text.starts_with ("cc") && isDigits (text.substr (2)));
+        return text == "pb" || text == "at" || (text.starts_with ("cc") && isDigits (text.substr (2)));
     }
 
     // e.g. "c2", "f#4", "bb3": a note name with a lowercase letter
@@ -262,6 +263,10 @@ namespace
 
             const auto bars = isDigits (number) && number.size() <= 6 ? std::stoi (std::string (number)) : 0;
 
+            if (isDigits (number) && (number.size() > 6 || bars > maxLengthInBars))
+                return error (lineNumber, value.column, quoted (value.text) + " is too long: a clip is at most "
+                                                            + std::to_string (maxLengthInBars) + " bars, e.g. '@length 16bars'");
+
             if (bars < 1)
                 return error (lineNumber, value.column, quoted (value.text) + " isn't a valid @length: Milestone 0 clip lengths are "
                                                             "a whole number of bars, e.g. '@length 4bars' or '@length 1bar'");
@@ -378,7 +383,7 @@ namespace
         {
             if (looksLikeController (field.text))
             {
-                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb') aren't supported yet in Milestone 0; only note lines like ")
+                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb', 'at') aren't supported yet in Milestone 0; only note lines like ")
                                                      + noteLineExample);
                 return false;
             }
@@ -421,7 +426,8 @@ namespace
                 for (const auto& note : clip.notes)
                     lastStart = std::max (lastStart, note.start);
 
-                clip.lengthInBars = static_cast<int> (lastStart / ticksPerBar + 1);
+                // Notes past the longest clip are reported below.
+                clip.lengthInBars = static_cast<int> (std::min<Ticks> (lastStart / ticksPerBar + 1, maxLengthInBars));
             }
 
             const auto clipEnd = clip.lengthInBars * ticksPerBar;
@@ -434,7 +440,11 @@ namespace
                 const auto name = formatPitch (note.pitch, note.spelling);
                 const auto position = formatPosition (note.start, meter);
 
-                if (note.start >= clipEnd)
+                if (note.start >= maxLengthInBars * ticksPerBar)
+                    error (source.line, source.positionColumn,
+                           name + " at " + position + " is past bar " + std::to_string (maxLengthInBars) + ": a clip is at most "
+                               + std::to_string (maxLengthInBars) + " bars long, so move the note");
+                else if (note.start >= clipEnd)
                     error (source.line, source.positionColumn,
                            name + " at " + position + " starts at or after the end of the clip (@length "
                                + std::to_string (clip.lengthInBars) + (clip.lengthInBars == 1 ? "bar" : "bars")

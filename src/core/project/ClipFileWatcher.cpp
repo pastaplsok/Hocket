@@ -36,8 +36,14 @@ std::vector<ClipFileWatcher::Change> ClipFileWatcher::poll (Clock::time_point no
 
         if (file.changedAt && now - *file.changedAt >= settleTime)
         {
+            auto text = stamp.exists ? readTextFile (file.path) : std::nullopt;
+
+            // An editor may still be holding the file: try again on the next poll, for a while.
+            if (! text && stamp.exists && now - *file.changedAt < settleTime + readRetryTime)
+                continue;
+
             file.changedAt.reset();
-            changes.push_back ({ file.clipId, file.file, stamp.exists ? readTextFile (file.path) : std::nullopt });
+            changes.push_back ({ file.clipId, file.file, std::move (text) });
         }
     }
 

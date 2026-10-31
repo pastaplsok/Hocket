@@ -12,7 +12,9 @@ so it makes no sound. What it checks:
     work, history names each author (Claude, and Lee through --watch), and Claude's undo
     refuses Lee's change;
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
-  - Ctrl+C stops --play cleanly, and the driver's xrun count, where it reports one, is 0.
+  - Ctrl+C stops --play cleanly (exit code 0, its "stopped" line, the token file removed), and
+    the driver's xrun count, where it reports one, is 0. JUCE's count of late audio callbacks is
+    a note. AcceptanceChecks.ps1 makes these results, and tests/acceptance tests it.
 Hearing the changes, and hearing no clicks or gaps, is the part left for a person.
 
 Run it from a PowerShell window, after building Release:
@@ -52,15 +54,21 @@ $engineTests = Join-Path $build 'tests\engine\Release\hocket_engine_tests.exe'
 $tokenFile = Join-Path $env:LOCALAPPDATA 'Hocket\api.json'
 $results = New-Object System.Collections.Generic.List[object]
 
+. (Join-Path $PSScriptRoot 'AcceptanceChecks.ps1')
+
+function Write-Results ($NewResults) {
+    foreach ($result in @($NewResults)) {
+        $results.Add($result)
+        Write-Host "[$($result.Result)] $($result.Check)$(if ($result.Detail) { ": $($result.Detail)" })"
+    }
+}
+
 function Add-Result ([string] $Check, [bool] $Passed, [string] $Detail) {
-    $results.Add([pscustomobject] @{ Check = $Check; Result = $(if ($Passed) { 'PASS' } else { 'FAIL' }); Detail = $Detail })
-    $mark = if ($Passed) { 'PASS' } else { 'FAIL' }
-    Write-Host "[$mark] $Check$(if ($Detail) { ": $Detail" })"
+    Write-Results (New-Check $Check $Passed $Detail)
 }
 
 function Add-Note ([string] $Check, [string] $Detail) {
-    $results.Add([pscustomobject] @{ Check = $Check; Result = 'NOTE'; Detail = $Detail })
-    Write-Host "[NOTE] ${Check}: $Detail"
+    Write-Results (New-Result $Check 'NOTE' $Detail)
 }
 
 function Find-CMakeTool ([string] $Name) {
@@ -269,26 +277,23 @@ finally {
     }
 
     #--------------------------------------------------------------------------
+    # $play is the cmd.exe running --play, so its exit code is --play's.
+    $howItEnded = 'already-exited'
+
     if (-not $play.HasExited) {
         $ctrlC = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-CtrlC.ps1'), $play.Id `
                                            -WindowStyle Hidden -Wait -PassThru
+        $howItEnded = 'ctrl-c'
+
         if (-not $play.WaitForExit(15000)) {
             $play.Kill()
-            Add-Result '--play stops cleanly on Ctrl+C' $false "it didn't stop (Send-CtrlC exit code $($ctrlC.ExitCode)), so it was killed"
+            $howItEnded = 'killed'
+            Write-Host "Send-CtrlC's exit code was $($ctrlC.ExitCode)"
         }
     }
 
-    $stopped = if (Test-Path $playLog) { (Select-String -Path $playLog -Pattern '^stopped' | Select-Object -Last 1).Line } else { $null }
-    if ($stopped) {
-        Add-Result '--play stops cleanly on Ctrl+C' (-not (Test-Path $tokenFile)) "$stopped; token file removed: $(-not (Test-Path $tokenFile))"
-
-        if ($stopped -match 'reported (\d+) xrun') {
-            Add-Result 'No xruns' ([int] $Matches[1] -eq 0) $stopped
-        }
-        else {
-            Add-Note 'Xruns' "this driver doesn't report them (WASAPI doesn't; ASIO drivers usually do)"
-        }
-    }
+    $play.WaitForExit()
+    Write-Results (Get-StopResults -PlayLog $playLog -HowItEnded $howItEnded -ExitCode $play.ExitCode -TokenFileLeft (Test-Path $tokenFile))
 }
 
 #==============================================================================

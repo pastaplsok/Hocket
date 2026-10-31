@@ -2,7 +2,9 @@
 # Engine (SPEC §3.3), and playback.
 add_library(hocket_engine STATIC
     EditSync.cpp
-    EditSync.h)
+    EditSync.h
+    PlaybackDevice.cpp
+    PlaybackDevice.h)
 
 target_link_libraries(hocket_engine
     PUBLIC

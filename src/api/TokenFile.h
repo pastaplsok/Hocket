@@ -42,4 +42,10 @@ namespace hocket::api
     // What the file says, if the program it names is still running. A file left
     // behind by a crash doesn't count.
     std::optional<ApiInfo> runningInstance (const std::filesystem::path& file);
+
+    // Next to the token file: api.lock for api.json. Only one DAW serves the API
+    // at a time (SPEC §6.3), and it holds this (platform::FileLock) from before
+    // it looks for another one until it exits, so two that start together
+    // can't both find none.
+    std::filesystem::path instanceLockFile (const std::filesystem::path& tokenFile);
 }

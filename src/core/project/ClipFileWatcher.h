@@ -29,11 +29,15 @@ namespace hocket::project
 
         static constexpr Clock::duration defaultSettleTime = std::chrono::milliseconds (150);
 
+        // How long to keep trying a settled file that can't be read (an editor
+        // may still hold it) before reporting it as unreadable.
+        static constexpr Clock::duration readRetryTime = std::chrono::seconds (2);
+
         struct Change
         {
             std::string clipId;
             std::string file;                // relative to the project folder, e.g. "clips/bass.notes"
-            std::optional<std::string> text; // nullopt if the file is gone or can't be read
+            std::optional<std::string> text; // nullopt if the file is gone, or still can't be read after readRetryTime
         };
 
         // Watches every clip file in the project. What's on disk now is the

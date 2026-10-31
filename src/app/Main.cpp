@@ -12,9 +12,11 @@
 #include "api/TokenFile.h"
 #include "core/Paths.h"
 #include "core/commands/CommandBus.h"
+#include "core/commands/WatchedSaves.h"
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "engine/EditSync.h"
+#include "engine/PlaybackDevice.h"
 #include "platform/Platform.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -59,11 +61,6 @@ namespace
                "                    as a write_clip, so it can be undone like any other edit\n"
                "  --user <name>     your name in the history and in messages to AI clients, e.g. \"was\n"
                "                    made by Lee, not Claude\". Default: user\n";
-    }
-
-    juce::String juceString (const std::string& utf8)
-    {
-        return juce::String::fromUTF8 (utf8.data(), static_cast<int> (utf8.size()));
     }
 
     int checkProject (const std::string& folder)
@@ -151,67 +148,6 @@ namespace
         return options;
     }
 
-    std::string quotedList (const juce::StringArray& names)
-    {
-        std::string list;
-
-        for (const auto& name : names)
-            list += (list.empty() ? "'" : ", '") + name.toStdString() + "'";
-
-        return list.empty() ? "(none)" : list;
-    }
-
-    // Switches to the driver and device asked for. With neither, it keeps what
-    // Tracktion opened: the device used last time (from its settings file), or
-    // the system default. Returns an error, or an empty string.
-    std::string openDevice (juce::AudioDeviceManager& devices, const PlayOptions& options)
-    {
-        if (options.driver.empty() && options.device.empty())
-            return {};
-
-        juce::AudioIODeviceType* type = nullptr;
-        juce::StringArray typeNames;
-
-        for (auto* candidate : devices.getAvailableDeviceTypes())
-        {
-            candidate->scanForDevices();
-            typeNames.add (candidate->getTypeName());
-
-            const auto matches = options.driver.empty() ? candidate->getDeviceNames (false).contains (juceString (options.device))
-                                                        : candidate->getTypeName() == juceString (options.driver);
-            if (matches && type == nullptr)
-                type = candidate;
-        }
-
-        if (type == nullptr)
-            return options.driver.empty() ? "no driver has an output device called '" + options.device + "'; --list-devices lists them"
-                                          : "there's no driver called '" + options.driver + "'; the drivers are " + quotedList (typeNames);
-
-        const auto deviceNames = type->getDeviceNames (false);
-        const auto deviceName = options.device.empty() ? deviceNames[type->getDefaultDeviceIndex (false)] : juceString (options.device);
-
-        if (! deviceNames.contains (deviceName))
-            return type->getTypeName().toStdString() + " has no output device called '" + options.device + "'; its output devices are "
-                 + quotedList (deviceNames);
-
-        if (devices.getCurrentAudioDeviceType() != type->getTypeName())
-            devices.setCurrentAudioDeviceType (type->getTypeName(), true);
-
-        auto setup = devices.getAudioDeviceSetup();
-
-        if (setup.outputDeviceName != deviceName || devices.getCurrentAudioDevice() == nullptr)
-        {
-            setup.outputDeviceName = deviceName;
-            setup.inputDeviceName = {};
-            setup.useDefaultOutputChannels = true;
-
-            if (const auto error = devices.setAudioDeviceSetup (setup, true); error.isNotEmpty())
-                return "couldn't open " + type->getTypeName().toStdString() + " device '" + deviceName.toStdString() + "': " + error.toStdString();
-        }
-
-        return {};
-    }
-
     // Deletes the token file when --play ends, unless another instance has replaced it since.
     struct TokenFileGuard
     {
@@ -229,10 +165,13 @@ namespace
     public:
         PlayLoop (hocket::commands::CommandBus& commandBus, hocket::api::Handler& apiHandler, const std::filesystem::path& folder, bool watch,
                   hocket::commands::Author localUser)
-            : bus (commandBus), api (apiHandler), user (std::move (localUser))
+            : api (apiHandler)
         {
             if (watch)
-                watcher.emplace (folder, bus.project());
+            {
+                watcher.emplace (folder, commandBus.project());
+                saves.emplace (commandBus, std::move (localUser));
+            }
 
             startTimer (50);
         }
@@ -240,10 +179,9 @@ namespace
         ~PlayLoop() override { stopTimer(); }
 
     private:
-        hocket::commands::CommandBus& bus;
         hocket::api::Handler& api;
-        hocket::commands::Author user;
         std::optional<hocket::project::ClipFileWatcher> watcher;
+        std::optional<hocket::commands::WatchedSaves> saves;
 
         void timerCallback() override
         {
@@ -254,8 +192,20 @@ namespace
                 return;
             }
 
-            api.checkIdle();
+            // An exception here would end --play, music and all, so it's reported instead.
+            try
+            {
+                api.checkIdle();
+                pollWatcher();
+            }
+            catch (const std::exception& error)
+            {
+                std::cerr << "internal error: " << error.what() << std::endl;
+            }
+        }
 
+        void pollWatcher()
+        {
             if (! watcher)
                 return;
 
@@ -267,8 +217,11 @@ namespace
                     continue;
                 }
 
-                const auto result = bus.execute (hocket::commands::WriteClip { change.clipId, *change.text }, user);
-                (result.ok ? std::cout : std::cerr) << change.file << ": " << result.message << std::endl;
+                const auto saved = saves->save (change.clipId, *change.text);
+                (saved.result.ok ? std::cout : std::cerr) << change.file << ": " << saved.result.message << std::endl;
+
+                if (saved.warning)
+                    std::cerr << change.file << ": " << *saved.warning << std::endl;
             }
         }
     };
@@ -293,27 +246,50 @@ namespace
             return 1;
         }
 
-        if (const auto running = hocket::api::runningInstance (*tokenFile))
+        const auto reportRunning = [&tokenFile]
         {
-            std::cerr << "another Hocket is already running (" << running->program << ", process " << running->processId
-                      << ", API on port " << running->port << "); stop it first\n";
+            if (const auto running = hocket::api::runningInstance (*tokenFile))
+            {
+                std::cerr << "another Hocket is already running (" << running->program << ", process " << running->processId
+                          << ", API on port " << running->port << "); stop it first\n";
+                return true;
+            }
+
+            return false;
+        };
+
+        // Held until --play ends, so another --play starting now can't also
+        // find none running. Taken first: the checks below take seconds.
+        std::error_code folderError;
+        std::filesystem::create_directories (tokenFile->parent_path(), folderError);
+        const auto lockFile = hocket::api::instanceLockFile (*tokenFile);
+        const auto instanceLock = hocket::platform::FileLock::acquire (lockFile);
+
+        if (! instanceLock)
+        {
+            if (! reportRunning())
+                std::cerr << "another Hocket is starting (it holds " << hocket::utf8FromPath (lockFile) << "); stop it first\n";
+
             return 1;
         }
+
+        // A Hocket without the lock (an older build) still writes the token file.
+        if (reportRunning())
+            return 1;
 
         // Opens the device used last time, or the system default. Tracktion
         // keeps its settings in %APPDATA%\Hocket\Settings.xml.
         tracktion::Engine engine { "Hocket", nullptr, std::make_unique<PlayBehaviour>() };
         auto& devices = engine.getDeviceManager().deviceManager;
 
-        if (const auto error = openDevice (devices, options); ! error.empty())
+        // Without --driver and --device, it keeps what Tracktion opened.
+        if (const auto error = hocket::engine::openDevice (devices, options.driver, options.device); ! error.empty())
         {
             std::cerr << error << "\n";
             return 1;
         }
 
-        auto* device = devices.getCurrentAudioDevice();
-
-        if (device == nullptr)
+        if (devices.getCurrentAudioDevice() == nullptr)
         {
             std::cerr << "no audio device could be opened; pick one with --driver and --device (--list-devices lists them)\n";
             return 1;
@@ -330,11 +306,8 @@ namespace
         engine.getDeviceManager().rescanMidiDeviceList();
         juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
 
-        const auto sampleRate = device->getCurrentSampleRate();
-        const auto bufferSize = device->getCurrentBufferSizeSamples();
-        std::cout << "Playing on " << device->getTypeName().toStdString() << ": " << device->getName().toStdString() << ", "
-                  << sampleRate << " Hz, " << bufferSize << " samples ("
-                  << juce::String (1000.0 * bufferSize / sampleRate, 1).toStdString() << " ms)\n";
+        const hocket::engine::PlaybackDevice playbackDevice (devices);
+        std::cout << "Playing on " << playbackDevice.description() << "\n";
 
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
@@ -395,12 +368,7 @@ namespace
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 
-        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message;
-
-        if (const auto xruns = device->getXRunCount(); xruns >= 0)
-            std::cout << "; the driver reported " << xruns << (xruns == 1 ? " xrun" : " xruns");
-
-        std::cout << "\n";
+        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message << "; " << playbackDevice.xrunReport() << "\n";
         return 0;
     }
 
@@ -421,20 +389,31 @@ int main (int argc, char* argv[])
     // Tracktion needs JUCE's message manager, even without a GUI.
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
 
-    if (arguments.size() == 2)
+    // Say what went wrong rather than end with no message (e.g. if Tracktion
+    // can't create the Edit). Exceptions in the message loop's callbacks are
+    // caught where they run (PlayLoop, the API's Handler and Server).
+    try
     {
-        if (arguments[1] == "--list-devices")
-            return listDevices();
+        if (arguments.size() == 2)
+        {
+            if (arguments[1] == "--list-devices")
+                return listDevices();
 
-        if (arguments[1] == "--version")
-            return printVersion();
+            if (arguments[1] == "--version")
+                return printVersion();
+        }
+
+        if (arguments.size() == 3 && arguments[1] == "--check")
+            return checkProject (arguments[2]);
+
+        if (const auto options = parsePlayOptions (arguments))
+            return playProject (*options);
     }
-
-    if (arguments.size() == 3 && arguments[1] == "--check")
-        return checkProject (arguments[2]);
-
-    if (const auto options = parsePlayOptions (arguments))
-        return playProject (*options);
+    catch (const std::exception& error)
+    {
+        std::cerr << "hocket-headless stopped on an internal error: " << error.what() << "\n";
+        return 1;
+    }
 
     printUsage (std::cerr);
     return 1;

@@ -21,8 +21,9 @@ namespace
     // reply. With this, the connection is closed instead.
     constexpr int sendTimeoutSeconds = 2;
 
-    // WebSocket close code 1008: policy violation.
+    // WebSocket close codes 1008, policy violation, and 1011, internal error.
     constexpr std::uint16_t refusedCloseCode = 1008;
+    constexpr std::uint16_t internalErrorCloseCode = 1011;
 
     // Any web page can open a WebSocket to 127.0.0.1, and browsers always send
     // the page's origin: "https://example.com", "null" for a local file, or an
@@ -51,6 +52,8 @@ struct Server::Connections
         handler.connectionOpened (id);
     }
 
+    // These run on the message thread, where an exception would end the
+    // program. The handler answers its own; anything else closes the connection.
     void received (int id, const std::string& text)
     {
         const auto connection = sockets.find (id);
@@ -58,22 +61,52 @@ struct Server::Connections
         if (connection == sockets.end())
             return;
 
-        const auto reply = handler.handleMessage (id, text);
+        const auto socket = connection->second.lock();
 
-        if (const auto socket = connection->second.lock())
+        try
         {
-            if (! reply.text.empty())
-                socket->sendText (reply.text);
+            const auto reply = handler.handleMessage (id, text);
 
-            if (reply.close)
-                socket->close (refusedCloseCode, "refused; the last message says why");
+            if (socket != nullptr)
+            {
+                if (! reply.text.empty())
+                    socket->sendText (reply.text);
+
+                if (reply.close)
+                    socket->close (refusedCloseCode, "refused; the last message says why");
+            }
+        }
+        catch (...)
+        {
+            internalError ("answering a message", socket);
         }
     }
 
     void closed (int id)
     {
-        if (sockets.erase (id) > 0)
-            handler.connectionClosed (id);
+        try
+        {
+            if (sockets.erase (id) > 0)
+                handler.connectionClosed (id);
+        }
+        catch (...)
+        {
+            internalError ("closing a connection", nullptr);
+        }
+    }
+
+    void internalError (const std::string& during, const std::shared_ptr<ix::WebSocket>& socket) const
+    {
+        try
+        {
+            write ("internal error while " + during);
+
+            if (socket != nullptr)
+                socket->close (internalErrorCloseCode, "Hocket hit an internal error");
+        }
+        catch (...)
+        {
+        }
     }
 
     void write (const std::string& message) const

@@ -47,5 +47,6 @@ namespace hocket::engine
 
         commands::Result play() override;
         commands::Result stop() override;
+        bool isPlaying() const override;
     };
 }

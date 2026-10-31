@@ -1,4 +1,5 @@
 #include "core/project/ClipFileWatcher.h"
+#include "platform/Platform.h"
 
 #include "common/TemporaryFolder.h"
 
@@ -99,6 +100,51 @@ TEST_CASE ("the clip file watcher sees a save through a temporary file and a ren
     REQUIRE (changes.size() == 1);
     CHECK (changes[0].text == twoNotes);
 }
+
+#ifdef _WIN32
+TEST_CASE ("the clip file watcher tries again while a saved file can't be read yet")
+{
+    DemoProject demo;
+    const auto start = ClipFileWatcher::Clock::now();
+    ClipFileWatcher watcher (demo.folder, demo.project);
+
+    writeFile (demo.bass, twoNotes);
+    CHECK (watcher.poll (start).empty());
+
+    {
+        // As an editor might, still holding the file once it has settled.
+        // On Windows, nothing else can read a file held like this.
+        const auto held = platform::FileLock::acquire (demo.bass);
+        REQUIRE (held.has_value());
+
+        CHECK (watcher.poll (start + 200ms).empty());
+        CHECK (watcher.poll (start + 1s).empty());
+    }
+
+    const auto changes = watcher.poll (start + 1100ms);
+    REQUIRE (changes.size() == 1);
+    CHECK (changes[0].text == twoNotes);
+}
+
+TEST_CASE ("the clip file watcher gives up on a file it still can't read after a while")
+{
+    DemoProject demo;
+    const auto start = ClipFileWatcher::Clock::now();
+    ClipFileWatcher watcher (demo.folder, demo.project);
+
+    writeFile (demo.bass, twoNotes);
+    CHECK (watcher.poll (start).empty());
+
+    const auto held = platform::FileLock::acquire (demo.bass);
+    REQUIRE (held.has_value());
+    CHECK (watcher.poll (start + 1s).empty());
+
+    const auto changes = watcher.poll (start + ClipFileWatcher::defaultSettleTime + ClipFileWatcher::readRetryTime);
+    REQUIRE (changes.size() == 1);
+    CHECK_FALSE (changes[0].text);
+    CHECK (watcher.poll (start + 10s).empty()); // reported once
+}
+#endif
 
 TEST_CASE ("the clip file watcher reports a deleted clip file with no text")
 {

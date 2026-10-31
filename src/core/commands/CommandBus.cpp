@@ -1,12 +1,15 @@
 #include "core/commands/CommandBus.h"
 #include "core/notes/NotesSyntax.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace hocket::commands
 {
 namespace
 {
+    constexpr std::size_t maxTransactionNameLength = 100;
+
     std::string singleQuoted (std::string_view text)
     {
         return "'" + std::string (text) + "'";
@@ -145,7 +148,10 @@ Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits,
                             + ". Clips on a track can't overlap, so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
     }
 
-    if (*parsed.clip == clip->content)
+    // Compared in canonical form: the parser keeps notes and comments where the
+    // text had them, so two texts that write out the same can parse differently,
+    // e.g. a client sending back read_clip's text for a clip loaded from looser text.
+    if (notes::write (*parsed.clip, meter) == notes::write (clip->content, meter))
         return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
 
     description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
@@ -192,6 +198,13 @@ Result CommandBus::beginTransaction (const Author& author, const std::string& na
 
     if (name.empty())
         return { false, "a transaction needs a name that says what it does, e.g. \"wrote bridge\"; it becomes the undo step's name" };
+
+    // The name goes into the history, which tools list one entry per line, and the log.
+    const auto hasControlCharacter = std::ranges::any_of (name, [] (unsigned char c) { return c < 0x20 || c == 0x7f; });
+
+    if (hasControlCharacter || name.size() > maxTransactionNameLength)
+        return { false, "a transaction's name is one line of text, 1 to " + std::to_string (maxTransactionNameLength)
+                            + " bytes with no control characters, e.g. \"wrote bridge\"; it becomes the history entry's name" };
 
     if (transaction)
     {
@@ -337,6 +350,22 @@ std::vector<HistoryEntry> CommandBus::history() const
     return entries;
 }
 
+std::vector<HistoryEntry> CommandBus::changesTo (std::string_view clipId) const
+{
+    const auto changesClip = [clipId] (const Edit& edit)
+    {
+        return std::visit ([clipId] (const SetClipContent& set) { return set.clipId == clipId; }, edit);
+    };
+
+    std::vector<HistoryEntry> entries;
+
+    for (auto i = done.size(); i-- > 0;)
+        if (std::ranges::any_of (done[i].forward, changesClip))
+            entries.push_back (done[i].info);
+
+    return entries;
+}
+
 std::optional<OpenTransaction> CommandBus::openTransaction() const
 {
     if (! transaction)
@@ -359,6 +388,14 @@ void CommandBus::removeListener (int listenerId)
 void CommandBus::setTransport (Transport* newTransport)
 {
     transport = newTransport;
+}
+
+std::optional<bool> CommandBus::isPlaying() const
+{
+    if (transport == nullptr)
+        return {};
+
+    return transport->isPlaying();
 }
 
 void CommandBus::notify (const Change& change)

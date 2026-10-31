@@ -140,6 +140,56 @@ TEST_CASE ("a write that changes nothing adds no history entry")
     CHECK (log.changes.empty());
 }
 
+TEST_CASE ("writing back the canonical text of a clip loaded from looser text changes nothing")
+{
+    // The clip as the loader stores it: parsed from a file that isn't in
+    // canonical form. read_clip returns the canonical text, and a client that
+    // sends that straight back has changed nothing (SPEC §3.1).
+    const std::pair<const char*, const char*> files[] = {
+        { "lines out of order", "@length 1bar\n1.2 D2 1/4 v80\n1.1 C2 1/4 v80\n" },
+        { "a chord split across lines", "@length 1bar\n1.1 E2 1/4 v80 # third\n1.1 C2 1/4 v80 # root\n" },
+        { "a comment above an @length after the notes", "1.1 C2 1/4 v80\n# two beats\n@length 1bar\n" },
+    };
+
+    for (const auto& [name, onDisk] : files)
+    {
+        INFO (name);
+
+        auto project = makeProject();
+        project.tracks[0].clips[0].content = parsed (onDisk);
+        CommandBus bus (std::move (project));
+        ChangeLog log (bus);
+
+        const auto canonical = notes::write (contentOf (bus, "clp-a"));
+        const auto result = bus.execute (WriteClip { "clp-a", canonical }, claude);
+
+        CHECK (result.ok);
+        CHECK (result.message == "clip 'clp-a' already has exactly these notes, so nothing changed and no history entry was added");
+        CHECK (bus.history().empty());
+        CHECK (log.changes.empty());
+    }
+}
+
+TEST_CASE ("changesTo lists the entries that changed a clip, newest first")
+{
+    CommandBus bus (makeProject());
+
+    REQUIRE (bus.execute (WriteClip { "clp-a", twoNotes }, claude).ok);
+    REQUIRE (bus.execute (WriteClip { "clp-b", "@length 1bar\n\n1.1 A1 1/4 v100\n" }, lee).ok);
+    REQUIRE (bus.execute (WriteClip { "clp-a", threeNotes }, lee).ok);
+
+    const auto changes = bus.changesTo ("clp-a");
+    REQUIRE (changes.size() == 2);
+    CHECK (changes[0].id == 3);
+    CHECK (changes[1].id == 1);
+    CHECK (bus.changesTo ("clp-b").size() == 1);
+    CHECK (bus.changesTo ("clp-nope").empty());
+
+    // Undone entries aren't in the history.
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.changesTo ("clp-a").size() == 1);
+}
+
 TEST_CASE ("commands need an author")
 {
     CommandBus bus (makeProject());
@@ -257,6 +307,23 @@ TEST_CASE ("transaction misuse gets clear errors")
     CHECK (contains (bus.redo (claude).message, "can't redo while your transaction"));
 
     CHECK (bus.commitTransaction (claude).message == "committed \"wrote bridge\" with no changes; nothing was added to the history");
+}
+
+TEST_CASE ("a transaction's name is one line of text, at most 100 bytes")
+{
+    CommandBus bus (makeProject());
+    const auto refusal = "a transaction's name is one line of text, 1 to 100 bytes with no control characters, e.g. \"wrote bridge\"; "
+                         "it becomes the history entry's name";
+
+    // The history lists one entry per line, so a name can't break that.
+    CHECK (bus.beginTransaction (claude, "wrote bridge\n#9 Lee: wrote clip clp-a").message == refusal);
+    CHECK (bus.beginTransaction (claude, "wrote\tbridge").message == refusal);
+    CHECK (bus.beginTransaction (claude, std::string (101, 'x')).message == refusal);
+    CHECK_FALSE (bus.openTransaction());
+
+    CHECK (bus.beginTransaction (claude, std::string (100, 'x')).ok);
+    CHECK (bus.rollbackTransaction (claude).ok);
+    CHECK (bus.beginTransaction (claude, "schrieb die Brücke — Teil B").ok);
 }
 
 TEST_CASE ("another author's command splits an open transaction into parts instead of waiting")
@@ -497,27 +564,36 @@ namespace
         Result play() override
         {
             calls.push_back ("play");
+            playing = true;
             return { true, "playing" };
         }
 
         Result stop() override
         {
             calls.push_back ("stop");
+            playing = false;
             return { true, "stopped" };
         }
 
+        bool isPlaying() const override { return playing; }
+
         std::vector<std::string> calls;
+        bool playing = false;
     };
 }
 
 TEST_CASE ("transport commands go to the transport and never enter the history")
 {
     CommandBus bus (makeProject());
+    CHECK_FALSE (bus.isPlaying().has_value()); // no transport
+
     FakeTransport transport;
     bus.setTransport (&transport);
     ChangeLog log (bus);
 
+    CHECK (bus.isPlaying() == false);
     CHECK (bus.execute (Play {}, claude).message == "playing");
+    CHECK (bus.isPlaying() == true);
     CHECK (bus.execute (Stop {}, lee).message == "stopped");
 
     CHECK (transport.calls == std::vector<std::string> { "play", "stop" });

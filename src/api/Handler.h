@@ -53,6 +53,9 @@ namespace hocket::api
 
         // Connection IDs are the caller's to choose, unique among open connections.
         void connectionOpened (int connectionId);
+
+        // Never throws: anything thrown while handling the message is answered
+        // as a JSON-RPC internal error (-32603), and logged.
         Reply handleMessage (int connectionId, std::string_view message);
         void connectionClosed (int connectionId);
 
@@ -75,6 +78,8 @@ namespace hocket::api
         std::map<int, std::optional<commands::Author>> connections; // nullopt until hello
         std::vector<Client> clients;
 
+        Reply handleRequest (int connectionId, std::string_view message);
+        Reply internalError (int connectionId, std::string_view message, const std::string& what);
         Client* findClient (const commands::Author& author);
         void forgetIfDone (const commands::Author& author);
         // `when` starts the note to the client ("when you disconnected"); `reason` is for the log.

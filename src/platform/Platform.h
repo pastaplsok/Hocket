@@ -39,6 +39,33 @@ namespace hocket::platform
     // %LOCALAPPDATA% on Windows. nullopt if the OS doesn't say.
     std::optional<std::filesystem::path> localAppDataFolder();
 
+    // A file held so that no other holder can take it until this one lets go
+    // or its process ends, crashes included: for "only one at a time". On
+    // Windows nothing else can open the file meanwhile, not even to read it;
+    // elsewhere it's an advisory lock (flock).
+    class FileLock
+    {
+    public:
+        // Takes the lock, creating the file if needed (but not its folder).
+        // nullopt if something else holds it, or the file can't be opened.
+        static std::optional<FileLock> acquire (const std::filesystem::path& file);
+
+        FileLock (FileLock&& other) noexcept;
+        FileLock& operator= (FileLock&& other) noexcept;
+        ~FileLock();
+
+        FileLock (const FileLock&) = delete;
+        FileLock& operator= (const FileLock&) = delete;
+
+    private:
+        static constexpr std::intptr_t none = -1;
+
+        explicit FileLock (std::intptr_t heldHandle) : handle (heldHandle) {}
+        void release();
+
+        std::intptr_t handle = none; // a HANDLE on Windows, a file descriptor elsewhere
+    };
+
     // Whether no program is listening on this TCP port, on 127.0.0.1 or on all
     // addresses. Connections left in TIME_WAIT don't count.
     //

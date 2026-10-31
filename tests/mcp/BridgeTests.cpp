@@ -40,7 +40,7 @@ namespace
     struct Fixture
     {
         testing::TemporaryFolder folder { testing::unicodeName };
-        std::filesystem::path tokenFile = folder.path / "api.json";
+        std::filesystem::path tokenFile = folder.path / pathFromUtf8 ("api.json");
         std::vector<std::string> bridgeLog;
 
         mcp::BridgeOptions options()

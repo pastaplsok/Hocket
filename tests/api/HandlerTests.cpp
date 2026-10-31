@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <set>
+#include <stdexcept>
 
 using namespace hocket;
 using Json = nlohmann::json;
@@ -328,7 +329,7 @@ TEST_CASE ("get_project_overview summarizes the project")
     auto client = fixture.connectAs ("session-1");
 
     CHECK (client.text ("get_project_overview")
-           == "Tempo 120 BPM, 4/4. The song is 2 bars long: it plays from 1.1 to 3.1 on a loop.\n"
+           == "Tempo 120 BPM, 4/4. The song is 2 bars long, from 1.1 to 3.1. There's no audio engine here, so it can't play.\n"
               "\n"
               "Tracks, in display order:\n"
               "- trk-bass \"Bass\" (midi), devices: dev-bass-synth (tracktion:4osc)\n"
@@ -344,6 +345,55 @@ TEST_CASE ("get_project_overview summarizes the project")
     const auto overview = client.text ("get_project_overview");
     CHECK (contains (overview, "History: 1 entry; the latest is #1 \"wrote bridge\" by you.\n"));
     CHECK (contains (overview, "1.1 to 2.1 (@length 1bar), 1 note"));
+}
+
+TEST_CASE ("get_project_overview says whether the song is playing")
+{
+    struct FakeTransport final : commands::Transport
+    {
+        commands::Result play() override { playing = true; return { true, "playing" }; }
+        commands::Result stop() override { playing = false; return { true, "stopped" }; }
+        bool isPlaying() const override { return playing; }
+
+        bool playing = false;
+    };
+
+    Fixture fixture;
+    FakeTransport transport;
+    fixture.bus.setTransport (&transport);
+    auto client = fixture.connectAs ("session-1");
+
+    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's stopped; transport play loops it.\n"));
+    client.call ("transport", { { "action", "play" } });
+    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's playing, on a loop.\n"));
+
+    fixture.bus.setTransport (nullptr);
+}
+
+TEST_CASE ("get_project_overview lists a track's clips in song order")
+{
+    auto project = demoProject();
+    auto& clips = project.tracks[0].clips;
+    auto later = clips[0];
+    later.id = "clp-later";
+    later.file = "clips/later.notes";
+    later.start = 4 * 3840;
+    clips.insert (clips.begin(), later); // listed first, but starts at bar 5
+
+    commands::CommandBus bus (std::move (project));
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    const auto overview = connection.text ("get_project_overview");
+    const auto first = overview.find ("clip clp-bass: 1.1");
+    const auto second = overview.find ("clip clp-later: 5.1");
+    REQUIRE (first != std::string::npos);
+    REQUIRE (second != std::string::npos);
+    CHECK (first < second);
 }
 
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")
@@ -587,4 +637,57 @@ TEST_CASE ("the idle timeout leaves the person at the DAW alone")
     fixture.now += 60min;
     fixture.handler.checkIdle();
     CHECK (fixture.bus.openTransaction().has_value());
+}
+
+TEST_CASE ("an internal error is answered as one, and the connection carries on")
+{
+    // Anything that throws while handling a request, here the clock.
+    commands::CommandBus bus { demoProject() };
+    bool failing = false;
+    std::vector<std::string> logLines;
+
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    handlerOptions.now = [&failing]
+    {
+        if (failing)
+            throw std::runtime_error ("the clock broke");
+
+        return api::Clock::time_point {};
+    };
+    handlerOptions.log = [&logLines] (const std::string& line) { logLines.push_back (line); };
+
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    failing = true;
+    const auto response = connection.request ("tools/call", { { "name", "history" } });
+    CHECK (response.at ("id") == 2);
+    CHECK (response.at ("error").at ("code") == -32603);
+    CHECK (response.at ("error").at ("message")
+           == "Hocket hit an internal error while handling this request (the clock broke), so it may or may not have been "
+              "carried out; check history before trying again");
+    CHECK_FALSE (connection.closed);
+    CHECK (contains (logLines.back(), "internal error: the clock broke"));
+
+    failing = false;
+    CHECK (connection.call ("history").at ("isError") == false);
+}
+
+TEST_CASE ("an internal error before hello closes the connection")
+{
+    commands::CommandBus bus { demoProject() };
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    handlerOptions.now = []() -> api::Clock::time_point { throw std::runtime_error ("the clock broke"); };
+
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+
+    const auto response = connection.hello();
+    CHECK (response.at ("error").at ("code") == -32603);
+    CHECK (connection.closed);
 }

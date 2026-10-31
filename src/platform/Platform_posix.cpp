@@ -3,13 +3,16 @@
 #include "core/Paths.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cstdlib>
 #include <fstream>
+#include <utility>
 
 namespace hocket::platform
 {
@@ -38,7 +41,7 @@ std::uint32_t currentProcessId()
 std::string currentProgramName()
 {
     std::error_code error;
-    return utf8FromPath (std::filesystem::read_symlink ("/proc/self/exe", error).filename());
+    return utf8FromPath (std::filesystem::read_symlink (pathFromUtf8 ("/proc/self/exe"), error).filename());
 }
 
 bool isProgramRunning (std::uint32_t processId, std::string_view programName)
@@ -48,7 +51,7 @@ bool isProgramRunning (std::uint32_t processId, std::string_view programName)
 
     // Linux names a process's program in /proc; elsewhere, trust the process ID.
     std::error_code error;
-    const auto program = std::filesystem::read_symlink ("/proc/" + std::to_string (processId) + "/exe", error);
+    const auto program = std::filesystem::read_symlink (pathFromUtf8 ("/proc/" + std::to_string (processId) + "/exe"), error);
     return error || utf8FromPath (program.filename()) == programName;
 }
 
@@ -58,9 +61,50 @@ std::optional<std::filesystem::path> localAppDataFolder()
         return pathFromUtf8 (state);
 
     if (const auto* home = std::getenv ("HOME"); home != nullptr && *home != '\0')
-        return pathFromUtf8 (home) / ".local" / "state";
+        return pathFromUtf8 (home) / pathFromUtf8 (".local/state");
 
     return {};
+}
+
+std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)
+{
+    const auto descriptor = open (file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+
+    if (descriptor < 0)
+        return {};
+
+    // Released when the descriptor closes, which the OS does when the process ends.
+    if (flock (descriptor, LOCK_EX | LOCK_NB) != 0)
+    {
+        close (descriptor);
+        return {};
+    }
+
+    return FileLock (descriptor);
+}
+
+FileLock::FileLock (FileLock&& other) noexcept : handle (std::exchange (other.handle, none)) {}
+
+FileLock& FileLock::operator= (FileLock&& other) noexcept
+{
+    if (this != &other)
+    {
+        release();
+        handle = std::exchange (other.handle, none);
+    }
+
+    return *this;
+}
+
+FileLock::~FileLock()
+{
+    release();
+}
+
+void FileLock::release()
+{
+    if (handle != none)
+        close (static_cast<int> (std::exchange (handle, none)));
 }
 
 bool isTcpPortFree (int port)

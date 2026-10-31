@@ -24,7 +24,7 @@ std::optional<std::filesystem::path> defaultTokenFilePath()
     if (! folder)
         return {};
 
-    return *folder / "Hocket" / "api.json";
+    return *folder / pathFromUtf8 ("Hocket") / pathFromUtf8 ("api.json");
 }
 
 std::string makeToken()
@@ -77,7 +77,7 @@ std::string writeTokenFile (const std::filesystem::path& file, const ApiInfo& in
         return "couldn't create the folder " + utf8FromPath (file.parent_path()) + ": " + error.message();
 
     auto temporary = file;
-    temporary += ".tmp-" + std::to_string (info.processId);
+    temporary += pathFromUtf8 (".tmp-" + std::to_string (info.processId));
 
     {
         std::ofstream out (temporary, std::ios::binary | std::ios::trunc);
@@ -115,5 +115,12 @@ std::optional<ApiInfo> runningInstance (const std::filesystem::path& file)
         return {};
 
     return info;
+}
+
+std::filesystem::path instanceLockFile (const std::filesystem::path& tokenFile)
+{
+    auto lockFile = tokenFile;
+    lockFile.replace_extension (pathFromUtf8 (".lock"));
+    return lockFile;
 }
 }

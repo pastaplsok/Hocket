@@ -29,6 +29,22 @@ TEST_CASE ("UTF-8 text and paths convert without loss")
    #endif
 }
 
+#ifdef _WIN32
+TEST_CASE ("a Windows name with an unpaired surrogate comes out as UTF-8, with U+FFFD in its place")
+{
+    // NTFS names are UTF-16 that needn't be valid: nothing types these, but
+    // some programs make them. A folder like this is a working folder like any other.
+    const std::filesystem::path path (std::wstring (L"song ") + wchar_t (0xD800) + L" mix/" + wchar_t (0xDC00) + L"a");
+
+    std::string utf8;
+    CHECK_NOTHROW (utf8 = utf8FromPath (path));
+    CHECK (utf8 == "song \xEF\xBF\xBD mix/\xEF\xBF\xBD" "a");
+
+    // A valid pair is still one character.
+    CHECK (utf8FromPath (std::filesystem::path (std::wstring { wchar_t (0xD83C), wchar_t (0xDFB5) })) == "\xF0\x9F\x8E\xB5");
+}
+#endif
+
 TEST_CASE ("a project in a folder with a non-ASCII name loads, and errors name the folder correctly")
 {
     const TemporaryFolder temporary (unicodeName);

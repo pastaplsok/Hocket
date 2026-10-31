@@ -7,6 +7,7 @@ add_executable(hocket_engine_tests
     EngineTesting.cpp
     EngineTesting.h
     LivePlaybackTests.cpp
+    PlaybackDeviceTests.cpp
     RenderTests.cpp
     StressTests.cpp)
 
