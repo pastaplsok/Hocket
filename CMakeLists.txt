@@ -22,6 +22,7 @@ include(HocketDependencies)
 option(HOCKET_BUILD_TESTS "Build Hocket's tests" ON)
 
 add_subdirectory(src)
+add_subdirectory(tools)
 
 if(HOCKET_BUILD_TESTS)
     enable_testing()

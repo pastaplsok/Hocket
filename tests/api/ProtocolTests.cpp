@@ -22,3 +22,11 @@ TEST_CASE ("begin_transaction's description gives the shared idle timeout")
     REQUIRE (begin != tools.end());
     CHECK (begin->at ("description").template get<std::string>().find ("send no requests for 10 minutes") != std::string::npos);
 }
+
+TEST_CASE ("session IDs are 32 hex digits and never repeat")
+{
+    const auto id = api::makeSessionId();
+    CHECK (id.size() == 32);
+    CHECK (std::ranges::all_of (id, [] (char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+    CHECK (api::makeSessionId() != id);
+}

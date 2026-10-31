@@ -2,8 +2,6 @@
 # Hocket's tool list itself and forwards each tool call to the running DAW's
 # WebSocket API (SPEC §6.3). No JUCE.
 add_library(hocket_bridge STATIC
-    ApiClient.cpp
-    ApiClient.h
     Bridge.cpp
     Bridge.h)
 
@@ -12,8 +10,7 @@ target_link_libraries(hocket_bridge
         hocket_api
         nlohmann_json::nlohmann_json
     PRIVATE
-        hocket_platform
-        ixwebsocket::ixwebsocket)
+        hocket_platform)
 
 hocket_enable_warnings(hocket_bridge)
 

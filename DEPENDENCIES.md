@@ -8,8 +8,8 @@ All source dependencies are git submodules under `external/`, each pinned to an 
 |---|---|---|---|
 | [JUCE](https://github.com/juce-framework/JUCE) | `7ff644f65d7daa1428c34b9738ebb5c449dc9172` (develop, after 9.0.4) | AGPLv3 | engine, app |
 | [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) | `a5e44996f5f08dfa6af5f5d02d900fb3cfa37422` (develop, 3.5.0) | GPLv3 | engine |
-| [IXWebSocket](https://github.com/machinezone/IXWebSocket) | `v12.1.0` | BSD-3-Clause | API server, MCP bridge |
-| [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | core, API server, MCP bridge |
+| [IXWebSocket](https://github.com/machinezone/IXWebSocket) | `v12.1.0` | BSD-3-Clause | API server and client (hocket-mcp, hocket-stress) |
+| [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | core, API, MCP bridge, stress client |
 | [doctest](https://github.com/doctest/doctest) | `v2.5.3` | MIT | tests |
 
 **JUCE pin.** JUCE is our own top-level submodule, pinned to the same commit Tracktion Engine's `modules/juce` submodule points at. We don't use Tracktion's nested submodule because its URL is SSH-only (`git@github.com:`), which fails for anyone without GitHub SSH keys. CMake warns at configure time if the two pins drift apart; when updating Tracktion, move JUCE to Tracktion's new pin in the same change.

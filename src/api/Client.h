@@ -1,8 +1,9 @@
 #pragma once
 
-// hocket-mcp's connection to the running DAW's WebSocket API (SPEC §6.3), as
-// blocking calls: send a request, wait for its response. IXWebSocket runs the
-// connection on a thread of its own; use this class from one thread.
+// A client's connection to the running DAW's WebSocket API (SPEC §6.3), as
+// blocking calls: send a request, wait for its response. hocket-mcp and
+// hocket-stress use it. IXWebSocket runs the connection on a thread of its
+// own; use this class from one thread.
 
 #include <nlohmann/json.hpp>
 
@@ -16,16 +17,16 @@ namespace ix
     class WebSocket;
 }
 
-namespace hocket::mcp
+namespace hocket::api
 {
-    class ApiClient
+    class Client
     {
     public:
-        ApiClient();
-        ~ApiClient();
+        Client();
+        ~Client();
 
-        ApiClient (const ApiClient&) = delete;
-        ApiClient& operator= (const ApiClient&) = delete;
+        Client (const Client&) = delete;
+        Client& operator= (const Client&) = delete;
 
         // Connects to the API on 127.0.0.1, closing any connection already open.
         // Returns an error, or an empty string.

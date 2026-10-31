@@ -1,4 +1,4 @@
-#include "mcp/ApiClient.h"
+#include "api/Client.h"
 
 #include <ixwebsocket/IXNetSystem.h>
 #include <ixwebsocket/IXWebSocket.h>
@@ -7,12 +7,12 @@
 #include <mutex>
 #include <optional>
 
-namespace hocket::mcp
+namespace hocket::api
 {
 using Json = nlohmann::json;
 
 // What IXWebSocket's thread tells the waiting thread.
-struct ApiClient::State
+struct Client::State
 {
     std::mutex mutex;
     std::condition_variable changed;
@@ -23,13 +23,13 @@ struct ApiClient::State
     std::optional<Json> response;
 };
 
-ApiClient::ApiClient()
+Client::Client()
     : state (std::make_shared<State>())
 {
     netSystemStarted = ix::initNetSystem();
 }
 
-ApiClient::~ApiClient()
+Client::~Client()
 {
     close();
 
@@ -37,7 +37,7 @@ ApiClient::~ApiClient()
         ix::uninitNetSystem();
 }
 
-std::string ApiClient::connect (int port, std::chrono::milliseconds timeout)
+std::string Client::connect (int port, std::chrono::milliseconds timeout)
 {
     close();
     state = std::make_shared<State>();
@@ -108,13 +108,13 @@ std::string ApiClient::connect (int port, std::chrono::milliseconds timeout)
     return error;
 }
 
-bool ApiClient::isOpen() const
+bool Client::isOpen() const
 {
     std::lock_guard lock (state->mutex);
     return state->opened && ! state->closed;
 }
 
-ApiClient::Response ApiClient::request (const std::string& method, const Json& params, std::chrono::milliseconds timeout)
+Client::Response Client::request (const std::string& method, const Json& params, std::chrono::milliseconds timeout)
 {
     if (! isOpen())
         return { Status::closed, {} };
@@ -144,7 +144,7 @@ ApiClient::Response ApiClient::request (const std::string& method, const Json& p
     return { state->closed ? Status::closed : Status::timedOut, {} };
 }
 
-void ApiClient::close()
+void Client::close()
 {
     // Joins IXWebSocket's thread, so call it without holding the state's lock.
     if (socket != nullptr)

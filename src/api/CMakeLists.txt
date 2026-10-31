@@ -1,7 +1,9 @@
 # hocket_api: the WebSocket API that MCP clients reach through hocket-mcp
-# (SPEC §6.3). No JUCE: the app gives the server a way to run code on its
-# message thread.
+# (SPEC §6.3), its server and its client. No JUCE: the app gives the server a
+# way to run code on its message thread.
 add_library(hocket_api STATIC
+    Client.cpp
+    Client.h
     Handler.cpp
     Handler.h
     Protocol.cpp

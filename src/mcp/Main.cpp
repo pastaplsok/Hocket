@@ -96,7 +96,7 @@ int main (int argc, char* argv[])
     hocket::mcp::BridgeOptions bridgeOptions;
     bridgeOptions.name = options->name.value_or ("");
     bridgeOptions.label = options->label ? *options->label : hocket::mcp::workingFolderName();
-    bridgeOptions.session = hocket::mcp::makeSessionId();
+    bridgeOptions.session = hocket::api::makeSessionId();
     bridgeOptions.log = writeLog;
 
     if (options->tokenFile)

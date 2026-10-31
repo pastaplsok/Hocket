@@ -1,6 +1,8 @@
 #include "api/Protocol.h"
 #include "api/Tools.h"
+#include "platform/Platform.h"
 
+#include <array>
 #include <cstdint>
 
 namespace hocket::api
@@ -29,5 +31,24 @@ std::string buildFingerprint()
         fingerprint[i] = digits[hash & 0xf];
 
     return fingerprint;
+}
+
+std::string makeSessionId()
+{
+    std::array<std::uint8_t, 16> bytes {};
+
+    if (! platform::secureRandomBytes (bytes))
+        return {};
+
+    constexpr std::string_view digits = "0123456789abcdef";
+    std::string id;
+
+    for (const auto byte : bytes)
+    {
+        id += digits[byte >> 4];
+        id += digits[byte & 0xf];
+    }
+
+    return id;
 }
 }

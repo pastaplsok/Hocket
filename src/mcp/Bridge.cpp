@@ -3,7 +3,6 @@
 #include "api/TokenFile.h"
 #include "api/Tools.h"
 #include "core/Paths.h"
-#include "platform/Platform.h"
 
 #include <algorithm>
 #include <array>
@@ -194,13 +193,13 @@ std::string Bridge::callTool (const Json& id, const Json& params)
     const auto changes = api::isReadOnlyTool (name) ? std::string()
                                                     : " It may or may not have carried out the call, so check with history before trying again.";
 
-    if (response.status == ApiClient::Status::closed)
+    if (response.status == api::Client::Status::closed)
     {
         log ("the connection closed during " + name);
         return resultReply (id, toolError ("Hocket closed the connection before answering; it may have stopped or restarted." + changes));
     }
 
-    if (response.status == ApiClient::Status::timedOut)
+    if (response.status == api::Client::Status::timedOut)
     {
         log (name + " got no answer within " + seconds (options.replyTimeout));
         return resultReply (id, toolError ("Hocket didn't answer within " + seconds (options.replyTimeout) + "." + changes));
@@ -266,7 +265,7 @@ std::string Bridge::connect()
 
     const auto response = api.request ("hello", hello, options.replyTimeout);
 
-    if (response.status != ApiClient::Status::answered)
+    if (response.status != api::Client::Status::answered)
     {
         api.close();
         log (info->program + " on " + where + " didn't answer hello");
@@ -339,24 +338,5 @@ std::string workingFolderName()
     std::error_code error;
     const auto folder = std::filesystem::current_path (error);
     return error ? std::string() : fitName (utf8FromPath (folder.filename()));
-}
-
-std::string makeSessionId()
-{
-    std::array<std::uint8_t, 16> bytes {};
-
-    if (! platform::secureRandomBytes (bytes))
-        return {};
-
-    constexpr std::string_view digits = "0123456789abcdef";
-    std::string id;
-
-    for (const auto byte : bytes)
-    {
-        id += digits[byte >> 4];
-        id += digits[byte & 0xf];
-    }
-
-    return id;
 }
 }

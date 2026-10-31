@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace hocket::testing
@@ -69,8 +70,20 @@ float peakBetween (const juce::AudioBuffer<float>& buffer, int start, int end)
 }
 
 //==============================================================================
+namespace
+{
+    // Opening and closing a device posts Tracktion updates, and handling one
+    // stops any transport that's playing. Tests that don't run the message
+    // loop would leave them for the next test that does, so handle them now.
+    void handlePendingMessages()
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+    }
+}
+
 FakeAudioDevice::FakeAudioDevice() : device (testEngine().getDeviceManager().getHostedAudioDeviceInterface())
 {
+    handlePendingMessages();
     auto& deviceManager = testEngine().getDeviceManager();
 
     // Blocks come as fast as the test makes them, so measured CPU use is
@@ -83,6 +96,7 @@ FakeAudioDevice::FakeAudioDevice() : device (testEngine().getDeviceManager().get
     device.initialise (parameters);
     device.prepareToPlay (sampleRate, blockSize);
     deviceManager.dispatchPendingUpdates();
+    handlePendingMessages();
 
     played.sampleRate = sampleRate;
     played.buffer.setSize (2, 0);
@@ -93,6 +107,7 @@ FakeAudioDevice::~FakeAudioDevice()
     auto& deviceManager = testEngine().getDeviceManager();
     deviceManager.deviceManager.closeAudioDevice();
     deviceManager.removeHostedAudioDeviceInterface();
+    handlePendingMessages();
 }
 
 void FakeAudioDevice::play (int numSamples)
@@ -107,5 +122,19 @@ void FakeAudioDevice::play (int numSamples)
         juce::AudioBuffer<float> block (played.buffer.getArrayOfWritePointers(), 2, start + offset, std::min (blockSize, numSamples - offset));
         device.processBlock (block, midi);
     }
+}
+
+double FakeAudioDevice::playBlock (juce::AudioBuffer<float>& destination, int start)
+{
+    jassert (destination.getNumChannels() == 2 && start + blockSize <= destination.getNumSamples());
+
+    // A view of the destination, so nothing is allocated; it starts silent, as in play().
+    juce::AudioBuffer<float> block (destination.getArrayOfWritePointers(), 2, start, blockSize);
+    block.clear();
+    midiScratch.clear();
+
+    const auto before = std::chrono::steady_clock::now();
+    device.processBlock (block, midiScratch);
+    return std::chrono::duration<double> (std::chrono::steady_clock::now() - before).count();
 }
 }

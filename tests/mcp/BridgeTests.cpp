@@ -1,12 +1,10 @@
-// The bridge against a real API server. The bridge's calls block until the DAW
-// answers, so the server and its handler run on a thread of their own,
-// standing in for hocket-headless's message thread.
+// The bridge against a real API server, running as hocket-headless runs it
+// (FakeHocket).
 
-#include "api/Handler.h"
 #include "api/Protocol.h"
-#include "api/Server.h"
 #include "api/TokenFile.h"
 #include "api/Tools.h"
+#include "common/FakeHocket.h"
 #include "common/TemporaryFolder.h"
 #include "core/Paths.h"
 #include "core/project/Project.h"
@@ -15,11 +13,6 @@
 
 #include <doctest/doctest.h>
 #include <nlohmann/json.hpp>
-
-#include <condition_variable>
-#include <deque>
-#include <mutex>
-#include <thread>
 
 using namespace hocket;
 using Json = nlohmann::json;
@@ -43,138 +36,6 @@ namespace
     {
         return text.find (part) != std::string::npos;
     }
-
-    // A running Hocket, as far as the bridge can tell: a command bus with the
-    // demo project, the API's handler and server on a thread of their own, and
-    // a token file naming this process.
-    class FakeHocket
-    {
-    public:
-        explicit FakeHocket (const std::filesystem::path& tokenFile)
-            : file (tokenFile), project (demoProject())
-        {
-            thread = std::thread ([this] { run(); });
-
-            {
-                std::unique_lock lock (mutex);
-                changed.wait (lock, [this] { return started; });
-            }
-
-            if (! startError.empty())
-            {
-                thread.join(); // run() has returned
-                FAIL (startError);
-            }
-
-            info = { port, token, platform::currentProcessId(), platform::currentProgramName() };
-            REQUIRE (api::writeTokenFile (file, info).empty());
-        }
-
-        ~FakeHocket()
-        {
-            {
-                std::lock_guard lock (mutex);
-                stopping = true;
-            }
-
-            changed.notify_all();
-            thread.join();
-            api::removeTokenFile (file, info);
-        }
-
-        // While paused, requests wait unanswered, as if the message thread were busy.
-        void pause (bool shouldPause)
-        {
-            {
-                std::lock_guard lock (mutex);
-                paused = shouldPause;
-            }
-
-            changed.notify_all();
-        }
-
-        bool logged (std::string_view part)
-        {
-            std::lock_guard lock (mutex);
-            return std::ranges::any_of (logLines, [part] (const std::string& line) { return contains (line, part); });
-        }
-
-    private:
-        std::filesystem::path file;
-        project::Project project;
-        const std::string token = api::makeToken();
-        api::ApiInfo info;
-        std::thread thread;
-
-        std::mutex mutex;
-        std::condition_variable changed;
-        std::deque<std::function<void()>> queue;
-        std::vector<std::string> logLines;
-        bool started = false;
-        std::string startError;
-        int port = 0;
-        bool paused = false;
-        bool stopping = false;
-
-        void log (const std::string& line)
-        {
-            std::lock_guard lock (mutex);
-            logLines.push_back (line);
-        }
-
-        // The message thread: creates, runs and destroys the bus, handler and server.
-        void run()
-        {
-            commands::CommandBus bus (std::move (project));
-
-            api::HandlerOptions handlerOptions;
-            handlerOptions.token = token;
-            handlerOptions.log = [this] (const std::string& line) { log (line); };
-            api::Handler handler (bus, std::move (handlerOptions));
-
-            const auto post = [this] (std::function<void()> function)
-            {
-                {
-                    std::lock_guard lock (mutex);
-                    queue.push_back (std::move (function));
-                }
-
-                changed.notify_all();
-            };
-
-            api::Server server (handler, post, { testPort, 10, [this] (const std::string& line) { log (line); } });
-            const auto error = server.start();
-
-            {
-                std::lock_guard lock (mutex);
-                started = true;
-                startError = error;
-                port = server.port();
-            }
-
-            changed.notify_all();
-
-            while (error.empty())
-            {
-                std::function<void()> next;
-
-                {
-                    std::unique_lock lock (mutex);
-                    changed.wait (lock, [this] { return stopping || (! paused && ! queue.empty()); });
-
-                    if (stopping)
-                        break;
-
-                    next = std::move (queue.front());
-                    queue.pop_front();
-                }
-
-                next();
-            }
-
-            // The server goes first, closing its connections; what they post now is never run.
-        }
-    };
 
     struct Fixture
     {
@@ -304,7 +165,7 @@ TEST_CASE ("a call while Hocket isn't running says how to start it")
 TEST_CASE ("tool calls reach the running Hocket, where the client is the author of its changes")
 {
     Fixture fixture;
-    FakeHocket hocket (fixture.tokenFile);
+    testing::FakeHocket hocket (fixture.tokenFile, testPort, demoProject());
     mcp::Bridge bridge (fixture.options());
     Client client { bridge };
     client.initialize();
@@ -325,7 +186,7 @@ TEST_CASE ("tool calls reach the running Hocket, where the client is the author 
 TEST_CASE ("the client's name in Hocket comes from initialize, unless the bridge is given one")
 {
     Fixture fixture;
-    FakeHocket hocket (fixture.tokenFile);
+    testing::FakeHocket hocket (fixture.tokenFile, testPort, demoProject());
 
     SUBCASE ("another client's own name")
     {
@@ -356,14 +217,14 @@ TEST_CASE ("the bridge finds Hocket again after it restarts, keeping its session
     Client client { bridge };
     client.initialize();
 
-    std::optional<FakeHocket> hocket;
-    hocket.emplace (fixture.tokenFile);
+    std::optional<testing::FakeHocket> hocket;
+    hocket.emplace (fixture.tokenFile, testPort, demoProject());
     CHECK (contains (client.text ("write_clip", oneNote), "#1 wrote clip"));
 
     hocket.reset();
     CHECK (client.text ("history") == notRunning);
 
-    hocket.emplace (fixture.tokenFile);
+    hocket.emplace (fixture.tokenFile, testPort, demoProject());
     const auto history = client.text ("history");
     CHECK (contains (history, "The history is empty"));
     CHECK (contains (history, "Note: Hocket has restarted since your last call"));
@@ -376,7 +237,7 @@ TEST_CASE ("the bridge finds Hocket again after it restarts, keeping its session
 TEST_CASE ("a Hocket from another build turns the bridge away, saying what to do")
 {
     Fixture fixture;
-    FakeHocket hocket (fixture.tokenFile);
+    testing::FakeHocket hocket (fixture.tokenFile, testPort, demoProject());
     auto options = fixture.options();
     options.fingerprint = "0123456789abcdef";
     mcp::Bridge bridge (std::move (options));
@@ -397,7 +258,7 @@ TEST_CASE ("a Hocket from another build turns the bridge away, saying what to do
 TEST_CASE ("a call Hocket doesn't answer in time is an error, and its late answer is dropped")
 {
     Fixture fixture;
-    FakeHocket hocket (fixture.tokenFile);
+    testing::FakeHocket hocket (fixture.tokenFile, testPort, demoProject());
     auto options = fixture.options();
     options.replyTimeout = 300ms;
     mcp::Bridge bridge (std::move (options));
@@ -464,12 +325,4 @@ TEST_CASE ("names and labels are made to fit hello")
     // Cut at a character boundary: "テ" is 3 bytes, and only 2 fit after 62.
     CHECK (mcp::fitName (std::string (62, 'x') + "テスト") == std::string (62, 'x'));
     CHECK (mcp::fitName (std::string (61, 'x') + "テスト") == std::string (61, 'x') + "テ");
-}
-
-TEST_CASE ("session IDs are 32 hex digits and never repeat")
-{
-    const auto id = mcp::makeSessionId();
-    CHECK (id.size() == 32);
-    CHECK (std::ranges::all_of (id, [] (char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
-    CHECK (mcp::makeSessionId() != id);
 }

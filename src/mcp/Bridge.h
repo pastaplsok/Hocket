@@ -11,8 +11,8 @@
 // restarted DAW is found. Every connection says hello with the same session
 // ID, so the client stays the author of its own history entries.
 
+#include "api/Client.h"
 #include "api/Protocol.h"
-#include "mcp/ApiClient.h"
 
 #include <nlohmann/json.hpp>
 
@@ -50,7 +50,7 @@ namespace hocket::mcp
         BridgeOptions options;
         nlohmann::json tools;
         std::string clientName; // from initialize's clientInfo
-        ApiClient api;
+        api::Client api;
         std::string lastToken; // of the DAW last connected to; a new one means it restarted
         bool restarted = false; // not yet told to the model
 
@@ -69,8 +69,4 @@ namespace hocket::mcp
 
     // The working folder's name, for the label; empty for a drive root.
     std::string workingFolderName();
-
-    // 16 bytes from the OS's secure random source, as 32 hex digits; empty if
-    // the OS can't supply them.
-    std::string makeSessionId();
 }

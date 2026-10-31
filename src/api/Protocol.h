@@ -29,4 +29,9 @@ namespace hocket::api
     // A hash of protocolVersion and the tool definitions (with the default idle
     // timeout), as 16 hex digits. Builds with the same fingerprint speak the same API.
     std::string buildFingerprint();
+
+    // A client's session ID for hello (SPEC §3.1): 16 bytes from the OS's secure
+    // random source, as 32 hex digits; empty if the OS can't supply them. Make
+    // one when the client starts and send it on every connection.
+    std::string makeSessionId();
 }

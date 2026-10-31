@@ -78,11 +78,18 @@ namespace hocket::testing
         // Plays the next numSamples and adds them to what's been played so far.
         void play (int numSamples);
 
+        // Plays the next block into `destination` from sample `start`, which
+        // must leave room for it. Nothing is allocated, so a real-time thread
+        // can call it (the stress test does); output() doesn't include it.
+        // Returns how long Tracktion took, in seconds.
+        double playBlock (juce::AudioBuffer<float>& destination, int start);
+
         // Everything played since the device opened.
         const Audio& output() const { return played; }
 
     private:
         tracktion::HostedAudioDeviceInterface& device;
         Audio played;
+        juce::MidiBuffer midiScratch; // playBlock's, kept so it never allocates
     };
 }

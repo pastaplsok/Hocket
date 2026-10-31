@@ -7,7 +7,8 @@ add_executable(hocket_engine_tests
     EngineTesting.cpp
     EngineTesting.h
     LivePlaybackTests.cpp
-    RenderTests.cpp)
+    RenderTests.cpp
+    StressTests.cpp)
 
 target_link_libraries(hocket_engine_tests PRIVATE hocket_engine doctest::doctest)
 target_include_directories(hocket_engine_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")

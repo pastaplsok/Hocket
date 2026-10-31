@@ -22,13 +22,17 @@ build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --lis
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch
 cmake --install build\vs2026 --config Release --component mcp --prefix "$env:LOCALAPPDATA\Hocket"
+build\vs2026\tools\stress\Release\hocket-stress.exe
+powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 ```
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 - `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`. `--user <name>` is your name in the history (default `user`).
 - While `--play` runs, it serves the WebSocket API (SPEC §6.3) on 127.0.0.1, port 46253 or the next free one; the port and token are in `%LOCALAPPDATA%\Hocket\api.json`, and API activity is printed with an `API:` prefix. A second `--play` refuses to start while one is running.
 - `hocket-mcp` is the MCP server Claude Code starts to reach that API (SPEC §6.3). Claude Code runs the copy that `cmake --install ... --component mcp` puts in `%LOCALAPPDATA%\Hocket\bin`, never the one in `build\`. Install again after changing the tools or the API, or every call fails with "different builds". Registering it, and the rest: `docs/connecting-claude-code.md`.
-- Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300, the bridge tests from 46320.
+- `hocket-stress` rewrites a clip in the running `--play` 200 times at 20 a second, then puts it back (Milestone 0's stress test; `--help` for the options). By default only a comment changes, so the music shouldn't: listen for clicks or gaps.
+- `tools\acceptance\Run-Acceptance.ps1` runs Milestone 0's acceptance checks that don't need ears, silently, against a real `--play` on a copy of the demo with an empty clip. `-Driver`/`-Device` pick the device, and `-FreshClone` also clones and builds from scratch. It's the way to run `--play` from a tool without sound, and to stop it cleanly with Ctrl+C.
+- Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300, the bridge tests from 46320, the stress client's from 46340. The engine tests take about 35 s: their stress tests play in real time.
 - `--play` makes sound. Don't run it on someone's machine without asking; a project with an empty clip plays silence, which is enough to check that the device opens.
 
 - If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.
