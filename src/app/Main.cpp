@@ -15,6 +15,7 @@
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "engine/EditSync.h"
+#include "engine/PlaybackDevice.h"
 #include "platform/Platform.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -59,11 +60,6 @@ namespace
                "                    as a write_clip, so it can be undone like any other edit\n"
                "  --user <name>     your name in the history and in messages to AI clients, e.g. \"was\n"
                "                    made by Lee, not Claude\". Default: user\n";
-    }
-
-    juce::String juceString (const std::string& utf8)
-    {
-        return juce::String::fromUTF8 (utf8.data(), static_cast<int> (utf8.size()));
     }
 
     int checkProject (const std::string& folder)
@@ -149,67 +145,6 @@ namespace
         }
 
         return options;
-    }
-
-    std::string quotedList (const juce::StringArray& names)
-    {
-        std::string list;
-
-        for (const auto& name : names)
-            list += (list.empty() ? "'" : ", '") + name.toStdString() + "'";
-
-        return list.empty() ? "(none)" : list;
-    }
-
-    // Switches to the driver and device asked for. With neither, it keeps what
-    // Tracktion opened: the device used last time (from its settings file), or
-    // the system default. Returns an error, or an empty string.
-    std::string openDevice (juce::AudioDeviceManager& devices, const PlayOptions& options)
-    {
-        if (options.driver.empty() && options.device.empty())
-            return {};
-
-        juce::AudioIODeviceType* type = nullptr;
-        juce::StringArray typeNames;
-
-        for (auto* candidate : devices.getAvailableDeviceTypes())
-        {
-            candidate->scanForDevices();
-            typeNames.add (candidate->getTypeName());
-
-            const auto matches = options.driver.empty() ? candidate->getDeviceNames (false).contains (juceString (options.device))
-                                                        : candidate->getTypeName() == juceString (options.driver);
-            if (matches && type == nullptr)
-                type = candidate;
-        }
-
-        if (type == nullptr)
-            return options.driver.empty() ? "no driver has an output device called '" + options.device + "'; --list-devices lists them"
-                                          : "there's no driver called '" + options.driver + "'; the drivers are " + quotedList (typeNames);
-
-        const auto deviceNames = type->getDeviceNames (false);
-        const auto deviceName = options.device.empty() ? deviceNames[type->getDefaultDeviceIndex (false)] : juceString (options.device);
-
-        if (! deviceNames.contains (deviceName))
-            return type->getTypeName().toStdString() + " has no output device called '" + options.device + "'; its output devices are "
-                 + quotedList (deviceNames);
-
-        if (devices.getCurrentAudioDeviceType() != type->getTypeName())
-            devices.setCurrentAudioDeviceType (type->getTypeName(), true);
-
-        auto setup = devices.getAudioDeviceSetup();
-
-        if (setup.outputDeviceName != deviceName || devices.getCurrentAudioDevice() == nullptr)
-        {
-            setup.outputDeviceName = deviceName;
-            setup.inputDeviceName = {};
-            setup.useDefaultOutputChannels = true;
-
-            if (const auto error = devices.setAudioDeviceSetup (setup, true); error.isNotEmpty())
-                return "couldn't open " + type->getTypeName().toStdString() + " device '" + deviceName.toStdString() + "': " + error.toStdString();
-        }
-
-        return {};
     }
 
     // Deletes the token file when --play ends, unless another instance has replaced it since.
@@ -305,15 +240,14 @@ namespace
         tracktion::Engine engine { "Hocket", nullptr, std::make_unique<PlayBehaviour>() };
         auto& devices = engine.getDeviceManager().deviceManager;
 
-        if (const auto error = openDevice (devices, options); ! error.empty())
+        // Without --driver and --device, it keeps what Tracktion opened.
+        if (const auto error = hocket::engine::openDevice (devices, options.driver, options.device); ! error.empty())
         {
             std::cerr << error << "\n";
             return 1;
         }
 
-        auto* device = devices.getCurrentAudioDevice();
-
-        if (device == nullptr)
+        if (devices.getCurrentAudioDevice() == nullptr)
         {
             std::cerr << "no audio device could be opened; pick one with --driver and --device (--list-devices lists them)\n";
             return 1;
@@ -330,11 +264,8 @@ namespace
         engine.getDeviceManager().rescanMidiDeviceList();
         juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
 
-        const auto sampleRate = device->getCurrentSampleRate();
-        const auto bufferSize = device->getCurrentBufferSizeSamples();
-        std::cout << "Playing on " << device->getTypeName().toStdString() << ": " << device->getName().toStdString() << ", "
-                  << sampleRate << " Hz, " << bufferSize << " samples ("
-                  << juce::String (1000.0 * bufferSize / sampleRate, 1).toStdString() << " ms)\n";
+        const hocket::engine::PlaybackDevice playbackDevice (devices);
+        std::cout << "Playing on " << playbackDevice.description() << "\n";
 
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
@@ -395,12 +326,7 @@ namespace
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 
-        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message;
-
-        if (const auto xruns = device->getXRunCount(); xruns >= 0)
-            std::cout << "; the driver reported " << xruns << (xruns == 1 ? " xrun" : " xruns");
-
-        std::cout << "\n";
+        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message << "; " << playbackDevice.xrunReport() << "\n";
         return 0;
     }
 
