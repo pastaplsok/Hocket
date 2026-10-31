@@ -390,6 +390,14 @@ void CommandBus::setTransport (Transport* newTransport)
     transport = newTransport;
 }
 
+std::optional<bool> CommandBus::isPlaying() const
+{
+    if (transport == nullptr)
+        return {};
+
+    return transport->isPlaying();
+}
+
 void CommandBus::notify (const Change& change)
 {
     for (const auto& listener : listeners)

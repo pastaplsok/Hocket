@@ -151,9 +151,14 @@ namespace
         const auto position = [meter] (notes::Ticks ticks) { return notes::formatPosition (ticks, meter); };
         const auto end = project::songEnd (project);
 
+        const auto playing = call.bus.isPlaying();
+        const auto playback = ! playing ? std::string ("There's no audio engine here, so it can't play.")
+                            : *playing  ? std::string ("It's playing, on a loop.")
+                                        : std::string ("It's stopped; transport play loops it.");
+
         auto text = "Tempo " + tempoText (project.tempo) + " BPM, " + std::to_string (meter.beatsPerBar) + "/4. The song is "
-                  + countText (static_cast<std::size_t> (end / meter.ticksPerBar()), "bar") + " long: it plays from "
-                  + position (0) + " to " + position (end) + " on a loop.\n\nTracks, in display order:\n";
+                  + countText (static_cast<std::size_t> (end / meter.ticksPerBar()), "bar") + " long, from " + position (0) + " to "
+                  + position (end) + ". " + playback + "\n\nTracks, in display order:\n";
 
         if (project.tracks.empty())
             text += "- none yet\n";
@@ -170,10 +175,18 @@ namespace
             if (track.clips.empty())
                 text += "  - no clips\n";
 
+            // In song order, as project.json's canonical form has them (SPEC §4.4).
+            std::vector<const project::Clip*> clips;
+
             for (const auto& clip : track.clips)
-                text += "  - clip " + clip.id + ": " + position (clip.start) + " to " + position (project::clipEnd (clip, meter))
-                      + " (@length " + lengthText (clip.content.lengthInBars) + "), " + countText (clip.content.notes.size(), "note")
-                      + ", file " + clip.file + "\n";
+                clips.push_back (&clip);
+
+            std::ranges::stable_sort (clips, {}, &project::Clip::start);
+
+            for (const auto* clip : clips)
+                text += "  - clip " + clip->id + ": " + position (clip->start) + " to " + position (project::clipEnd (*clip, meter))
+                      + " (@length " + lengthText (clip->content.lengthInBars) + "), " + countText (clip->content.notes.size(), "note")
+                      + ", file " + clip->file + "\n";
         }
 
         const auto history = call.bus.history();
@@ -335,8 +348,9 @@ namespace
 
     constexpr std::array tools {
         Tool { "get_project_overview", true,
-               "Summarizes the project open in Hocket: tempo, time signature and song length; every track with its devices "
-               "and clips (IDs, positions, lengths, note counts); the latest history entry; and any open transaction. "
+               "Summarizes the project open in Hocket: tempo, time signature, song length, and whether it's playing; every "
+               "track with its devices and clips (IDs, positions, lengths, note counts); the latest history entry; and any "
+               "open transaction. "
                "Start here: the other tools take the IDs it lists.",
                noArguments,
                getProjectOverview },

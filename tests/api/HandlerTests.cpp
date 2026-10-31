@@ -329,7 +329,7 @@ TEST_CASE ("get_project_overview summarizes the project")
     auto client = fixture.connectAs ("session-1");
 
     CHECK (client.text ("get_project_overview")
-           == "Tempo 120 BPM, 4/4. The song is 2 bars long: it plays from 1.1 to 3.1 on a loop.\n"
+           == "Tempo 120 BPM, 4/4. The song is 2 bars long, from 1.1 to 3.1. There's no audio engine here, so it can't play.\n"
               "\n"
               "Tracks, in display order:\n"
               "- trk-bass \"Bass\" (midi), devices: dev-bass-synth (tracktion:4osc)\n"
@@ -345,6 +345,55 @@ TEST_CASE ("get_project_overview summarizes the project")
     const auto overview = client.text ("get_project_overview");
     CHECK (contains (overview, "History: 1 entry; the latest is #1 \"wrote bridge\" by you.\n"));
     CHECK (contains (overview, "1.1 to 2.1 (@length 1bar), 1 note"));
+}
+
+TEST_CASE ("get_project_overview says whether the song is playing")
+{
+    struct FakeTransport final : commands::Transport
+    {
+        commands::Result play() override { playing = true; return { true, "playing" }; }
+        commands::Result stop() override { playing = false; return { true, "stopped" }; }
+        bool isPlaying() const override { return playing; }
+
+        bool playing = false;
+    };
+
+    Fixture fixture;
+    FakeTransport transport;
+    fixture.bus.setTransport (&transport);
+    auto client = fixture.connectAs ("session-1");
+
+    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's stopped; transport play loops it.\n"));
+    client.call ("transport", { { "action", "play" } });
+    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's playing, on a loop.\n"));
+
+    fixture.bus.setTransport (nullptr);
+}
+
+TEST_CASE ("get_project_overview lists a track's clips in song order")
+{
+    auto project = demoProject();
+    auto& clips = project.tracks[0].clips;
+    auto later = clips[0];
+    later.id = "clp-later";
+    later.file = "clips/later.notes";
+    later.start = 4 * 3840;
+    clips.insert (clips.begin(), later); // listed first, but starts at bar 5
+
+    commands::CommandBus bus (std::move (project));
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    const auto overview = connection.text ("get_project_overview");
+    const auto first = overview.find ("clip clp-bass: 1.1");
+    const auto second = overview.find ("clip clp-later: 5.1");
+    REQUIRE (first != std::string::npos);
+    REQUIRE (second != std::string::npos);
+    CHECK (first < second);
 }
 
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")

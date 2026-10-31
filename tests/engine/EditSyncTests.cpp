@@ -156,6 +156,7 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
         CHECK (played.ok);
         CHECK (played.message == "playing 1.1 to 6.1 on a loop");
         CHECK (tracktionTransport.isPlaying());
+        CHECK (bus.isPlaying() == true);
         CHECK (tracktionTransport.looping.get());
         CHECK (tracktionTransport.getLoopRange() == sync.loopRange());
 
@@ -163,6 +164,7 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
 
         CHECK (bus.execute (commands::Stop {}, testing::lee).message == "stopped");
         CHECK_FALSE (tracktionTransport.isPlaying());
+        CHECK (bus.isPlaying() == false);
         CHECK (bus.execute (commands::Stop {}, testing::lee).message == "already stopped");
 
         CHECK (bus.history().empty());

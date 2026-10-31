@@ -74,6 +74,7 @@ namespace hocket::commands
 
         virtual Result play() = 0;
         virtual Result stop() = 0;
+        virtual bool isPlaying() const = 0;
     };
 
     struct HistoryEntry
@@ -149,6 +150,9 @@ namespace hocket::commands
         // Where transport commands go. Pass nullptr to remove it; a transport that
         // goes away before the bus must do that first.
         void setTransport (Transport* transport);
+
+        // Whether the transport is playing; nullopt when there's no transport.
+        std::optional<bool> isPlaying() const;
 
     private:
         struct SetClipContent

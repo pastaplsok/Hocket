@@ -173,4 +173,10 @@ commands::Result EditSync::stop()
     transport.stop (false, false);
     return { true, "stopped" };
 }
+
+bool EditSync::isPlaying() const
+{
+    // Tracktion can stop by itself, e.g. when it rebuilds its device lists.
+    return tracktionEdit->getTransport().isPlaying();
+}
 }

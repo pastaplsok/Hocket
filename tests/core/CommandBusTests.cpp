@@ -564,27 +564,36 @@ namespace
         Result play() override
         {
             calls.push_back ("play");
+            playing = true;
             return { true, "playing" };
         }
 
         Result stop() override
         {
             calls.push_back ("stop");
+            playing = false;
             return { true, "stopped" };
         }
 
+        bool isPlaying() const override { return playing; }
+
         std::vector<std::string> calls;
+        bool playing = false;
     };
 }
 
 TEST_CASE ("transport commands go to the transport and never enter the history")
 {
     CommandBus bus (makeProject());
+    CHECK_FALSE (bus.isPlaying().has_value()); // no transport
+
     FakeTransport transport;
     bus.setTransport (&transport);
     ChangeLog log (bus);
 
+    CHECK (bus.isPlaying() == false);
     CHECK (bus.execute (Play {}, claude).message == "playing");
+    CHECK (bus.isPlaying() == true);
     CHECK (bus.execute (Stop {}, lee).message == "stopped");
 
     CHECK (transport.calls == std::vector<std::string> { "play", "stop" });
