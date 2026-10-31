@@ -138,6 +138,22 @@ TEST_CASE ("the clip length defaults to the bars that hold every note")
     CHECK (canonical ("2.1 C2 1/4 v96") == "@length 2bars\n\n2.1      C2    1/4   v96\n");
 }
 
+TEST_CASE ("a clip is at most 999 bars long")
+{
+    CHECK (maxLengthInBars == 999);
+    CHECK (parseOrFail ("@length 999bars").lengthInBars == 999);
+    CHECK (parseOrFail ("999.4 C2 1/4 v96").lengthInBars == 999);
+
+    // A typo in a bar number would otherwise make a clip, and a loop, of thousands of bars.
+    for (const auto* text : { "1000.1 C2 1/4 v96", "@length 999bars\n1000.1 C2 1/4 v96" })
+    {
+        INFO (text);
+        const auto tooFar = parse (text);
+        REQUIRE (tooFar.errors.size() == 1);
+        CHECK (tooFar.errors[0].message == "C2 at 1000.1 is past bar 999: a clip is at most 999 bars long, so move the note");
+    }
+}
+
 TEST_CASE ("notes may run past the end of the clip but not start there")
 {
     CHECK (parseOrFail ("@length 1bar\n1.4 C2 1/1 v96").notes.size() == 1);
@@ -203,6 +219,9 @@ TEST_CASE ("errors give line, column, the problem, and a valid example")
         { "@length", 1, 8, "@length needs a value, e.g. '@length 4bars'" },
         { "@length 4beats", 1, 9, "'4beats' isn't a valid @length: Milestone 0 clip lengths are a whole number of bars" },
         { "@length 0bars", 1, 9, "isn't a valid @length" },
+        { "@length 1000bars", 1, 9, "'1000bars' is too long: a clip is at most 999 bars" },
+        { "@length 99999999bars", 1, 9, "'99999999bars' is too long: a clip is at most 999 bars" },
+        { "1.1 C2 1/4 v96\n100000.1 C2 1/4 v96", 2, 1, "C2 at 100000.1 is past bar 999: a clip is at most 999 bars long" },
         { "@length 4 bars", 1, 11, "unexpected 'bars' after the @length value" },
         { "@length 4bars\n@length 2bars", 2, 1, "@length is set twice; it was already set on line 1" },
         { "1.1 C2 1/8 v96\n1.1 C2 1/4 v80", 2, 5, "duplicate note: C2 at 1.1 is already on line 1" },

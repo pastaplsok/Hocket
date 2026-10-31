@@ -15,6 +15,10 @@ namespace hocket::notes
     using Ticks = std::int64_t;
     inline constexpr Ticks ticksPerBeat = 960;
 
+    // The longest a clip can be (SPEC §5.4), so a typo in a bar number can't
+    // make a clip, and a loop, thousands of bars long.
+    inline constexpr int maxLengthInBars = 999;
+
     // Milestone 0 supports n/4 meters only, so a beat is always a quarter note.
     struct Meter
     {
