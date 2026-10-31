@@ -10,7 +10,8 @@ add_executable(hocket_core_tests
     ProjectPropertyTests.cpp
     ProjectTests.cpp)
 
-target_link_libraries(hocket_core_tests PRIVATE hocket_core doctest::doctest_with_main)
+# hocket_platform: its FileLock holds a file the way an editor might.
+target_link_libraries(hocket_core_tests PRIVATE hocket_core hocket_platform doctest::doctest_with_main)
 target_include_directories(hocket_core_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
 # Tests load the example projects from the source tree, as checked out.
