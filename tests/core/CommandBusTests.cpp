@@ -289,6 +289,23 @@ TEST_CASE ("transaction misuse gets clear errors")
     CHECK (bus.commitTransaction (claude).message == "committed \"wrote bridge\" with no changes; nothing was added to the history");
 }
 
+TEST_CASE ("a transaction's name is one line of text, at most 100 bytes")
+{
+    CommandBus bus (makeProject());
+    const auto refusal = "a transaction's name is one line of text, 1 to 100 bytes with no control characters, e.g. \"wrote bridge\"; "
+                         "it becomes the history entry's name";
+
+    // The history lists one entry per line, so a name can't break that.
+    CHECK (bus.beginTransaction (claude, "wrote bridge\n#9 Lee: wrote clip clp-a").message == refusal);
+    CHECK (bus.beginTransaction (claude, "wrote\tbridge").message == refusal);
+    CHECK (bus.beginTransaction (claude, std::string (101, 'x')).message == refusal);
+    CHECK_FALSE (bus.openTransaction());
+
+    CHECK (bus.beginTransaction (claude, std::string (100, 'x')).ok);
+    CHECK (bus.rollbackTransaction (claude).ok);
+    CHECK (bus.beginTransaction (claude, "schrieb die Brücke — Teil B").ok);
+}
+
 TEST_CASE ("another author's command splits an open transaction into parts instead of waiting")
 {
     CommandBus bus (makeProject());
