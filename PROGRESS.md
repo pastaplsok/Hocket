@@ -13,7 +13,7 @@ Status board for the current milestone. Read it at the start of a session; updat
 | 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; transport commands; offline-render test | ✅ Done, except the by-ear check over ASIO (below) |
 | 6 | WebSocket API on 127.0.0.1 + token file; interrupted-transaction handling | ✅ Done; the by-ear check of `write_clip` over the API moves to step 7 |
 | 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ✅ Built, tested, and run silently against `--play`; registering it in Claude Code and the by-ear check wait for Lee (below) |
-| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks are Lee's, on Sunday 2026-11-01 (below); SPEC updates after that |
+| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`, which passed, a fresh clone from GitHub included. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks are Lee's, on Sunday 2026-11-01 (below); SPEC updates after that |
 
 **Milestone 0 is done when:**
 - a fresh clone builds with the commands in CLAUDE.md;
@@ -85,6 +85,7 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
   - write_clip, undo restoring the clip, history naming `you` and `Lee`, and Claude's undo refusing Lee's change;
   - `hocket-stress`: 200 of 200 applied, answers 0.4 ms median and 3.4 ms at most, the clip put back;
   - `hocket-mcp` exiting on stdin's close, and a clean Ctrl+C.
+- Step 8, also on 2026-10-30: `Run-Acceptance.ps1 -FreshClone`, cloning GitHub's `main` at `4d46931`. The clone, its submodules, configure, a clean Release build and its 10 tests all passed, and the silent checks above passed again. It took 24.5 min, 21 of them downloading the submodules.
 
 **To do with Lee:**
 1. ✅ Installed and registered (2026-10-30, after the step 7 commit). `hocket-mcp.exe` is in `%LOCALAPPDATA%\Hocket\bin` (API build `7a9b08d34b2a2d3e`, the same as `hocket-headless`). It's registered as `hocket` at user scope, and `claude mcp get hocket` shows it connected. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
@@ -161,7 +162,7 @@ After the checks above. Goal: Milestone 0's "done when" list at the top.
 - **Don't name a helper `quoted`.** Argument-dependent lookup finds `std::quoted` instead (error C2676). The code uses `singleQuoted` / `doubleQuoted`.
 - **nlohmann/json** is built with implicit conversions off: write `get<T>()`.
 - **Property tests against the bus** must canonicalize their reference copy with `*notes::parse (text).clip`, because the bus stores the parsed clip (sorted, spellings filled in), not the text.
-- **Build time.** JUCE and Tracktion compile once into `hocket_juce`; a clean Release build takes about a minute here, a fresh clone plus build about four.
+- **Build time.** JUCE and Tracktion compile once into `hocket_juce`. A clean Release build takes 1 to 2.5 minutes here (2 min 21 s in a fresh clone on 2026-10-30). A fresh clone's time is mostly the submodule download: 21 minutes that evening, against about 4 minutes in all before.
 - **Tracktion's first MIDI scan.** Before playing, call `engine.getDeviceManager().rescanMidiDeviceList()` and run the message loop briefly (`runDispatchLoopUntil (100)`), as `--play` does. Otherwise the scan lands 4 s after startup and stops playback. The engine tests never see this: the hosted device has `useMidiDevices = false`.
 - **`JUCE_MODAL_LOOPS_PERMITTED=1`** (set on `hocket_juce`) makes `MessageManager::runDispatchLoopUntil` available. `runDispatchLoop` can only run once per process: after `stopDispatchLoop` it returns at once.
 - **One Tracktion `Engine` at a time.** The engine tests share `testing::testEngine()`, which never opens a real device and keeps its settings in a temp folder. A `FakeAudioDevice` must be opened before the `EditSync` whose Edit plays on it.
