@@ -145,7 +145,10 @@ Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits,
                             + ". Clips on a track can't overlap, so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
     }
 
-    if (*parsed.clip == clip->content)
+    // Compared in canonical form: the parser keeps notes and comments where the
+    // text had them, so two texts that write out the same can parse differently,
+    // e.g. a client sending back read_clip's text for a clip loaded from looser text.
+    if (notes::write (*parsed.clip, meter) == notes::write (clip->content, meter))
         return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
 
     description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";

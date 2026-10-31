@@ -140,6 +140,36 @@ TEST_CASE ("a write that changes nothing adds no history entry")
     CHECK (log.changes.empty());
 }
 
+TEST_CASE ("writing back the canonical text of a clip loaded from looser text changes nothing")
+{
+    // The clip as the loader stores it: parsed from a file that isn't in
+    // canonical form. read_clip returns the canonical text, and a client that
+    // sends that straight back has changed nothing (SPEC §3.1).
+    const std::pair<const char*, const char*> files[] = {
+        { "lines out of order", "@length 1bar\n1.2 D2 1/4 v80\n1.1 C2 1/4 v80\n" },
+        { "a chord split across lines", "@length 1bar\n1.1 E2 1/4 v80 # third\n1.1 C2 1/4 v80 # root\n" },
+        { "a comment above an @length after the notes", "1.1 C2 1/4 v80\n# two beats\n@length 1bar\n" },
+    };
+
+    for (const auto& [name, onDisk] : files)
+    {
+        INFO (name);
+
+        auto project = makeProject();
+        project.tracks[0].clips[0].content = parsed (onDisk);
+        CommandBus bus (std::move (project));
+        ChangeLog log (bus);
+
+        const auto canonical = notes::write (contentOf (bus, "clp-a"));
+        const auto result = bus.execute (WriteClip { "clp-a", canonical }, claude);
+
+        CHECK (result.ok);
+        CHECK (result.message == "clip 'clp-a' already has exactly these notes, so nothing changed and no history entry was added");
+        CHECK (bus.history().empty());
+        CHECK (log.changes.empty());
+    }
+}
+
 TEST_CASE ("commands need an author")
 {
     CommandBus bus (makeProject());
