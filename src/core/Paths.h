@@ -17,6 +17,8 @@ namespace hocket
     // The text must be valid UTF-8.
     std::filesystem::path pathFromUtf8 (std::string_view utf8);
 
+    // Never throws: on Windows, an unpaired UTF-16 surrogate in a name (which
+    // NTFS allows) comes out as U+FFFD.
     std::string utf8FromPath (const std::filesystem::path& path);
 
     // A file's bytes, unchanged, or nullopt if it isn't a regular file or can't be read.
