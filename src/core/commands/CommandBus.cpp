@@ -350,6 +350,22 @@ std::vector<HistoryEntry> CommandBus::history() const
     return entries;
 }
 
+std::vector<HistoryEntry> CommandBus::changesTo (std::string_view clipId) const
+{
+    const auto changesClip = [clipId] (const Edit& edit)
+    {
+        return std::visit ([clipId] (const SetClipContent& set) { return set.clipId == clipId; }, edit);
+    };
+
+    std::vector<HistoryEntry> entries;
+
+    for (auto i = done.size(); i-- > 0;)
+        if (std::ranges::any_of (done[i].forward, changesClip))
+            entries.push_back (done[i].info);
+
+    return entries;
+}
+
 std::optional<OpenTransaction> CommandBus::openTransaction() const
 {
     if (! transaction)

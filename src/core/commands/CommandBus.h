@@ -136,6 +136,9 @@ namespace hocket::commands
         // Newest first. An open transaction's edits aren't listed until they're committed.
         std::vector<HistoryEntry> history() const;
 
+        // The entries in history() that changed this clip, newest first.
+        std::vector<HistoryEntry> changesTo (std::string_view clipId) const;
+
         std::optional<OpenTransaction> openTransaction() const;
 
         // Called after every change to the project, including undo, redo and rollback.

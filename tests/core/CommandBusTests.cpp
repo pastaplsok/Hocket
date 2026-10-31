@@ -170,6 +170,26 @@ TEST_CASE ("writing back the canonical text of a clip loaded from looser text ch
     }
 }
 
+TEST_CASE ("changesTo lists the entries that changed a clip, newest first")
+{
+    CommandBus bus (makeProject());
+
+    REQUIRE (bus.execute (WriteClip { "clp-a", twoNotes }, claude).ok);
+    REQUIRE (bus.execute (WriteClip { "clp-b", "@length 1bar\n\n1.1 A1 1/4 v100\n" }, lee).ok);
+    REQUIRE (bus.execute (WriteClip { "clp-a", threeNotes }, lee).ok);
+
+    const auto changes = bus.changesTo ("clp-a");
+    REQUIRE (changes.size() == 2);
+    CHECK (changes[0].id == 3);
+    CHECK (changes[1].id == 1);
+    CHECK (bus.changesTo ("clp-b").size() == 1);
+    CHECK (bus.changesTo ("clp-nope").empty());
+
+    // Undone entries aren't in the history.
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.changesTo ("clp-a").size() == 1);
+}
+
 TEST_CASE ("commands need an author")
 {
     CommandBus bus (makeProject());

@@ -12,6 +12,7 @@
 #include "api/TokenFile.h"
 #include "core/Paths.h"
 #include "core/commands/CommandBus.h"
+#include "core/commands/WatchedSaves.h"
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "engine/EditSync.h"
@@ -164,10 +165,13 @@ namespace
     public:
         PlayLoop (hocket::commands::CommandBus& commandBus, hocket::api::Handler& apiHandler, const std::filesystem::path& folder, bool watch,
                   hocket::commands::Author localUser)
-            : bus (commandBus), api (apiHandler), user (std::move (localUser))
+            : api (apiHandler)
         {
             if (watch)
-                watcher.emplace (folder, bus.project());
+            {
+                watcher.emplace (folder, commandBus.project());
+                saves.emplace (commandBus, std::move (localUser));
+            }
 
             startTimer (50);
         }
@@ -175,10 +179,9 @@ namespace
         ~PlayLoop() override { stopTimer(); }
 
     private:
-        hocket::commands::CommandBus& bus;
         hocket::api::Handler& api;
-        hocket::commands::Author user;
         std::optional<hocket::project::ClipFileWatcher> watcher;
+        std::optional<hocket::commands::WatchedSaves> saves;
 
         void timerCallback() override
         {
@@ -202,8 +205,11 @@ namespace
                     continue;
                 }
 
-                const auto result = bus.execute (hocket::commands::WriteClip { change.clipId, *change.text }, user);
-                (result.ok ? std::cout : std::cerr) << change.file << ": " << result.message << std::endl;
+                const auto saved = saves->save (change.clipId, *change.text);
+                (saved.result.ok ? std::cout : std::cerr) << change.file << ": " << saved.result.message << std::endl;
+
+                if (saved.warning)
+                    std::cerr << change.file << ": " << *saved.warning << std::endl;
             }
         }
     };
