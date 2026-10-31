@@ -89,7 +89,7 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 
 **To do with Lee:**
 1. ✅ Installed and registered (2026-10-30, after the step 7 commit). `hocket-mcp.exe` is in `%LOCALAPPDATA%\Hocket\bin` (API build `7a9b08d34b2a2d3e`, the same as `hocket-headless`). It's registered as `hocket` at user scope, and `claude mcp get hocket` shows it connected. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
-2. Start a new Claude Code session; `/mcp` should list hocket with 9 tools.
+2. ✅ Checked on 2026-10-31. A restarted Claude Code session loaded `hocket` with all 9 tools, and its server instructions. With no `--play` running, `get_project_overview` returned "Hocket isn't running: start it with `hocket-headless --play <project folder>`, then try again."
 3. `hocket-headless.exe --list-devices`, and check the Magni shows up under Windows Audio.
 4. `hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch --user Lee`, with ASIO4ALL routed to the Magni in its panel.
 5. From Claude Code: rewrite `clp-bass`, and listen for it on the next pass, with no click, gap or stutter. Then `undo` (the old line comes back), and `history`, which should name Claude with the folder label. `--play` should print `API: Claude (<folder>) connected`.
