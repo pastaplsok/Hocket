@@ -62,3 +62,4 @@ powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 ## Working style
 - Propose a plan before large changes; keep milestones small
 - When something in the spec turns out to be wrong or awkward in practice, say so and propose the fix rather than working around it
+- Branches: milestone steps commit straight to `main`. A larger batch of fixes (a code review's, say) goes on a branch, pushed, with a PR to merge it.

@@ -13,7 +13,7 @@ Status board for the current milestone. Read it at the start of a session; updat
 | 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; transport commands; offline-render test | ✅ Done, except the by-ear check over ASIO (below) |
 | 6 | WebSocket API on 127.0.0.1 + token file; interrupted-transaction handling | ✅ Done; the by-ear check of `write_clip` over the API moves to step 7 |
 | 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ✅ Built, tested, and run silently against `--play`; registering it in Claude Code and the by-ear check wait for Lee (below) |
-| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`, which passed, a fresh clone from GitHub included. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks are Lee's, on Sunday 2026-11-01 (below); SPEC updates after that. The code review of 2026-10-31 is fixed on branch `m0-review-fixes`, except two items deferred (Loose ends) |
+| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`, which passed, a fresh clone from GitHub included. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks are Lee's, on Sunday 2026-11-01 (below); SPEC updates after that. The code review of 2026-10-31 is fixed and merged into `main`, except two items deferred (Loose ends) |
 
 **Milestone 0 is done when:**
 - a fresh clone builds with the commands in CLAUDE.md;
@@ -107,7 +107,7 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 
 **To do with Lee:**
 1. ✅ Installed and registered (2026-10-30, after the step 7 commit). `hocket-mcp.exe` is in `%LOCALAPPDATA%\Hocket\bin`. It's registered as `hocket` at user scope, and `claude mcp get hocket` shows it connected.
-   - Reinstalled on 2026-10-31 from `m0-review-fixes`, whose tool descriptions changed: API build `c4f35c9e10c86405`, the same as that branch's `hocket-headless`. Restart Claude Code sessions to pick it up; a build from `main` without these commits needs the install again. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
+   - Reinstalled on 2026-10-31, after the review fixes changed the tool descriptions: API build `c4f35c9e10c86405`, the same as `main`'s `hocket-headless`. Restart Claude Code sessions to pick it up. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
 2. ✅ Checked on 2026-10-31. A restarted Claude Code session loaded `hocket` with all 9 tools, and its server instructions. With no `--play` running, `get_project_overview` returned "Hocket isn't running: start it with `hocket-headless --play <project folder>`, then try again."
 3. `hocket-headless.exe --list-devices`, and check the Magni shows up under Windows Audio.
 4. `hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch --user Lee`, with ASIO4ALL routed to the Magni in its panel.
@@ -115,13 +115,14 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 6. Edit `examples\m0-demo\clips\bass.notes` and save. Listen for the change by the next pass. Save once with a mistake in it: it should print the error and keep playing the old clip. Then ask Claude to `undo`: it should refuse, since the newest change is Lee's.
    - If Claude's last change is still in place when you save, the save replaces it (Hocket doesn't write clip files), and `--play` prints a warning naming Claude's entry and the one to undo.
 7. The stress run by ear (step 8). Still playing, in a second terminal: `build\vs2026\tools\stress\Release\hocket-stress.exe`.
+   - **Watch the dropped blocks here: "no audible dropouts" is one of Milestone 0's done criteria.** Over ASIO, a dropped block can only be heard, as a click. Nothing counts it: the driver still gets its block on time, so it isn't an xrun or a late callback. Step 10's dropped-block number comes from the engine test's fake device, not from ASIO.
    - For the 10 s it runs, the bass line should sound exactly as before, since only a comment changes. Listen for clicks or gaps.
-   - Run it three times, and note how many clicks you hear in each run. The engine stress test drops a block about once in 500 to 1,000 rewrites (Loose ends), so a click in one run of 200 would match that known issue.
+   - Run it three times, and write down how many clicks you hear in each run. The engine stress test drops a block about once in 500 to 1,000 rewrites (Loose ends), so a click in one run of 200 would match that known issue. Any click means the criterion isn't met yet, until that issue is fixed (Next).
    - Then once with `--vary`: the notes jump an octave every other rewrite, so it sounds busy, but it should never stutter or stop.
    - Each run should end with "All 200 were applied" and "The clip is back as it was".
 8. Ctrl+C. Note what it prints: the driver's xrun count (ASIO drivers usually keep one; WASAPI doesn't), and how many audio callbacks took longer than their block. Both should be 0.
 9. Revert `bass.notes` afterwards (`git checkout examples/m0-demo/clips/bass.notes`).
-10. The acceptance checks over ASIO, silently, for an xrun count without listening: `powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1 -Driver ASIO -Device "ASIO4ALL v2"`. Every check should pass, "No xruns" among them, and it prints the engine stress test's dropped-block count and the late audio callbacks.
+10. The acceptance checks over ASIO, silently, for an xrun count without listening: `powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1 -Driver ASIO -Device "ASIO4ALL v2"`. Every check should pass, "No xruns" among them, and it prints the engine stress test's dropped-block count and the late audio callbacks. Write the dropped-block count down next to step 7's clicks. That test plays on a fake device whatever `-Driver` says, so it shows how often Tracktion drops a block, not what ASIO did.
 
 **To do when Lee sets up Claude Desktop** (Lee is away from home as of 2026-10-30, for a couple of days; don't drop this):
 1. Register the installed `hocket-mcp.exe` in Claude Desktop's config. It should be `%APPDATA%\Claude\claude_desktop_config.json`, under `"mcpServers": { "hocket": { "command": "<path to hocket-mcp.exe>" } }`; check against Claude Desktop's own docs. Then restart Claude Desktop.
@@ -137,10 +138,9 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 After the checks above. Goal: Milestone 0's "done when" list at the top.
 - **The dropped block** (Loose ends) is the one thing in the way of "no audible dropouts". Decide with Lee: dig into Tracktion, work around it, or report it upstream. Once it's fixed, turn the stress test's dropped-block `WARN` back into a `CHECK`.
 - **SPEC:** fold in what Milestone 0 taught, and mark §10.0 done.
-- **The review fixes** are on branch `m0-review-fixes`, pushed: merge it into `main` once Lee has looked at it.
 
 ## Code review (2026-10-31)
-The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings are in this file's history (`git log -- PROGRESS.md`). Everything is fixed on `m0-review-fixes`, each with a test, except two Lee deferred, now in Loose ends: the idle timeout and notifications, and closing the console window. Looked for and not found:
+The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings are in this file's history (`git log -- PROGRESS.md`). Everything is fixed, each with a test, and merged into `main` on 2026-10-31 (from branch `m0-review-fixes`), except two Lee deferred, now in Loose ends: the idle timeout and notifications, and closing the console window. Looked for and not found:
 - Audio thread: no Hocket code runs on it. `EditSync` changes the Edit on the message thread; Tracktion builds the new graph there and destroys the retired one there too, after its pool threads let go (`LockFreeMultiThreadedNodePlayer::postNewGraph`).
 - Thread safety: IXWebSocket's threads only post to the message thread; the bus, handler, the server's connection map and `EditSync` are only used there; `Client`'s shared state is behind its mutex; the Ctrl+C flag is atomic.
 
