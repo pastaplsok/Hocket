@@ -13,6 +13,17 @@
 
 namespace hocket::platform
 {
+std::vector<std::string> utf8Arguments (int argc, char* argv[])
+{
+    // argv is UTF-8 on the platforms Hocket targets.
+    return { argv, argv + argc };
+}
+
+void useBinaryStandardStreams()
+{
+    // POSIX streams never translate line endings.
+}
+
 bool secureRandomBytes (std::span<std::uint8_t> bytes)
 {
     std::ifstream random ("/dev/urandom", std::ios::binary);

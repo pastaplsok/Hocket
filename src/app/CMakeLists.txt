@@ -11,7 +11,6 @@ target_sources(hocket_headless PRIVATE
 
 if(WIN32)
     target_sources(hocket_headless PRIVATE Console_windows.cpp)
-    target_link_libraries(hocket_headless PRIVATE shell32) # CommandLineToArgvW
 else()
     target_sources(hocket_headless PRIVATE Console_posix.cpp)
 endif()

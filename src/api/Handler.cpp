@@ -13,12 +13,13 @@ namespace
 {
     using Json = nlohmann::json;
 
-    // JSON-RPC 2.0 error codes; -32001 is in the range left for servers.
+    // JSON-RPC 2.0 error codes; -32001 and -32002 are in the range left for servers.
     constexpr int parseError = -32700;
     constexpr int invalidRequest = -32600;
     constexpr int methodNotFound = -32601;
     constexpr int invalidParams = -32602;
     constexpr int notAuthenticated = -32001;
+    constexpr int differentBuild = -32002;
 
     constexpr std::size_t maxNameLength = 64;
     constexpr std::size_t maxSessionLength = 128;
@@ -76,18 +77,44 @@ namespace
         std::string message;
     };
 
-    // Reads the client's identity from hello's params into author.
-    std::optional<HelloError> readHello (const Json& params, std::string_view token, commands::Author& author)
+    std::string stringParam (const Json& params, const char* key)
     {
-        static const std::set<std::string> keys { "token", "client", "session", "label" };
-        const auto format = std::string (R"(hello's params are {"token": "...", "client": "Claude", "session": "...", "label": "..."}, with label optional)");
+        return params.contains (key) && params.at (key).is_string() ? params.at (key).get<std::string>() : std::string();
+    }
+
+    // A client from another build may list tools this one doesn't have, or
+    // describe them differently (Protocol.h), so it's turned away.
+    std::optional<HelloError> checkBuild (const Json& params, std::string_view fingerprint)
+    {
+        const auto version = stringParam (params, "version");
+        const auto theirs = stringParam (params, "fingerprint");
+        const auto ours = std::string (hocketVersion());
+
+        if (version == ours && theirs == fingerprint)
+            return {};
+
+        std::string what;
+
+        if (! isPlainText (version, maxNameLength) || theirs.empty())
+            what = "hocket-mcp and this Hocket (" + ours + ") come from different builds: hocket-mcp's hello has no version or fingerprint.";
+        else if (version != ours)
+            what = "hocket-mcp " + version + " and this Hocket (" + ours + ") come from different builds.";
+        else
+            what = "hocket-mcp and this Hocket come from different builds of version " + ours + ": their tools or protocol differ.";
+
+        return HelloError { differentBuild, what + " Rebuild hocket-mcp from the same source as Hocket and reinstall it, "
+                                                   "then restart the MCP client so it starts the new hocket-mcp." };
+    }
+
+    // Reads the client's identity from hello's params into author.
+    std::optional<HelloError> readHello (const Json& params, std::string_view token, std::string_view fingerprint, commands::Author& author)
+    {
+        static const std::set<std::string> keys { "token", "version", "fingerprint", "client", "session", "label" };
+        const auto format = std::string (R"(hello's params are {"token": "...", "version": "...", "fingerprint": "...", )"
+                                         R"("client": "Claude", "session": "...", "label": "..."}, with label optional)");
 
         if (! params.is_object())
             return HelloError { invalidParams, format };
-
-        for (const auto& [key, value] : params.items())
-            if (! keys.contains (key))
-                return HelloError { invalidParams, "hello has no parameter " + singleQuoted (key) + "; " + format };
 
         if (! params.contains ("token") || ! params.at ("token").is_string())
             return HelloError { invalidParams, "hello needs \"token\": the token from Hocket's token file" };
@@ -95,8 +122,15 @@ namespace
         if (! sameToken (params.at ("token").get<std::string>(), token))
             return HelloError { notAuthenticated, "the token is wrong. Hocket makes a new one each time it starts, so read the current one from its token file" };
 
-        const auto text = [&params] (const char* key) { return params.contains (key) && params.at (key).is_string() ? params.at (key).get<std::string>() : std::string(); };
-        author = { text ("client"), text ("session"), text ("label") };
+        // Before the other checks: another build's hello may have other params.
+        if (auto error = checkBuild (params, fingerprint))
+            return error;
+
+        for (const auto& [key, value] : params.items())
+            if (! keys.contains (key))
+                return HelloError { invalidParams, "hello has no parameter " + singleQuoted (key) + "; " + format };
+
+        author = { stringParam (params, "client"), stringParam (params, "session"), stringParam (params, "label") };
 
         if (! isPlainText (author.name, maxNameLength))
             return HelloError { invalidParams, "hello needs \"client\": the client's name as people should see it in the history, e.g. \"Claude\" "
@@ -191,7 +225,7 @@ Reply Handler::handleMessage (int connectionId, std::string_view message)
 
         commands::Author author;
 
-        if (const auto error = readHello (params, options.token, author))
+        if (const auto error = readHello (params, options.token, fingerprint, author))
             return fail (id, error->code, error->message);
 
         if (! hasId)
@@ -211,7 +245,7 @@ Reply Handler::handleMessage (int connectionId, std::string_view message)
         connection->second = author;
 
         log (commands::displayName (author) + " connected (session " + author.session + ")");
-        return { resultReply (id, { { "server", options.serverName }, { "version", options.serverVersion }, { "author", commands::displayName (author) } }) };
+        return { resultReply (id, { { "server", options.serverName }, { "version", hocketVersion() }, { "author", commands::displayName (author) } }) };
     }
 
     // Notifications get no reply, and the API has none of its own.

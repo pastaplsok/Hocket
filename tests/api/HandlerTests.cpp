@@ -1,4 +1,5 @@
 #include "api/Handler.h"
+#include "api/Protocol.h"
 #include "core/Paths.h"
 #include "core/project/Project.h"
 
@@ -20,6 +21,13 @@ namespace
         auto loaded = project::load (pathFromUtf8 (HOCKET_EXAMPLES_DIR "/m0-demo"));
         REQUIRE (loaded.project);
         return std::move (*loaded.project);
+    }
+
+    // hello's params for this build, with the token.
+    Json helloParams (const std::string& session)
+    {
+        return { { "token", token }, { "version", api::hocketVersion() }, { "fingerprint", api::buildFingerprint() },
+                 { "client", "Claude" }, { "session", session } };
     }
 
     std::string demoClipText()
@@ -59,7 +67,7 @@ namespace
 
         Json hello (const std::string& session = "session-1", const std::string& label = {})
         {
-            Json params { { "token", token }, { "client", "Claude" }, { "session", session } };
+            auto params = helloParams (session);
 
             if (! label.empty())
                 params["label"] = label;
@@ -102,7 +110,6 @@ namespace
         {
             api::HandlerOptions handlerOptions;
             handlerOptions.token = token;
-            handlerOptions.serverVersion = "test";
             handlerOptions.now = [this] { return now; };
             handlerOptions.log = [this] (const std::string& line) { logLines.push_back (line); };
             return handlerOptions;
@@ -149,7 +156,7 @@ TEST_CASE ("hello with the token lets a client in")
 
     const auto response = client.hello ("session-1", "drums");
     CHECK (response.at ("id") == 1);
-    CHECK (response.at ("result") == Json { { "server", "Hocket" }, { "version", "test" }, { "author", "Claude (drums)" } });
+    CHECK (response.at ("result") == Json { { "server", "Hocket" }, { "version", api::hocketVersion() }, { "author", "Claude (drums)" } });
     CHECK_FALSE (client.closed);
     CHECK (fixture.logged ("Claude (drums) connected (session session-1)"));
 
@@ -198,7 +205,7 @@ TEST_CASE ("anything before hello, or a wrong token, is refused and the connecti
     {
         auto client = fixture.connect();
         const auto reply = client.send (Json { { "jsonrpc", "2.0" }, { "method", "hello" },
-                                               { "params", { { "token", token }, { "client", "Claude" }, { "session", "s" } } } }.dump());
+                                               { "params", helloParams ("s") } }.dump());
         CHECK (reply.text.empty());
         CHECK (reply.close);
     }
@@ -210,9 +217,11 @@ TEST_CASE ("hello checks the client's name, session and label")
     const auto refused = [&fixture] (const Json& params)
     {
         auto client = fixture.connect();
-        auto withToken = params;
-        withToken["token"] = token;
-        const auto response = client.request ("hello", withToken);
+        auto withBuild = params;
+        withBuild["token"] = token;
+        withBuild["version"] = api::hocketVersion();
+        withBuild["fingerprint"] = api::buildFingerprint();
+        const auto response = client.request ("hello", withBuild);
         CHECK (client.closed);
         return errorMessage (response);
     };
@@ -223,6 +232,52 @@ TEST_CASE ("hello checks the client's name, session and label")
     CHECK (contains (refused ({ { "client", "Claude" }, { "session", "s\n" } }), "hello needs \"session\""));
     CHECK (contains (refused ({ { "client", "Claude" }, { "session", "s" }, { "label", 3 } }), "\"label\" is optional"));
     CHECK (contains (refused ({ { "client", "Claude" }, { "session", "s" }, { "colour", "red" } }), "hello has no parameter 'colour'"));
+}
+
+TEST_CASE ("hello turns away a client from another build")
+{
+    Fixture fixture;
+    auto params = helloParams ("s");
+    const auto version = std::string (api::hocketVersion());
+    const auto fix = " Rebuild hocket-mcp from the same source as Hocket and reinstall it, then restart the MCP client so it starts the new hocket-mcp.";
+
+    const auto refused = [&fixture] (const Json& hello)
+    {
+        auto client = fixture.connect();
+        const auto response = client.request ("hello", hello);
+        CHECK (client.closed);
+        CHECK (errorCode (response) == -32002);
+        return errorMessage (response);
+    };
+
+    SUBCASE ("the same version with other tools or another protocol")
+    {
+        params["fingerprint"] = "0123456789abcdef";
+        CHECK (refused (params) == "hocket-mcp and this Hocket come from different builds of version " + version + ": their tools or protocol differ." + fix);
+        CHECK (fixture.logged ("refused a connection: hocket-mcp and this Hocket come from different builds"));
+    }
+
+    SUBCASE ("another version")
+    {
+        params["version"] = "9.9.9";
+        CHECK (refused (params) == "hocket-mcp 9.9.9 and this Hocket (" + version + ") come from different builds." + fix);
+    }
+
+    SUBCASE ("a client from before the check, which sends neither")
+    {
+        params.erase ("version");
+        params.erase ("fingerprint");
+        params["colour"] = "red"; // another build's hello may have other params too; the build is checked first
+        CHECK (refused (params) == "hocket-mcp and this Hocket (" + version + ") come from different builds: hocket-mcp's hello has no version or fingerprint." + fix);
+    }
+
+    SUBCASE ("the token is checked first, so a stranger learns nothing about the build")
+    {
+        params["token"] = "guess";
+        params["fingerprint"] = "0123456789abcdef";
+        auto client = fixture.connect();
+        CHECK (errorCode (client.request ("hello", params)) == -32001);
+    }
 }
 
 TEST_CASE ("after hello, mistakes get errors but the connection stays open")

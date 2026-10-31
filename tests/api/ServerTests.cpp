@@ -1,6 +1,7 @@
 // End-to-end tests: an IXWebSocket client in this process talks to the server
 // on 127.0.0.1, and the test thread stands in for the message thread.
 
+#include "api/Protocol.h"
 #include "api/Server.h"
 #include "core/Paths.h"
 #include "core/project/Project.h"
@@ -127,7 +128,8 @@ namespace
 
         void hello (const std::string& withToken = token)
         {
-            send ("hello", { { "token", withToken }, { "client", "Claude" }, { "session", "session-1" } });
+            send ("hello", { { "token", withToken }, { "version", api::hocketVersion() }, { "fingerprint", api::buildFingerprint() },
+                             { "client", "Claude" }, { "session", "session-1" } });
         }
 
         void call (const std::string& tool, const Json& arguments)

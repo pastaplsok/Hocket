@@ -21,12 +21,14 @@ ctest --preset vs2026-release
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
 build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch
+cmake --install build\vs2026 --config Release --component mcp --prefix "$env:LOCALAPPDATA\Hocket"
 ```
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 - `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`. `--user <name>` is your name in the history (default `user`).
 - While `--play` runs, it serves the WebSocket API (SPEC §6.3) on 127.0.0.1, port 46253 or the next free one; the port and token are in `%LOCALAPPDATA%\Hocket\api.json`, and API activity is printed with an `API:` prefix. A second `--play` refuses to start while one is running.
-- Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300.
+- `hocket-mcp` is the MCP server Claude Code starts to reach that API (SPEC §6.3). Claude Code runs the copy that `cmake --install ... --component mcp` puts in `%LOCALAPPDATA%\Hocket\bin`, never the one in `build\`. Install again after changing the tools or the API, or every call fails with "different builds". Registering it, and the rest: `docs/connecting-claude-code.md`.
+- Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300, the bridge tests from 46320.
 - `--play` makes sound. Don't run it on someone's machine without asking; a project with an empty clip plays silence, which is enough to check that the device opens.
 
 - If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.
@@ -47,7 +49,7 @@ build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --pla
 - **Text is UTF-8; paths are `std::filesystem::path`.** Every `std::string` holds UTF-8 (we build with `/utf-8`, so narrow literals are UTF-8 too).
   - Convert between text and paths only with `hocket::pathFromUtf8()` / `hocket::utf8FromPath()` (`src/core/Paths.h`).
   - Never build a path from a `std::string` or `char*`, never call `path::string()`, and open files only through a `path`. On Windows the narrow forms go through the ANSI code page, which turns most non-ASCII names into `?`.
-  - Text from the OS (command line, environment, Win32 calls) enters through the platform layer as UTF-8: call the wide (`W`) Windows APIs there and convert (see `hocket::utf8Arguments()`). Never use `argv` directly.
+  - Text from the OS (command line, environment, Win32 calls) enters through the platform layer as UTF-8: call the wide (`W`) Windows APIs there and convert (see `hocket::platform::utf8Arguments()`). Never use `argv` directly.
   - In JUCE code, `juce::File` is fine; convert strings with `juce::String::fromUTF8()` and `toStdString()`.
   - Test new file-handling code with a non-ASCII folder name (see `tests/core/PathsTests.cpp`, `tests/app/CMakeLists.txt`).
 - Tests for: `.notes` parser, `.auto` parser, serializer round-trips, command validation, undo/redo

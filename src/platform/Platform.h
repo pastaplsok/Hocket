@@ -9,9 +9,18 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace hocket::platform
 {
+    // The command-line arguments as UTF-8, program name first. Use these, not
+    // argv: on Windows, argv is in the ANSI code page and loses most non-ASCII text.
+    std::vector<std::string> utf8Arguments (int argc, char* argv[]);
+
+    // Makes stdin and stdout pass bytes through unchanged. On Windows, text
+    // mode turns "\n" into "\r\n" on the way out and back on the way in.
+    void useBinaryStandardStreams();
+
     // Fills `bytes` from the OS's cryptographically secure random source
     // (BCryptGenRandom on Windows). False if it fails.
     bool secureRandomBytes (std::span<std::uint8_t> bytes);

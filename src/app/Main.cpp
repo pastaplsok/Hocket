@@ -7,6 +7,7 @@
 #include "Console.h"
 
 #include "api/Handler.h"
+#include "api/Protocol.h"
 #include "api/Server.h"
 #include "api/TokenFile.h"
 #include "core/Paths.h"
@@ -355,7 +356,6 @@ namespace
         hocket::api::HandlerOptions apiOptions;
         apiOptions.token = token;
         apiOptions.serverName = "hocket-headless";
-        apiOptions.serverVersion = HOCKET_VERSION;
         apiOptions.log = log;
         hocket::api::Handler api (bus, std::move (apiOptions));
 
@@ -406,7 +406,7 @@ namespace
 
     int printVersion()
     {
-        std::cout << "hocket-headless " << HOCKET_VERSION << "\n"
+        std::cout << "hocket-headless " << HOCKET_VERSION << " (API build " << hocket::api::buildFingerprint() << ")\n"
                   << "Tracktion Engine " << HOCKET_TRACKTION_VERSION << "\n"
                   << juce::SystemStats::getJUCEVersion().toStdString() << "\n";
         return 0;
@@ -416,7 +416,7 @@ namespace
 int main (int argc, char* argv[])
 {
     hocket::initialiseConsole();
-    const auto arguments = hocket::utf8Arguments (argc, argv);
+    const auto arguments = hocket::platform::utf8Arguments (argc, argv);
 
     // Tracktion needs JUCE's message manager, even without a GUI.
     juce::ScopedJuceInitialiser_GUI juceInitialiser;

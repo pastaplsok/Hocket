@@ -1,5 +1,6 @@
 add_executable(hocket_api_tests
     HandlerTests.cpp
+    ProtocolTests.cpp
     ServerTests.cpp
     TextChangesTests.cpp
     TokenFileTests.cpp)

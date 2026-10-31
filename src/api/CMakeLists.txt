@@ -4,6 +4,8 @@
 add_library(hocket_api STATIC
     Handler.cpp
     Handler.h
+    Protocol.cpp
+    Protocol.h
     Server.cpp
     Server.h
     TextChanges.cpp
@@ -20,5 +22,8 @@ target_link_libraries(hocket_api
     PRIVATE
         hocket_platform
         ixwebsocket::ixwebsocket)
+
+# hello compares versions (Protocol.h).
+target_compile_definitions(hocket_api PRIVATE HOCKET_VERSION="${PROJECT_VERSION}")
 
 hocket_enable_warnings(hocket_api)

@@ -4,10 +4,11 @@
 // JSON-RPC 2.0 message in, the reply out, with the command bus doing the work.
 //
 // A connection's first request must be hello, with the token from the token
-// file and the client's identity: its name ("Claude"), its session ID, and an
-// optional label. Anything else, or a wrong token, gets an error and the
-// connection is closed. After that it can send tools/list and tools/call,
-// shaped like MCP's, so hocket-mcp forwards them unchanged.
+// file, the client's build (its version and fingerprint, Protocol.h), and its
+// identity: its name ("Claude"), its session ID, and an optional label.
+// Anything else, a wrong token, or a client from another build gets an error
+// and the connection is closed. After that it can send tools/list and
+// tools/call, shaped like MCP's, so hocket-mcp forwards them unchanged.
 //
 // When a client's last connection closes, or it sends no requests for the idle
 // timeout, its open transaction is committed as "(interrupted)" (SPEC §3.1),
@@ -15,6 +16,7 @@
 //
 // Like the bus, it's used from the message thread only.
 
+#include "api/Protocol.h"
 #include "core/commands/CommandBus.h"
 
 #include <chrono>
@@ -32,9 +34,8 @@ namespace hocket::api
     struct HandlerOptions
     {
         std::string token; // clients must send this in hello; never empty
-        std::chrono::seconds idleTimeout = std::chrono::minutes (10);
+        std::chrono::seconds idleTimeout = defaultIdleTimeout;
         std::string serverName = "Hocket";
-        std::string serverVersion;
         std::function<Clock::time_point()> now = [] { return Clock::now(); };
         std::function<void (const std::string&)> log; // optional: connections, changes, refusals
     };
@@ -70,6 +71,7 @@ namespace hocket::api
 
         commands::CommandBus& bus;
         HandlerOptions options;
+        std::string fingerprint = buildFingerprint();
         std::map<int, std::optional<commands::Author>> connections; // nullopt until hello
         std::vector<Client> clients;
 
