@@ -192,8 +192,20 @@ namespace
                 return;
             }
 
-            api.checkIdle();
+            // An exception here would end --play, music and all, so it's reported instead.
+            try
+            {
+                api.checkIdle();
+                pollWatcher();
+            }
+            catch (const std::exception& error)
+            {
+                std::cerr << "internal error: " << error.what() << std::endl;
+            }
+        }
 
+        void pollWatcher()
+        {
             if (! watcher)
                 return;
 
@@ -377,20 +389,31 @@ int main (int argc, char* argv[])
     // Tracktion needs JUCE's message manager, even without a GUI.
     juce::ScopedJuceInitialiser_GUI juceInitialiser;
 
-    if (arguments.size() == 2)
+    // Say what went wrong rather than end with no message (e.g. if Tracktion
+    // can't create the Edit). Exceptions in the message loop's callbacks are
+    // caught where they run (PlayLoop, the API's Handler and Server).
+    try
     {
-        if (arguments[1] == "--list-devices")
-            return listDevices();
+        if (arguments.size() == 2)
+        {
+            if (arguments[1] == "--list-devices")
+                return listDevices();
 
-        if (arguments[1] == "--version")
-            return printVersion();
+            if (arguments[1] == "--version")
+                return printVersion();
+        }
+
+        if (arguments.size() == 3 && arguments[1] == "--check")
+            return checkProject (arguments[2]);
+
+        if (const auto options = parsePlayOptions (arguments))
+            return playProject (*options);
     }
-
-    if (arguments.size() == 3 && arguments[1] == "--check")
-        return checkProject (arguments[2]);
-
-    if (const auto options = parsePlayOptions (arguments))
-        return playProject (*options);
+    catch (const std::exception& error)
+    {
+        std::cerr << "hocket-headless stopped on an internal error: " << error.what() << "\n";
+        return 1;
+    }
 
     printUsage (std::cerr);
     return 1;

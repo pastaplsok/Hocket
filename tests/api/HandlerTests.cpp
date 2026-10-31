@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <set>
+#include <stdexcept>
 
 using namespace hocket;
 using Json = nlohmann::json;
@@ -587,4 +588,57 @@ TEST_CASE ("the idle timeout leaves the person at the DAW alone")
     fixture.now += 60min;
     fixture.handler.checkIdle();
     CHECK (fixture.bus.openTransaction().has_value());
+}
+
+TEST_CASE ("an internal error is answered as one, and the connection carries on")
+{
+    // Anything that throws while handling a request, here the clock.
+    commands::CommandBus bus { demoProject() };
+    bool failing = false;
+    std::vector<std::string> logLines;
+
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    handlerOptions.now = [&failing]
+    {
+        if (failing)
+            throw std::runtime_error ("the clock broke");
+
+        return api::Clock::time_point {};
+    };
+    handlerOptions.log = [&logLines] (const std::string& line) { logLines.push_back (line); };
+
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    failing = true;
+    const auto response = connection.request ("tools/call", { { "name", "history" } });
+    CHECK (response.at ("id") == 2);
+    CHECK (response.at ("error").at ("code") == -32603);
+    CHECK (response.at ("error").at ("message")
+           == "Hocket hit an internal error while handling this request (the clock broke), so it may or may not have been "
+              "carried out; check history before trying again");
+    CHECK_FALSE (connection.closed);
+    CHECK (contains (logLines.back(), "internal error: the clock broke"));
+
+    failing = false;
+    CHECK (connection.call ("history").at ("isError") == false);
+}
+
+TEST_CASE ("an internal error before hello closes the connection")
+{
+    commands::CommandBus bus { demoProject() };
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    handlerOptions.now = []() -> api::Clock::time_point { throw std::runtime_error ("the clock broke"); };
+
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+
+    const auto response = connection.hello();
+    CHECK (response.at ("error").at ("code") == -32603);
+    CHECK (connection.closed);
 }
