@@ -117,6 +117,49 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 After the checks above. Goal: Milestone 0's "done when" list at the top.
 - **The dropped block** (Loose ends) is the one thing in the way of "no audible dropouts". Decide with Lee: dig into Tracktion, work around it, or report it upstream. Once it's fixed, turn the stress test's dropped-block `WARN` back into a `CHECK`.
 - **SPEC:** fold in what Milestone 0 taught, and mark §10.0 done.
+- **Review findings** (below): Lee decides which get fixed.
+
+## Review findings (2026-10-31): waiting for Lee's decision
+A review of all of Milestone 0's code against SPEC.md and CLAUDE.md, most severe first. Nothing has been fixed. Medium: a real bug in plausible use, or a SPEC rule broken. Low: edge cases, hardening, wording. Existing Loose ends aren't repeated here.
+
+**Medium**
+1. **Writing a clip's current text again can add a history entry** (SPEC §3.1: "a command that changes nothing adds no history entry").
+   - Where: `CommandBus.cpp:148` compares parsed clips, and the parser keeps notes in file order and attaches comments to the line they were on (`Notes.h:62`).
+   - So when the stored clip came from text that isn't canonical (lines out of order, a chord split across lines, a comment above an `@length` that comes after the notes), sending back the exact canonical text `read_clip` returns makes a new entry ("#1 wrote clip clp-bass (2 notes)", "Stored exactly as you sent it.").
+   - It also rewrites the Tracktion clip and swaps the playback graph for nothing, which risks the known dropped block.
+   - Checked with a throwaway program against the core sources (all three cases above add an entry; canonical text doesn't).
+   - Fix: compare canonical text (`notes::write` of both), or make the parser's clip canonical (sorted, comments placed as the writer places them). The Gotchas line saying the bus stores the clip "sorted" is wrong for the same reason.
+2. **`--play` keeps a raw pointer to the audio device for the whole run** (`Main.cpp:314`, used again at `:400` for the xrun count).
+   - JUCE deletes the device when it disappears and opens another (`AudioDeviceManager::audioDeviceListChanged`, `juce_AudioDeviceManager.cpp:307`): e.g. the Magni unplugged or asleep over WASAPI. Ctrl+C after that reads freed memory, and the count would be the wrong device's anyway.
+   - Fix: ask `devices` at exit. `devices.getXRunCount()` (`juce_AudioDeviceManager.cpp:1395`) adds JUCE's own count of callbacks that ran over their time, so WASAPI would get a number too.
+3. **`Run-Acceptance.ps1` can pass with `--play` crashing on the way out** (`:272`-`:291`).
+   - It never checks `--play`'s exit code, and it records "stops cleanly" only if the log has a `stopped` line. If `--play` had already exited, or crashed during shutdown (losing its buffered stdout), no result is added and the run can still say "All checks passed".
+   - Fix: FAIL when `stopped` is missing, and check `$play.ExitCode -eq 0`.
+
+**Low**
+4. **A second `--play` can start alongside the first.** The running-instance check (`Main.cpp:296`) comes seconds before the token file is written (`:373`): the device opens and the MIDI scan runs in between. Two started together both run, and the second one's token file wins (SPEC §6.3 and CLAUDE.md say a second refuses). Fix: take a named mutex or an exclusive lock file first.
+5. **Transaction names aren't checked** beyond being non-empty (`CommandBus.cpp:193`). Newlines, control characters and any length go into the history, the `history` tool's one-line-per-entry output, and the log, while hello's names are held to 64 bytes of plain text (`Handler.cpp:68`). Fix: the same rule, with a longer limit.
+6. **Clips have no length limit.** Without `@length`, the length comes from the latest note (`NotesParser.cpp:417`), so a typo like `100000.1 C2 1/4 v80` makes a 100,000-bar clip, and the loop plays about 55 hours of silence after it. An explicit `@length` allows up to 999,999 bars (`:263`). Fix: a cap, with an error saying so.
+7. **The idle timeout doesn't count notifications** (`Handler.cpp:252` returns before `lastRequest` is set at `:258`); SPEC §3.1 says "last request of any kind". hocket-mcp doesn't forward any today, so there's no effect yet. Fix: set it first, or change SPEC's wording.
+8. **`--watch` silently undoes API edits.** API writes never reach the file (SPEC §6.1), so the next save of that file replaces Claude's change with the file's text, with no warning (`Main.cpp:270`). It's undoable, but easy to miss, e.g. in Sunday's step 6 if Claude's last write wasn't undone. Fix: warn when the clip has changed since the file was last read, naming the entry being replaced; or document it.
+9. **Exceptions on the message thread end the process, audio and all.** Nothing catches around `Handler::handleMessage` (`Server.cpp:61`) or the `--watch` writes, and `EditSync`'s constructor throws out of `playProject` (`EditSync.cpp:72`). I found no throw from valid input, but e.g. `std::bad_alloc` on a huge message (there's no size limit) would do it. Fix: catch in `Connections::received` and reply with an internal error; catch in `main` and print the message.
+10. **Clicking in the console window can freeze the API.** `--play` logs with `std::cout`/`std::endl` on the message thread (`Main.cpp:354`, `:271`). While QuickEdit has a selection, console writes block, so API calls time out after 30 s and `--watch` stops, until Esc. Audio keeps playing. Worth knowing on Sunday. Fix: turn QuickEdit off in `initialiseConsole`, or log from another thread.
+11. **Closing the console window isn't a clean stop** (`Console_windows.cpp:18` returns FALSE for `CTRL_CLOSE_EVENT`): the device isn't closed and the token file stays (the stale-file check copes). Fix: handle it like Ctrl+C; Windows gives the handler about 5 s.
+12. **A save `--watch` can't read is dropped.** If the file can't be read when it settles (an editor still holding it), it's reported once as "gone or can't be read" and not retried until it changes again (`ClipFileWatcher.cpp:40`, `Main.cpp:264`). Fix: retry on the next poll while the file exists.
+13. **A working folder whose name has an unpaired UTF-16 surrogate stops hocket-mcp at startup.** MSVC's `u8string()` throws on those, and `workingFolderName` (`Bridge.cpp:339`) calls `utf8FromPath` unguarded. Rare: NTFS allows such names, but nothing types them. Not reproduced. Fix: catch there and use no label.
+14. **Unicode rule, by the letter** (harmless: ASCII only). `TokenFile.cpp:27` (`/ "Hocket" / "api.json"`) and `:80` (`+= ".tmp-" + std::to_string (...)`) build paths from `char*`/`std::string`, which CLAUDE.md forbids; tests do the same with `/ "api.json"`. Fix: `pathFromUtf8`, or allow ASCII literals in CLAUDE.md's rule.
+15. **`--driver` with no output devices** gives "ASIO has no output device called ''; its output devices are (none)" (`Main.cpp:191`, indexing an empty list). Fix: say the driver has no output devices.
+16. **`get_project_overview`** lists a track's clips in `project.json` order, not by start (`Tools.cpp:173`; SPEC §4.4's canonical order is by start), and says the song plays "on a loop" even when stopped (`:154`). It never says whether it's playing.
+
+**SPEC and docs**
+17. SPEC §10.0 says aftertouch lines are rejected as not supported yet, but §5 gives them no syntax, so the parser can't recognise one (it gets the drum-map message). Define the token, or drop it from the list.
+18. SPEC §4.1 rule 5 reads as if the 64-character limit applies after the prefix; `ProjectReader.cpp:139` counts the whole ID. Say which.
+19. Here: the Gotchas line on property tests ("sorted", see 1), and "Render speed"'s "the engine tests' 10 s", from before the stress tests (CLAUDE.md says about 35 s).
+
+**Looked for and not found**
+- Audio thread: no Hocket code runs on it. `EditSync` changes the Edit on the message thread; Tracktion builds the new graph there and destroys the retired one there too, after its pool threads let go (`LockFreeMultiThreadedNodePlayer::postNewGraph`). Nothing beyond the dropped block in Loose ends.
+- Thread safety: IXWebSocket's threads only post to the message thread; the bus, handler, the server's connection map and `EditSync` are only used there; `Client`'s shared state is behind its mutex; the Ctrl+C flag is atomic. No races found.
+- Paths: every file is opened through a `path`, the command line comes from `CommandLineToArgvW`, and nothing calls `path::string()`.
 
 ## Loose ends
 - **Dropped blocks under rapid rewrites (found by step 8's stress test).**
