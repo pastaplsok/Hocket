@@ -10,10 +10,10 @@ Status board for the current milestone. Read it at the start of a session; updat
 | 2 | `.notes` parser + canonical writer (M0 subset), round-trip / error / property / fuzz tests | ✅ Done |
 | 3 | `project.json` loader + canonical writer, project model, `hocket-headless --check`, tests | ✅ Done |
 | 4 | Command bus: `write_clip`, undo/redo with the AI author check, history, author tags, transactions; tests | ✅ Done |
-| 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; transport commands; offline-render test | ✅ Done, except the by-ear check over ASIO (below) |
+| 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; transport commands; offline-render test | ✅ Done. Heard looping over FL Studio ASIO on 2026-11-04 (below) |
 | 6 | WebSocket API on 127.0.0.1 + token file; interrupted-transaction handling | ✅ Done; the by-ear check of `write_clip` over the API moves to step 7 |
-| 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ✅ Built, tested, and run silently against `--play`; registering it in Claude Code and the by-ear check wait for Lee (below) |
-| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`, which passed, a fresh clone from GitHub included. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks are Lee's, on Sunday 2026-11-01 (below); SPEC updates after that. The code review of 2026-10-31 is fixed and merged into `main`, except two items deferred (Loose ends) |
+| 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ✅ Registered in Claude Code. On 2026-11-04, Claude's `write_clip` was heard on the next pass with no glitch; `undo` by ear is still to do (below) |
+| 8 | Stress test, acceptance run, SPEC updates | 🟡 Tooling built and run silently: the engine stress test, `hocket-stress` and `tools/acceptance/Run-Acceptance.ps1`, which passed, a fresh clone from GitHub included. The stress test found a dropped block about once in 1,000 rewrites (Loose ends). The ASIO runs and by-ear checks started with Lee on 2026-11-04 (below); SPEC updates after that. The code review of 2026-10-31 is fixed and merged into `main`, except two items deferred (Loose ends) |
 
 **Milestone 0 is done when:**
 - a fresh clone builds with the commands in CLAUDE.md;
@@ -75,8 +75,8 @@ Status board for the current milestone. Read it at the start of a session; updat
   - `tests/common`: `TemporaryFolder.h` (non-ASCII temp folders) and `FakeHocket.h` (a bus, handler and API server on a thread of their own, plus a token file: a running Hocket, as far as a client can tell).
 - `examples/m0-demo`: 120 BPM, 4/4, one track `trk-bass` with a 4OSC `dev-bass-synth`, one 2-bar clip `clp-bass` at 1.1.
 
-## Waiting for Lee: the ASIO runs and by-ear checks (steps 5, 7 and 8), Sunday 2026-11-01
-They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-11-01.
+## With Lee: the ASIO runs and by-ear checks (steps 5, 7 and 8)
+They need Lee at the laptop with the Magni. Started on 2026-11-04.
 
 **What's been checked so far, all silent** (an empty clip over WASAPI, only empty clips written):
 - `--play`: the device opens, it loops, `--watch` applies saves (errors print as `file:line:column`), and Ctrl+C stops cleanly.
@@ -105,24 +105,47 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
   - The engine stress test dropped 2 blocks in that run, and none in the `ctest` run just before (Loose ends).
   - Also checked by hand: with `api.lock` held, `--play` refuses before opening a device. QuickEdit is off while `--play` runs and back on after a normal exit (a classic console: 0x1F7, 0x1B7 during, 0x1F7).
 
+**With Lee, on 2026-11-04, by ear:**
+- ASIO4ALL v2, the first ASIO driver tried (in a session with Cowork Claude): sharp, buzzy "NES helicopter" sounds came with the bass line. Windows Audio sounded fine, and so did FL Studio ASIO, which the checks use from here on (Loose ends).
+- Over FL Studio ASIO, from Claude Code: `write_clip` replaced `clp-bass` with a new 20-note line. Lee heard it change on the next pass, with no click, gap or stutter.
+- From Lee's terminal log:
+  - `--list-devices`: ASIO has `ASIO4ALL v2`, `FL Studio ASIO` and `Realtek ASIO`. The Magni is `Speakers (Magni Mesh Dac)` under each Windows Audio type.
+  - The `Playing on` lines: ASIO4ALL v2 (three runs) and FL Studio ASIO both ran at 44100 Hz, 512 samples (11.6 ms). Windows Audio ran the Magni at 48000 Hz, 480 samples (10.0 ms).
+  - The first ASIO4ALL run's Ctrl+C said "already stopped": playback had stopped by itself, and `--play` didn't say so (Loose ends).
+  - `API: Claude (Hocket) connected`, then `API: Claude (Hocket): write_clip: #1 wrote clip clp-bass (20 notes)`.
+  - Every Ctrl+C: "this driver doesn't report xruns, and no audio callback took longer than its block". None of these drivers counts xruns (item 8).
+- Items 5 and 6, over FL Studio ASIO, in two `--play` runs (Lee restarted to copy the log):
+  - Claude wrote `clp-bass`, heard on the next pass with no gap. `undo` took it back: `read_clip` showed the demo text byte for byte.
+  - Claude wrote again (#2), then Lee's save of `bass.notes` played as #3. `history` listed `#3 Lee` and `#2 you` (Claude). `--play` printed `clips/bass.notes: #3 wrote clip clp-bass (14 notes)` and the warning, naming Claude's #2 and saying that undoing #3 brings it back.
+  - In the second run: a save with a mistake (`1.5`) changed nothing (the history stayed empty). Then Claude wrote #1 and Lee saved #2, and Claude's `undo` refused: "the most recent change, #2 ..., was made by Lee, not Claude (Hocket)".
+  - The bridge's "Hocket has restarted" note came once after each restart.
+- While `--play` runs, Lee can't select text in the terminal (Loose ends).
+- Item 7, over FL Studio ASIO at 512 samples, where a dropped block would be 11.6 ms of silence:
+  - Three plain `hocket-stress` runs: no clicks, gaps or hiccups heard. Each ended with "All 200 were applied" and the clip put back.
+  - `--vary`: it left a chord ringing, which kept going after the run ended and across every loop pass. The spectrum showed peaks near 105, 155 and 255 Hz: Ab2, Eb3 and C4, notes from the octave-up version. Claude's `transport stop` silenced it, and `play` started cleanly. Stuck notes (Loose ends).
+- Item 8: Ctrl+C printed "stopped; this driver doesn't report xruns, and no audio callback took longer than its block".
+- Item 9: Lee reverted `bass.notes`.
+- Item 10: `Run-Acceptance.ps1 -Driver ASIO -Device "FL Studio ASIO"` passed every check. The engine stress test dropped 0 blocks, with the slowest block 0.35 ms of its 5.8 ms; `hocket-stress` answered in 0.42 ms (median) and 2.85 ms at most.
+
 **To do with Lee:**
 1. ✅ Installed and registered (2026-10-30, after the step 7 commit). `hocket-mcp.exe` is in `%LOCALAPPDATA%\Hocket\bin`. It's registered as `hocket` at user scope, and `claude mcp get hocket` shows it connected.
    - Reinstalled on 2026-10-31, after the review fixes changed the tool descriptions: API build `c4f35c9e10c86405`, the same as `main`'s `hocket-headless`. Restart Claude Code sessions to pick it up. Every session gets the tools, including the ones developing Hocket here; they say "Hocket isn't running" until `--play` runs. After a rebuild that changes the tools or the API, run CLAUDE.md's install command again.
 2. ✅ Checked on 2026-10-31. A restarted Claude Code session loaded `hocket` with all 9 tools, and its server instructions. With no `--play` running, `get_project_overview` returned "Hocket isn't running: start it with `hocket-headless --play <project folder>`, then try again."
-3. `hocket-headless.exe --list-devices`, and check the Magni shows up under Windows Audio.
-4. `hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch --user Lee`, with ASIO4ALL routed to the Magni in its panel.
-5. From Claude Code: rewrite `clp-bass`, and listen for it on the next pass, with no click, gap or stutter. Then `undo` (the old line comes back), and `history`, which should name Claude with the folder label. `--play` should print `API: Claude (<folder>) connected`.
-6. Edit `examples\m0-demo\clips\bass.notes` and save. Listen for the change by the next pass. Save once with a mistake in it: it should print the error and keep playing the old clip. Then ask Claude to `undo`: it should refuse, since the newest change is Lee's.
+3. ✅ (2026-11-04) `hocket-headless.exe --list-devices`, and check the Magni shows up under Windows Audio.
+4. ✅ (2026-11-04) `hocket-headless.exe --play examples\m0-demo --driver ASIO --device "FL Studio ASIO" --watch --user Lee`, with FL Studio ASIO set to the Magni in its panel. Use the device name exactly as `--list-devices` prints it.
+5. ✅ (2026-11-04, above) From Claude Code: rewrite `clp-bass`, and listen for it on the next pass, with no click, gap or stutter. Then `undo` (the old line comes back), and `history`, which should name Claude with the folder label. `--play` should print `API: Claude (<folder>) connected`.
+6. ✅ (2026-11-04, above) Edit `examples\m0-demo\clips\bass.notes` and save. Listen for the change by the next pass. Save once with a mistake in it: it should print the error and keep playing the old clip. Then ask Claude to `undo`: it should refuse, since the newest change is Lee's.
    - If Claude's last change is still in place when you save, the save replaces it (Hocket doesn't write clip files), and `--play` prints a warning naming Claude's entry and the one to undo.
-7. The stress run by ear (step 8). Still playing, in a second terminal: `build\vs2026\tools\stress\Release\hocket-stress.exe`.
+7. 🟡 (2026-11-04, above: the plain runs passed; `--vary` left stuck notes) The stress run by ear (step 8). Still playing, in a second terminal, in the repository's folder: `.\build\vs2026\tools\stress\Release\hocket-stress.exe`.
    - **Watch the dropped blocks here: "no audible dropouts" is one of Milestone 0's done criteria.** Over ASIO, a dropped block can only be heard, as a click. Nothing counts it: the driver still gets its block on time, so it isn't an xrun or a late callback. Step 10's dropped-block number comes from the engine test's fake device, not from ASIO.
    - For the 10 s it runs, the bass line should sound exactly as before, since only a comment changes. Listen for clicks or gaps.
    - Run it three times, and write down how many clicks you hear in each run. The engine stress test drops a block about once in 500 to 1,000 rewrites (Loose ends), so a click in one run of 200 would match that known issue. Any click means the criterion isn't met yet, until that issue is fixed (Next).
    - Then once with `--vary`: the notes jump an octave every other rewrite, so it sounds busy, but it should never stutter or stop.
    - Each run should end with "All 200 were applied" and "The clip is back as it was".
-8. Ctrl+C. Note what it prints: the driver's xrun count (ASIO drivers usually keep one; WASAPI doesn't), and how many audio callbacks took longer than their block. Both should be 0.
-9. Revert `bass.notes` afterwards (`git checkout examples/m0-demo/clips/bass.notes`).
-10. The acceptance checks over ASIO, silently, for an xrun count without listening: `powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1 -Driver ASIO -Device "ASIO4ALL v2"`. Every check should pass, "No xruns" among them, and it prints the engine stress test's dropped-block count and the late audio callbacks. Write the dropped-block count down next to step 7's clicks. That test plays on a fake device whatever `-Driver` says, so it shows how often Tracktion drops a block, not what ASIO did.
+8. ✅ (2026-11-04) Ctrl+C. Note what it prints: the driver's xrun count, and how many audio callbacks took longer than their block. Both should be 0.
+   - JUCE counts xruns only for an ASIO driver that reports overloads (`kAsioCanReportOverload`). ASIO4ALL and FL Studio ASIO don't, and neither does Windows Audio. On the laptop, then, the late callbacks and Lee's ears are the only counts. Focusrite's driver on the desktop may report them.
+9. ✅ (2026-11-04) Revert `bass.notes` afterwards (`git checkout examples/m0-demo/clips/bass.notes`).
+10. ✅ (2026-11-04) The acceptance checks over ASIO, silently, for an xrun count without listening: `powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1 -Driver ASIO -Device "FL Studio ASIO"`. Every check should pass. FL Studio ASIO doesn't count xruns, so "Xruns" comes out as a NOTE, not a check. It also prints the engine stress test's dropped-block count and the late audio callbacks. Write the dropped-block count down next to step 7's clicks. That test plays on a fake device whatever `-Driver` says, so it shows how often Tracktion drops a block, not what ASIO did.
 
 **To do when Lee sets up Claude Desktop** (Lee is away from home as of 2026-10-30, for a couple of days; don't drop this):
 1. Register the installed `hocket-mcp.exe` in Claude Desktop's config. It should be `%APPDATA%\Claude\claude_desktop_config.json`, under `"mcpServers": { "hocket": { "command": "<path to hocket-mcp.exe>" } }`; check against Claude Desktop's own docs. Then restart Claude Desktop.
@@ -131,7 +154,7 @@ They need Lee at the laptop with the Magni; Lee plans to do them on Sunday 2026-
 4. Check the label too. Claude Desktop isn't started in a project folder, so the working folder's name may mean nothing (an app or system folder). If so, pass `--label` in its config, or pick a better default for clients that don't start the bridge in a project folder.
 
 ## Test hardware
-- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own, so ASIO goes through ASIO4ALL. Milestone 0's ASIO checks (steps 5 and 8) run here.
+- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own. ASIO4ALL put a buzz over the bass (Loose ends); FL Studio ASIO works, so Milestone 0's ASIO checks (steps 5 and 8) use it, here.
 - **Desktop**: Focusrite Scarlett 2i2 with Focusrite's native ASIO driver and mic inputs. It'll be the test interface for v1 recording.
 
 ## Next: finishing step 8 and Milestone 0
@@ -148,6 +171,26 @@ The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings a
 - **Deferred from the review (2026-10-31):**
   - The idle timeout doesn't count notifications: `Handler::handleRequest` returns for one before it sets `lastRequest`, while SPEC §3.1 says "last request of any kind". No effect yet: hocket-mcp forwards none. Fix: set it first, or change SPEC's wording.
   - Closing the console window isn't a clean stop: `handleConsoleControl` (`Console_windows.cpp`) returns FALSE for `CTRL_CLOSE_EVENT`, so the device isn't closed and the token file stays (the stale-file check copes). Fix: handle it like Ctrl+C; Windows gives the handler about 5 s.
+- **ASIO4ALL v2 on the Magni buzzes (2026-11-04).** Sharp, buzzy "NES helicopter" sounds came with the bass line. Windows Audio and FL Studio ASIO, on the same DAC, sounded fine. The cause isn't known.
+  - Hocket doesn't choose a sample rate or buffer size. It opens the device with whatever the driver or Tracktion's saved settings give, and prints both in its `Playing on` line. With no saved rate, JUCE takes the driver's current rate.
+  - The log points at the sample rate, not the buffer. Both ASIO drivers ran at 44100 Hz with 512 samples, but Windows runs the Magni at 48000 Hz. FL Studio ASIO goes through Windows' audio engine, which converts the rate. ASIO4ALL drives the device directly, by kernel streaming, so it needs the DAC itself at 44.1 kHz while Windows holds it at 48 kHz.
+  - The test: set the Magni to 44100 Hz in Windows' Sound settings (the device's Properties, then Advanced) and try ASIO4ALL again. Or turn on "Always Resample 44.1kHz <-> 48kHz" in ASIO4ALL's advanced panel.
+  - `--play` has no option for the sample rate or buffer size. `--sample-rate` and `--buffer-size` would make this testable from the command line.
+  - It isn't in Milestone 0's way, since FL Studio ASIO works. But plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
+- **Stuck notes under rewrites that change notes (found by Lee with `hocket-stress --vary`, 2026-11-04).** Milestone 0 isn't done until this is fixed.
+  - What was heard: three notes of the octave-up version kept sounding after the run, across every loop pass, until playback stopped.
+  - What Tracktion does (`tracktion_LoopingMidiNode.cpp`): after a graph swap, the first block sends note-offs for active notes the new sequence doesn't have (1256-1276). Every loop's last block sends note-offs for all active notes (1368-1373). So notes that survive loop passes are ones its `ActiveNoteList` no longer holds, while the synth still does.
+  - So either Tracktion sent a note-on without a note-off, or 4OSC kept a voice going after its note-off. Two leads, neither proven:
+    - Tracktion: `ActiveNoteList` is one flag per channel and note, and nothing stops a second note-on for a note already on (1356-1360). But JUCE's `MPEInstrument::noteOn` releases the earlier note on a repeat (`juce_MPEInstrument.cpp:368-375`), so a duplicate alone shouldn't leave a voice on.
+    - 4OSC (`tracktion_FourOscPlugin.cpp:290-308, 459-467`): a note started on a voice that's still sounding makes it quick-stop (10 ms) with a retrigger pending. A note-off during the quick stop doesn't cancel the retrigger, so the voice restarts afterwards and nothing ever ends it. But only a stolen voice gets there, and 4OSC's defaults are 32 voices with a 0.1 s release, so stealing seems unlikely.
+  - Recording the MIDI that reaches 4OSC would show which.
+  - The plan: a failing test in the real-time harness (`--vary`-style rewrites at 20/s, then an empty clip, then the output must go silent), recording the MIDI that reaches the synth if needed. Then fix it, in Hocket if it can be worked around, and report it upstream either way. Then Lee checks `--vary` by ear.
+  - The engine tests missed it: their rewrites keep a held note or move one note, and nothing checks for silence afterwards.
+- **No text selection while `--play` runs (2026-11-04).** Lee couldn't select any text in the terminal, so had to stop `--play` to copy its log. The cause is the review's fix #10, which turns QuickEdit off. That keeps a selection from pausing console output (in the classic console, a selection blocks the writer, and so the message thread). Without QuickEdit, though, the classic console has no mouse selection, and Windows Terminal hands the mouse to the program (Shift+drag still selects there).
+  - The fix: write console output from a thread of its own, through a queue, so a selection only pauses that thread. Then leave QuickEdit as the user had it.
+- **Small things from Lee's first run (2026-11-04):**
+  - `--device "Magni Mesh Dac"` was refused, since the name is `Speakers (Magni Mesh Dac)`. The error listed the right name, so it worked as designed. When exactly one device contains the given text, the error could say "did you mean...".
+  - `AcceptanceChecks.ps1`'s Xruns NOTE says "ASIO drivers usually do" report them; ASIO4ALL and FL Studio ASIO don't (item 8 above). Fix the wording, and its test if one matches the text.
 - **Clip starts in `project.json` have no upper bound.** A clip is at most 999 bars long, but one can start at bar 100000, which makes as long a loop. Only a hand-edited `project.json` can do it in Milestone 0.
 - **Dropped blocks under rapid rewrites (found by step 8's stress test).**
   - **What happens:** about once in 500 to 1,000 rewrites, Tracktion plays one block of digital silence: 256 samples, 5.8 ms at 44.1 kHz. It starts on a block boundary, one to three blocks after a rewrite's graph swap. The held note carries on afterwards at full level, so the voice isn't reset; that block's output is simply empty. It would be heard as a click.
@@ -161,6 +204,8 @@ The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings a
   - **One unexplained failure:** on 2026-10-30, a Debug run of the two stress tests failed once, right after a full Debug `ctest`. My filter hid the error, so which check failed isn't known. It didn't happen again in 23 Debug runs since: 11 of the stress tests alone, and 12 of the whole engine suite. If it shows up again, keep the whole output.
   - **Next:** instrument Tracktion locally to find which node outputs the empty block, and whether it's the first block after a graph swap. Check whether upstream knows about it. Then fix it, work around it (only set the loop range when it changes, or coalesce rewrites), or report it. Until then, the stress test only warns about dropped blocks; any other gap, retrigger or click fails it.
 - **Tracktion stops playback when it rebuilds its device lists.** Applying a new MIDI device list (or an audio device change) releases every playback context, which stops the playhead, and the transport then stops itself. `--play` works around the one that always happens: Tracktion's first MIDI scan otherwise lands 4 s after startup (see Gotchas). A MIDI device plugged in during playback would still stop it. Milestone 0 can live with that; v1, with MIDI input and device hot-plug, needs an answer (keep playing, or restart).
+  - It happened over ASIO on 2026-11-04. During the first of Lee's ASIO4ALL runs, Lee changed the output device in ASIO4ALL's panel, and Ctrl+C later found playback "already stopped". That fits: a driver asks for a reset when its settings change (`kAsioResetRequest`), and JUCE then restarts the device. Not reproduced on purpose yet.
+  - `--play` prints nothing when playback stops by itself. It should, at least, so a stop isn't mistaken for silence or a crash.
 - **API (step 6):**
   - `history` has no author filter yet (SPEC §6.4).
   - The person's display name is `--user` only; it becomes a saved setting with the GUI's settings.

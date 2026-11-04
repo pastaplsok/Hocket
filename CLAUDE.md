@@ -18,13 +18,15 @@ git submodule update --init          # not --recursive (see DEPENDENCIES.md)
 cmake --preset vs2026
 cmake --build --preset vs2026-release
 ctest --preset vs2026-release
-build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
-build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
-build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch
+.\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
+.\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
+.\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch
 cmake --install build\vs2026 --config Release --component mcp --prefix "$env:LOCALAPPDATA\Hocket"
-build\vs2026\tools\stress\Release\hocket-stress.exe
+.\build\vs2026\tools\stress\Release\hocket-stress.exe
 powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 ```
+
+- Run these from the repository's folder. PowerShell needs the `.\` to run a program by a relative path; without it, `build\...` is taken for a module name.
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 - `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`, with a warning when the save replaces a change made through the API. `--user <name>` is your name in the history (default `user`). At Ctrl+C it prints the driver's xrun count (where the driver keeps one) and how many audio callbacks took longer than their block.
