@@ -93,6 +93,15 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
         {
             const tracktion::BeatRange beats { beatPosition (clip.start), beatPosition (hocket::project::clipEnd (clip, project.meter)) };
             auto midiClip = track.insertMIDIClip (juceString (clip.id), tempo.toTime (beats), nullptr);
+
+            // A clip that uses a proxy sequence plays through Tracktion's MidiNode,
+            // which keeps no note state across graph swaps: when a rewrite changes a
+            // note that's sounding, the new graph sends the new note's note-off and
+            // nothing ever ends the old one. Without the proxy it plays through
+            // LoopingMidiNode, which hands its sounding notes to the next graph and
+            // ends the ones the rewrite took away. The proxy only saves CPU on
+            // quantisation and groove, which Hocket doesn't use.
+            midiClip->setUsesProxy (false);
             writeClip (*midiClip, clip, project.meter);
             clips.emplace (clip.id, midiClip);
         }
@@ -130,7 +139,8 @@ void EditSync::clipContentChanged (const std::string& clipId)
 
     // Tracktion rebuilds its playback graph on the next message-thread callback
     // and swaps it in without stopping: notes still in the clip keep sounding,
-    // removed ones get note-offs (LoopingMidiNode::prepareToPlay).
+    // removed ones get note-offs (LoopingMidiNode, as the clips don't use a
+    // proxy; see the constructor).
     writeClip (*target->second, *clip, bus.project().meter);
     clearTracktionUndo();
 

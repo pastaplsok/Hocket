@@ -9,9 +9,12 @@
 
 #include "EngineTesting.h"
 
+#include "core/notes/Notes.h"
+
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -216,6 +219,129 @@ namespace
     {
         return makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, notesText) }) });
     }
+
+    //==============================================================================
+    // Records the MIDI that reaches the synth: a plugin put ahead of 4OSC on the
+    // track. Its storage is allocated up front, so the audio thread never
+    // allocates; read it once playback has stopped.
+    class MidiRecorder final : public tracktion::Plugin
+    {
+    public:
+        static inline const char* xmlTypeName = "hocketTestMidiRecorder";
+
+        struct Event
+        {
+            std::int64_t sample = 0; // counted from the first block it saw
+            int note = -1;           // -1: all notes off
+            bool on = false;
+        };
+
+        explicit MidiRecorder (tracktion::PluginCreationInfo info) : Plugin (info) { events.resize (100000); }
+        ~MidiRecorder() override { notifyListenersOfDeletion(); }
+
+        // Puts one ahead of everything else on the Edit's first track.
+        static MidiRecorder& addTo (tracktion::Edit& edit)
+        {
+            static const bool registered = [&edit]
+            {
+                edit.engine.getPluginManager().createBuiltInType<MidiRecorder>();
+                return true;
+            }();
+
+            auto plugin = edit.getPluginCache().createNewPlugin (xmlTypeName, {});
+            REQUIRE ((registered && plugin != nullptr));
+            tracktion::getAudioTracks (edit)[0]->pluginList.insertPlugin (plugin, 0, nullptr);
+            return *dynamic_cast<MidiRecorder*> (plugin.get());
+        }
+
+        juce::String getName() const override { return "MIDI recorder"; }
+        juce::String getPluginType() override { return xmlTypeName; }
+        juce::String getSelectableDescription() override { return getName(); }
+        BusLayout getBusses() const override { return {}; }
+        int getNumOutputChannelsGivenInputs (int) override { return 0; }
+        void initialise (const tracktion::PluginInitialisationInfo&) override {}
+        void deinitialise() override {}
+
+        void applyToBuffer (const tracktion::PluginRenderContext& context) override
+        {
+            if (const auto* midi = context.bufferForMidiMessages)
+            {
+                if (midi->isAllNotesOff)
+                    add ({ samples, -1, false });
+
+                for (const auto& m : *midi)
+                    if (m.isNoteOnOrOff())
+                        add ({ samples + juce::jlimit (0, context.bufferNumSamples - 1, juce::roundToInt (m.getTimeStamp() * FakeAudioDevice::sampleRate)),
+                               m.getNoteNumber(), m.isNoteOn() });
+            }
+
+            samples += context.bufferNumSamples;
+        }
+
+        // In the order the synth gets them. Once playback has stopped.
+        std::vector<Event> recorded() const
+        {
+            std::vector<Event> sorted (events.begin(), events.begin() + count.load());
+            std::ranges::stable_sort (sorted, {}, &Event::sample);
+            return sorted;
+        }
+
+    private:
+        std::vector<Event> events;
+        std::atomic<int> count { 0 };
+        std::int64_t samples = 0;
+
+        void add (Event e)
+        {
+            if (const auto i = count.load(); i < static_cast<int> (events.size()))
+            {
+                events[static_cast<std::size_t> (i)] = e;
+                count.store (i + 1);
+            }
+        }
+    };
+
+    // The notes the synth is left holding after these events, by JUCE's rules:
+    // a note-on for a note already on retriggers it, and a note-off for one
+    // that's off is ignored.
+    std::vector<int> notesLeftOn (const std::vector<MidiRecorder::Event>& events)
+    {
+        std::array<bool, 128> on {};
+
+        for (const auto& e : events)
+        {
+            if (e.note < 0)
+                on.fill (false);
+            else
+                on[static_cast<std::size_t> (e.note)] = e.on;
+        }
+
+        std::vector<int> left;
+
+        for (int note = 0; note < 128; ++note)
+            if (on[static_cast<std::size_t> (note)])
+                left.push_back (note);
+
+        return left;
+    }
+
+    // The last few events for a note, for a failure message.
+    std::string historyOf (int note, const std::vector<MidiRecorder::Event>& events, std::size_t last = 8)
+    {
+        std::vector<std::string> lines;
+
+        for (const auto& e : events)
+            if (e.note == note || e.note < 0)
+                lines.push_back ((e.note < 0 ? std::string ("all notes off") : std::string (e.on ? "on " : "off ") + std::to_string (note))
+                                 + " at sample " + std::to_string (e.sample));
+
+        std::string text;
+
+        for (auto i = lines.size() > last ? lines.size() - last : 0; i < lines.size(); ++i)
+            text += lines[i] + "; ";
+
+        return text;
+    }
 }
 
 TEST_CASE ("stress: 200 rewrites at 20 a second during playback cause no xruns and no dropouts")
@@ -322,4 +448,81 @@ TEST_CASE ("stress: rewrites that move the notes cause no xruns, and the last on
     const auto& out = audio.output();
     CHECK (peakBetween (out, barSamples, barSamples + 2 * beatSamples - 441) < 1.0e-3f);
     CHECK (std::abs (firstSoundAt (out, barSamples) - (barSamples + 2 * beatSamples)) < 441);
+}
+
+TEST_CASE ("stress: rewrites that change the notes leave none of them stuck")
+{
+    // What hocket-stress --vary does to the demo's bass line: every other
+    // rewrite moves each note up an octave, so notes start and stop at all
+    // points of the pass. Then the clip is emptied, and everything must fall
+    // silent once the release tails are over.
+    const std::string demo = "@length 2bars\n\n"
+                             "1.1 C2 1/8 v100\n1.1.3 C2 1/16 v70\n1.2 C3 1/8 v90\n1.2.3 C2 1/8 v80\n"
+                             "1.3 Eb2 1/8 v95\n1.3.3 G2 1/8 v85\n1.4 Bb1 1/8 v90\n1.4.3 C2 1/8 v80\n"
+                             "2.1 Ab1 1/4 v100\n2.2 Ab1 1/8 v75\n2.2.3 C2 1/8 v85\n2.3 G1 1/4 v100\n2.4 G1 1/8 v80\n2.4.3 Bb1 1/8 v90\n";
+
+    auto octaveUp = *notes::parse (demo).clip;
+
+    for (auto& note : octaveUp.notes)
+        note.pitch += 12;
+
+    const auto up = notes::write (octaveUp);
+    constexpr int rewrites = 200;
+
+    FakeAudioDevice device;
+    commands::CommandBus bus (oneClip (demo));
+    engine::EditSync sync (testEngine(), bus);
+    auto& midi = MidiRecorder::addTo (sync.edit());
+    REQUIRE (bus.execute (commands::Play {}, lee).ok);
+
+    AudioThread audio (device, 13.0);
+    std::vector<int> rewrittenAt; // the sample each rewrite was sent at, roughly
+    rewrittenAt.reserve (rewrites);
+
+    rewrite (bus, rewrites, 50ms, [&] (int i)
+    {
+        rewrittenAt.push_back (audio.blocksPlayed() * blockSize);
+        return "# rewrite " + std::to_string (i + 1) + "\n" + (i % 2 == 1 ? up : demo);
+    });
+
+    runMessagesUntil ([until = Clock::now() + 50ms] { return Clock::now() >= until; });
+    REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 2bars\n" }, claude).ok);
+    const auto emptiedAt = audio.blocksPlayed() * blockSize;
+
+    // 4OSC's release is 0.1 s; listen from 0.5 s after the clip was emptied.
+    const auto from = emptiedAt + static_cast<int> (0.5 * FakeAudioDevice::sampleRate);
+    audio.stopAfter ((from + static_cast<int> (FakeAudioDevice::sampleRate)) / blockSize);
+    runMessagesUntil ([&audio] { return audio.isDone(); });
+
+    const auto& out = audio.output();
+    const auto to = audio.blocksPlayed() * blockSize;
+    REQUIRE (to - from >= beatSamples);
+    REQUIRE (peakBetween (out, 0, emptiedAt) > 0.01f);
+
+    const auto peak = peakBetween (out, from, to);
+    CHECK_MESSAGE (peak < 1.0e-3f, "still sounding 0.5 s after the clip was emptied, at a peak of " << peak << ": a stuck note");
+
+    // And whose doing it would be: notes the MIDI leaves on are Tracktion's (a
+    // note-off never sent; this was it, through MidiNode, before EditSync
+    // turned the clips' proxies off). A sound with no note left on would be
+    // the synth's (a note-off ignored).
+    const auto events = midi.recorded();
+    const auto left = notesLeftOn (events);
+
+    for (const auto note : left)
+    {
+        const auto lastOn = std::find_if (events.rbegin(), events.rend(), [note] (const auto& e) { return e.note == note && e.on; });
+        const auto sentBefore = std::ranges::upper_bound (rewrittenAt, lastOn == events.rend() ? 0 : static_cast<int> (lastOn->sample));
+        MESSAGE ("left on: note " << note << ". Its last events: " << historyOf (note, events) << "The rewrite sent just before its last note-on: "
+                                  << (sentBefore == rewrittenAt.begin() ? -1 : *std::prev (sentBefore)));
+    }
+
+    CHECK_MESSAGE (left.empty(), "the MIDI reaching 4OSC leaves " << left.size() << " note(s) on");
+    CHECK (std::ranges::count_if (events, [] (const auto& e) { return e.note >= 0 && e.on; }) > 20);
+
+    // The MIDI check can fail: a note-on with no note-off, for a note the clip
+    // never plays, put into a copy.
+    auto damaged = events;
+    damaged.push_back ({ emptiedAt, 127, true });
+    CHECK (notesLeftOn (damaged).size() == left.size() + 1);
 }

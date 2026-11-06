@@ -113,6 +113,30 @@ TEST_CASE ("live: a write_clip mid-loop is heard by the next pass, and what play
     CHECK (nearSample (firstSoundAt (out, barSamples), barSamples + 2 * beatSamples));
 }
 
+TEST_CASE ("live: a rewrite that takes away a sounding note ends it, and starts the new one on the next pass")
+{
+    // At 1.2, swaps a whole-bar C3 for a whole-bar G3: the C3 ends then (it
+    // used to hang on, with nothing to end it), and the G3 waits for the next
+    // pass rather than starting part-way through.
+    FakeAudioDevice device;
+    commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/1 v100\n"));
+    engine::EditSync sync (testEngine(), bus);
+    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+
+    device.play (beatSamples);
+    REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 1bar\n\n1.1 G3 1/1 v100\n" }, testing::claude).ok);
+    rebuildGraph (sync);
+    device.play (barSamples);
+
+    const auto& out = device.output().buffer;
+    REQUIRE (out.getRMSLevel (0, beatSamples / 2, beatSamples / 2) > 0.01f);
+
+    // 4OSC's release is 0.1 s, so silence from 0.25 s after the rewrite to the end of the pass.
+    const auto peak = peakBetween (out, beatSamples + beatSamples / 2, barSamples - FakeAudioDevice::blockSize);
+    CHECK_MESSAGE (peak < 1.0e-3f, "something still sounds after the rewrite, at a peak of " << peak);
+    CHECK (nearSample (firstSoundAt (out, barSamples - beatSamples / 2), barSamples));
+}
+
 TEST_CASE ("live: a rewrite that keeps a held note doesn't retrigger it or cut it off")
 {
     // Adds a note at 1.3 and keeps the held one.
