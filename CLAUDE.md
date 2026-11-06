@@ -20,20 +20,21 @@ cmake --build --preset vs2026-release
 ctest --preset vs2026-release
 .\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --list-devices
 .\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --check examples\m0-demo
-.\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "ASIO4ALL v2" --watch
+.\build\vs2026\src\app\hocket_headless_artefacts\Release\hocket-headless.exe --play examples\m0-demo --driver ASIO --device "FL Studio ASIO" --watch --user Lee
 cmake --install build\vs2026 --config Release --component mcp --prefix "$env:LOCALAPPDATA\Hocket"
 .\build\vs2026\tools\stress\Release\hocket-stress.exe
 powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 ```
 
 - Run these from the repository's folder. PowerShell needs the `.\` to run a program by a relative path; without it, `build\...` is taken for a module name.
+- On Lee's laptop, ASIO means `FL Studio ASIO`; ASIO4ALL buzzes there (PROGRESS.md, Loose ends).
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 - `--play <folder>` loops the project until Ctrl+C. `--driver` and `--device` take names as `--list-devices` prints them; without them it reuses the last device, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`, with a warning when the save replaces a change made through the API. `--user <name>` is your name in the history (default `user`). At Ctrl+C it prints the driver's xrun count (where the driver keeps one) and how many audio callbacks took longer than their block.
 - While `--play` runs, it serves the WebSocket API (SPEC §6.3) on 127.0.0.1, port 46253 or the next free one; the port and token are in `%LOCALAPPDATA%\Hocket\api.json`, and API activity is printed with an `API:` prefix. A second `--play` refuses to start while one is running or starting: each holds `%LOCALAPPDATA%\Hocket\api.lock` until it exits.
 - `hocket-mcp` is the MCP server Claude Code starts to reach that API (SPEC §6.3). Claude Code runs the copy that `cmake --install ... --component mcp` puts in `%LOCALAPPDATA%\Hocket\bin`, never the one in `build\`. Install again after changing the tools or the API, or every call fails with "different builds". Registering it, and the rest: `docs/connecting-claude-code.md`.
 - `hocket-stress` rewrites a clip in the running `--play` 200 times at 20 a second, then puts it back (Milestone 0's stress test; `--help` for the options). By default only a comment changes, so the music shouldn't: listen for clicks or gaps.
-- `tools\acceptance\Run-Acceptance.ps1` runs Milestone 0's acceptance checks that don't need ears, silently, against a real `--play` on a copy of the demo with an empty clip. `-Driver`/`-Device` pick the device, and `-FreshClone` also clones and builds from scratch. It's the way to run `--play` from a tool without sound, and to stop it cleanly with Ctrl+C. What it makes of a run's end is in `AcceptanceChecks.ps1`, which CTest's `acceptance_checks` tests.
+- `tools\acceptance\Run-Acceptance.ps1` runs Milestone 0's acceptance checks that don't need ears, silently, against a real `--play` on a copy of the demo with an empty clip. `-Driver`/`-Device` pick the device, and `-FreshClone` also clones and builds from scratch: about 1 GB to download, and several GB of free memory for the build, so check with Lee first. It's the way to run `--play` from a tool without sound, and to stop it cleanly with Ctrl+C. What it makes of a run's end is in `AcceptanceChecks.ps1`, which CTest's `acceptance_checks` tests.
 - Tests never open a real device, touch that settings file, or write the real token file. The API tests use ports from 46300, the bridge tests from 46320, the stress client's from 46340. The engine tests take about 40 s: their stress tests play in real time.
 - `--play` makes sound. Don't run it on someone's machine without asking; a project with an empty clip plays silence, which is enough to check that the device opens.
 
