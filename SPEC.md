@@ -96,9 +96,9 @@ Keeping the Edit in sync with our model is the area most likely to produce early
 
 **What Milestone 0 found in Tracktion.** Its stress tests found two Tracktion bugs that only show when a clip changes many times a second during playback. Both were invisible at ordinary editing speed, which is exactly the speed an AI client doesn't keep to.
 - Notes left on for good: a MIDI clip that uses Tracktion's proxy sequence (the default) keeps no record of sounding notes when its graph is rebuilt. Hocket's clips don't use the proxy.
-- Now and then, a whole block of silence: a graph rebuild took the lock the audio thread needs. Hocket builds Tracktion from a fork that carries the fix until upstream has it (DEPENDENCIES.md).
+- Now and then, a whole block of silence: a graph rebuild took the lock the audio thread needs. Hocket builds Tracktion from its own public fork, which carries the fix (DEPENDENCIES.md).
 
-So the sync layer's tests play in real time, not just render offline, and a new kind of change to the Edit comes with a stress test of its own.
+So the sync layer's tests play in real time, not just render offline, and a new kind of change to the Edit comes with a stress test of its own. Neither bug has been reported upstream; each Tracktion update checks whether upstream has fixed them on its own (DEPENDENCIES.md, "Updating Tracktion").
 
 **Changes that start inside the engine.** Some state originates in Tracktion or a plugin rather than in a client: recorded takes (v1, §10.1) and parameter changes made in a VST3 plugin's own GUI (Phase 2, §10.3). These must be captured back into the command bus as commands, authored by the user, so they're validated, undoable, and serialized like everything else. Continuous plugin-GUI knob moves are coalesced into one undo step (§3.1). Nothing may change the Edit without a matching change to our model.
 

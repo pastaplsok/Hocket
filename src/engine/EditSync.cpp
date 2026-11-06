@@ -100,7 +100,9 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
             // nothing ever ends the old one. Without the proxy it plays through
             // LoopingMidiNode, which hands its sounding notes to the next graph and
             // ends the ones the rewrite took away. The proxy only saves CPU on
-            // quantisation and groove, which Hocket doesn't use.
+            // quantisation and groove, which Hocket doesn't use. A Tracktion bug:
+            // every Tracktion update checks whether this is still needed
+            // (DEPENDENCIES.md, "Updating Tracktion").
             midiClip->setUsesProxy (false);
             writeClip (*midiClip, clip, project.meter);
             clips.emplace (clip.id, midiClip);

@@ -302,7 +302,9 @@ namespace
         // Tracktion applies its first MIDI device scan on its 4-second rescan
         // timer (DeviceManager::initialise replaces the 5 ms one it starts), and
         // applying it rebuilds every playback context, which stops playback.
-        // So get the scan done now, before there's anything to stop.
+        // So get the scan done now, before there's anything to stop. A Tracktion
+        // bug: every Tracktion update checks whether this is still needed
+        // (DEPENDENCIES.md, "Updating Tracktion").
         engine.getDeviceManager().rescanMidiDeviceList();
         juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
 
