@@ -5,7 +5,7 @@
 **SPEC.md is the source of truth** for what we're building and why. Read it before starting work. If a decision changes during implementation, update SPEC.md in the same change — never let code and spec silently disagree.
 
 ## Current phase
-Milestone 0 (SPEC.md §10.0): headless proof. No GUI code until Milestone 0 passes.
+Milestone 0 (SPEC.md §10.0), the headless proof, is done (2026-11-06). Next is planning v1 (SPEC.md §10.1) with Lee: propose the plan and agree it before starting any of it, the GUI included.
 
 Read PROGRESS.md at the start of a session; update it at the end of each step (step status, the next step, loose ends).
 

@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.5** — 2026-11-04
+> Status: **Draft v0.6** — 2026-11-06
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -79,7 +79,7 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 ### 3.2 Real-time safety
 - The audio thread is never touched directly by any client.
 - Commands apply on the main/message thread; state changes are handed to the engine without locks or blocking.
-- Requirement: glitch-free playback even while an AI agent is issuing rapid commands.
+- Requirement: glitch-free playback even while an AI agent is issuing rapid commands. Checked by stress tests that rewrite a clip 20 times a second while it plays in real time, through the same path a sound card's callback takes. A block over its time budget, a dropped block, a gap, a click, a retriggered note or a stuck one fails them.
 
 ### 3.3 Source of truth and the Tracktion layer (known risk)
 **Hocket's own project model is the source of truth.** Tracktion Engine has its own internal data model (ValueTree-based, saved as XML) and its own undo system; we treat its `Edit` as **derived state**. A sync layer pushes each applied command's changes from our model into the Edit, with Tracktion's undo disabled. Project state is never read back out of the Edit, and the Edit's XML is never saved as the project.
@@ -93,6 +93,12 @@ Keeping the Edit in sync with our model is the area most likely to produce early
 - Requirement: round-trip tests — load text → Hocket model → save text must produce byte-identical output for canonical files.
 - Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then, and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through.
 - Requirement: property/fuzz tests on the serializer.
+
+**What Milestone 0 found in Tracktion.** Its stress tests found two Tracktion bugs that only show when a clip changes many times a second during playback. Both were invisible at ordinary editing speed, which is exactly the speed an AI client doesn't keep to.
+- Notes left on for good: a MIDI clip that uses Tracktion's proxy sequence (the default) keeps no record of sounding notes when its graph is rebuilt. Hocket's clips don't use the proxy.
+- Now and then, a whole block of silence: a graph rebuild took the lock the audio thread needs. Hocket builds Tracktion from a fork that carries the fix until upstream has it (DEPENDENCIES.md).
+
+So the sync layer's tests play in real time, not just render offline, and a new kind of change to the Edit comes with a stress test of its own.
 
 **Changes that start inside the engine.** Some state originates in Tracktion or a plugin rather than in a client: recorded takes (v1, §10.1) and parameter changes made in a VST3 plugin's own GUI (Phase 2, §10.3). These must be captured back into the command bus as commands, authored by the user, so they're validated, undoable, and serialized like everything else. Continuous plugin-GUI knob moves are coalesced into one undo step (§3.1). Nothing may change the Edit without a matching change to our model.
 
@@ -391,6 +397,9 @@ Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova,
 
 ## 9. Platform notes
 - Windows first: ASIO and WASAPI via JUCE. (ASIO SDK is available under a GPLv3 option; VST3 SDK is MIT since 3.8.)
+- Audio drivers vary more than their names suggest. Many people's only ASIO is a wrapper (ASIO4ALL, FL Studio ASIO), and on Milestone 0's test machine ASIO4ALL buzzed while FL Studio ASIO played cleanly, likely because ASIO4ALL ran the DAC at a sample rate Windows wasn't using. Not one driver tried there reported xruns. So:
+  - v1's audio settings let the person choose the sample rate and buffer size, rather than taking whatever the driver offers;
+  - Hocket counts late audio callbacks itself, since the driver's xrun count often isn't there.
 - Keep platform-specific code isolated so Linux (JACK/PipeWire) and macOS (CoreAudio, AU) ports are additive.
 - Unicode paths: all text is UTF-8 inside Hocket. On Windows, text from the OS (paths, command line) is converted from UTF-16 at the platform boundary, never through the ANSI code page, so folders with any name work.
 
@@ -399,6 +408,8 @@ Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova,
 ## 10. Scope and roadmap
 
 ### 10.0 Milestone 0 — headless proof (before any GUI work)
+**Done, 2026-11-06.** Checked over ASIO on the test laptop: a fresh clone builds and its tests pass; the demo loops; a model's rewrite from Claude Code is heard on the next pass with no glitch, undo restores it, and history names who made each change; 200 rewrites at 20 a second play with no late block and no audible dropout. What it taught is folded into §3.2, §3.3, §9 and §11.
+
 A command-line program that:
 1. Loads a project folder (`project.json` + one `.notes` clip),
 2. Plays the clip through a native synth over ASIO,
@@ -446,4 +457,5 @@ Milestone 0 `project.json` subset: §4.4. Milestone 0 `.notes` subset: note line
 ## 11. Open questions
 - Analysis toolkit summary vocabulary and thresholds (§7.4) — tune against real renders during v1
 - CLAP support (Phase 2)
+- Device changes during playback: when the audio or MIDI device list changes (a MIDI keyboard plugged in, a driver's settings changed), Tracktion stops the transport. Keep playing, restart, or say so? Needed by v1, with MIDI input and hot-plugging.
 - Name check: confirm "Hocket" is clear on GitHub, domains, and trademarks before going public
