@@ -7,10 +7,12 @@ All source dependencies are git submodules under `external/`, each pinned to an 
 | Dependency | Pin | License | Used by |
 |---|---|---|---|
 | [JUCE](https://github.com/juce-framework/JUCE) | `7ff644f65d7daa1428c34b9738ebb5c449dc9172` (develop, after 9.0.4) | AGPLv3 | engine, app |
-| [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) | `a5e44996f5f08dfa6af5f5d02d900fb3cfa37422` (develop, 3.5.0) | GPLv3 | engine |
+| [Tracktion Engine](https://github.com/Tracktion/tracktion_engine), from [Hocket's fork](https://github.com/pastaplsok/tracktion_engine) | `3221c531cf6a48a2f0b57d7d25cbd70df9c0f515`: upstream develop at `a5e44996f5f` (3.5.0) plus one fix (below) | GPLv3 | engine |
 | [IXWebSocket](https://github.com/machinezone/IXWebSocket) | `v12.1.0` | BSD-3-Clause | API server and client (hocket-mcp, hocket-stress) |
 | [nlohmann/json](https://github.com/nlohmann/json) | `v3.12.0` | MIT | core, API, MCP bridge, stress client |
 | [doctest](https://github.com/doctest/doctest) | `v2.5.3` | MIT | tests |
+
+**Tracktion pin.** The submodule comes from Hocket's fork, `pastaplsok/tracktion_engine`, branch `bugfix/graph_rebuild_skips_audio_block`: upstream `develop` at `a5e44996f5f`, plus one commit that stops graph rebuilds from making the audio thread skip a block. Without it, a clip rewritten during playback now and then plays a 5.8 ms block of silence (PROGRESS.md has the cause and the upstream report). When upstream has the fix, point the submodule back at upstream's URL and pin; until then, moving to a newer upstream commit means rebasing that one commit onto it in the fork.
 
 **JUCE pin.** JUCE is our own top-level submodule, pinned to the same commit Tracktion Engine's `modules/juce` submodule points at. We don't use Tracktion's nested submodule because its URL is SSH-only (`git@github.com:`), which fails for anyone without GitHub SSH keys. CMake warns at configure time if the two pins drift apart; when updating Tracktion, move JUCE to Tracktion's new pin in the same change.
 

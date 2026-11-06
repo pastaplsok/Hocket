@@ -388,12 +388,13 @@ TEST_CASE ("stress: 200 rewrites at 20 a second during playback cause no xruns a
     REQUIRE (passes >= 6);
     REQUIRE (out.getRMSLevel (0, checkedFrom, window) > 0.01f);
 
-    // Known issue (PROGRESS.md): about once in 1,000 rewrites, Tracktion plays
-    // one block of silence just after swapping in the rebuilt graph. It's
-    // reported here rather than failing the run; make it a CHECK once fixed.
+    // No dropped blocks: a whole block of silence while the note should sound.
+    // Tracktion used to skip a block now and then, when a graph rebuild held
+    // the lock the audio thread needs; Hocket's fork of it fixes that
+    // (DEPENDENCIES.md).
     const auto dropped = droppedBlocks (out, audio.blocksPlayed());
     MESSAGE ("dropped blocks: " << dropped.size());
-    WARN_MESSAGE (dropped.empty(), "known issue: Tracktion played " << dropped.size() << " block(s) of silence after a graph swap");
+    CHECK_MESSAGE (dropped.empty(), "Tracktion played " << dropped.size() << " block(s) of silence");
 
     // Anything else, a gap, retrigger or click, fails it.
     for (int pass = 1; pass < passes; ++pass)

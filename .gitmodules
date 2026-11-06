@@ -3,7 +3,7 @@
 	url = https://github.com/juce-framework/JUCE.git
 [submodule "external/tracktion_engine"]
 	path = external/tracktion_engine
-	url = https://github.com/Tracktion/tracktion_engine.git
+	url = https://github.com/pastaplsok/tracktion_engine.git
 [submodule "external/IXWebSocket"]
 	path = external/IXWebSocket
 	url = https://github.com/machinezone/IXWebSocket.git

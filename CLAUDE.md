@@ -11,7 +11,7 @@ Read PROGRESS.md at the start of a session; update it at the end of each step (s
 
 ## Build & run
 - Toolchain: Visual Studio 2026 (v18, MSVC 14.51), CMake ≥ 3.25 (VS ships 4.3), Git. `cmake` isn't on PATH by default; use the "Developer PowerShell for VS" or add `<VS>\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin`.
-- Dependencies: git submodules under `external/`, pinned to exact commits. Versions and licenses: `DEPENDENCIES.md`.
+- Dependencies: git submodules under `external/`, pinned to exact commits. Tracktion Engine comes from Hocket's fork, upstream plus one fix, until upstream has it. Versions, licenses and the fork: `DEPENDENCIES.md`.
 
 ```
 git submodule update --init          # not --recursive (see DEPENDENCIES.md)
