@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.6** — 2026-11-06
+> Status: **Draft v0.7** — 2026-11-06
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -32,7 +32,7 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 | Audio framework | **JUCE** | Device I/O (ASIO + WASAPI on Windows; JACK/PipeWire/CoreAudio later), plugin hosting, GUI toolkit. |
 | GUI | **Native desktop app (.exe), JUCE-drawn** | No browser. Performance-critical views (arrangement, piano roll, waveforms, meters) are custom-drawn in JUCE. JUCE's WebView support remains an option later for secondary panels (e.g. sound browser, settings) if useful. |
 | Engine | **Tracktion Engine** (on top of JUCE) | Playback graph, timeline, recording, rendering. We do not write an audio engine from scratch. Undo lives in Hocket's command bus, not Tracktion (§3.3). |
-| Recording | **In scope** | Lee records vocals; audio recording and take comping are part of the core design, not an afterthought. |
+| Recording | **In scope** | Lee records vocals; audio recording and take comping are part of the core design, not an afterthought. MIDI recording from a keyboard is in v1 too. |
 | MIDI/sequencing | **In scope** | Piano roll, clips, native instruments, MIDI import/export. |
 | Third-party plugins | **VST3** (via JUCE) | Phase 2. CLAP evaluated in Phase 2 (JUCE does not host CLAP natively). |
 | Scripting | **Embedded Lua** | For generators and user scripts. v1.x. |
@@ -183,6 +183,12 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Milestone 0 only:** each clip has its own file. **Linked clips** come in v1: several clips sharing one `.notes` file, pattern-style as in FL Studio, so editing it once changes every instance. Nothing may be designed around a file belonging to exactly one clip.
 - **Milestone 0 limits:** `"midi"` tracks with exactly one device, `"tracktion:4osc"`; time signature `"4/4"`; tempo 20–999 BPM.
 - **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
+
+### 4.5 Saving
+**Saving is explicit, with an automatic recovery copy.**
+- Save is a command any client can send: the GUI, or MCP's `save`. Like transport, it isn't a history entry. Each file is written atomically.
+- After changes, Hocket keeps a recovery copy of the project outside its folder (`%LOCALAPPDATA%\Hocket\Recovery` on Windows), so a crash loses nothing. Opening a project that has a newer recovery copy offers it.
+- Saving never overwrites a file that changed outside Hocket since Hocket last read or wrote it (§6.1).
 
 ---
 
@@ -383,6 +389,11 @@ Raw data remains available on explicit request (e.g. for a script).
 1. **Native devices** (synths, sampler, effects) — every parameter documented, named in real units, and fully readable in the text format. These are where AI collaboration is strongest ("the pad is muddy, lower the cutoff and shorten the release").
 2. **Third-party VST3 plugins** — treated as **black boxes with labeled knobs**. Parameters are exposed and automatable; state is an opaque blob.
 
+**Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
+- Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
+- Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
+- The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
+
 ### 8.2 VST3 hosting requirements (Phase 2)
 - Expose parameters with names, normalized values, and display strings.
 - **Parameter mapping files** per plugin to rename cryptic parameters (`Macro 3` → `Filter Drive`), built up over time and shareable.
@@ -392,6 +403,12 @@ Raw data remains available on explicit request (e.g. for a script).
 
 ### 8.3 Test plugin set (all free/legal)
 Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova, MeldaProduction free bundle, Cardinal, Steinberg VST3 SDK example plugins. MiniMeters (already owned by Lee) as a commercial test case. Commercial plugins (incl. copy protection like iLok) tested via official demos. Serum 2 is the one planned purchase, once VST hosting exists.
+
+### 8.4 Bundled drum kits
+Hocket comes with a few drum kits in different styles: acoustic, electronic (808-style), and one suited to breakbeat and jungle.
+- **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
+- **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
+- **A kit is part of Hocket, like a preset.** A project names its kit, and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
 
 ---
 
@@ -424,16 +441,54 @@ Milestone 0 `project.json` subset: §4.4. Milestone 0 `.notes` subset: note line
 ### 10.1 v1 — "Lee and Claude can make a complete song in it, start to finish, with native instruments"
 - Engine on Tracktion; ASIO/WASAPI; transport and looping; one tempo and time signature per song
 - MIDI tracks, piano roll, `.notes` format, MIDI import/export
-- Native devices: one solid synth, a sampler/drum sampler, EQ, compressor, reverb, delay, filter/saturator
+- **MIDI recording** from a keyboard (Lee's Yamaha piano, on the desktop)
+- Native devices (§8.1): Hocket's own synth, a sampler/drum sampler with bundled kits (§8.4), EQ, compressor, reverb, delay, filter/saturator
 - Audio tracks: audio import and **recording** (arm a track, record takes — vocals are a v1 requirement)
 - Mixer: volume, pan, sends, master bus; basic automation
 - Command bus, undo with author tags, transactions
-- Project format with canonical writer and round-trip tests; published JSON Schema for `project.json` (§4.1)
+- Project format with canonical writer and round-trip tests; published JSON Schema for `project.json` (§4.1); explicit save with a recovery copy (§4.5)
 - Linked clips: several clips sharing one `.notes` file (§4.4)
 - MCP server with the core tool set (§6.4)
 - Analysis toolkit core: loudness, spectrum, masking, before/after comparison
 - Export to WAV/FLAC, including **seamless loop export** (for game music) and per-track stem export
 - GUI: arrangement view, piano roll, mixer — functional rather than polished, but built on a **theming/style token system from day one** so Phase 2 polish is restyling, not rewriting
+
+Not in v1: an installer, and a public release.
+
+**Milestones** (agreed 2026-11-06). Nine milestones, each ending in something Lee can hear or use, checked the way Milestone 0 was. Milestone 1 grows the model without a GUI, and Milestone 2 puts a window on it. From then on, each feature arrives through every layer at once: the command, the Edit sync with its stress test, the MCP tool, and the GUI. Each milestone's steps are planned in PROGRESS.md when it starts.
+1. **A song, not a loop** (no GUI yet). Commands for the song's structure: tracks, clips, linked clips, tempo, time signature, each track's volume, pan, mute and solo, seeking and the loop region. Each is synced to the Edit and stress-tested. Also:
+   - Hocket's drum sampler, with the first kit, so the first multi-track song has drums.
+   - Saving (§4.5).
+   - MCP tools for all of it.
+   - Milestone 0's loose ends, and choosing the sample rate and buffer size (§9).
+2. **The window.** `hocket.exe`, a JUCE app serving the same API, so Claude connects to it as to `--play`; `hocket-headless` stays, for tests and the acceptance run.
+   - Style tokens from the first component.
+   - A transport bar, and the arrangement view: create, move, resize, duplicate and link clips, or make a linked clip unique again.
+   - A history panel showing who made each change; undo and redo.
+   - Open and save, the prompt for changes made outside Hocket (§6.1), and the recovery copy.
+   - Audio settings: device, sample rate, buffer size.
+   - Claude's edits appear as they land.
+3. **Piano roll and MIDI.** A piano roll with a velocity lane; a drag is one undo step (§3.1).
+   - Playing and **recording** from a MIDI keyboard.
+   - Device changes during playback (§11), which a piano plugged in mid-session makes urgent.
+   - `@swing` and `@ch`; MIDI import and export.
+   - Tested on the desktop with Lee's Yamaha piano, so the desktop needs the toolchain by then.
+4. **Instruments.** Hocket's synth, which replaces 4OSC, and the full sampler/drum sampler with all three kits (§8.4).
+   - `add_device`, `remove_device`, and `set_params` in real units.
+   - Device panels, drawn from each device's parameter definitions.
+5. **Effects and mixer.** EQ, compressor, reverb, delay, filter/saturator (Tracktion stand-ins where they pass, §8.1).
+   - Return buses, sends, the master bus, `set_routing`.
+   - The mixer view, with meters.
+6. **Automation.** The `.auto` parser and writer with the full set of tests (§4.2), `read_automation` and `write_automation`, automation lanes, and controller lines in `.notes`.
+7. **Audio and recording.** Audio import; audio clips with offset, fades and gain (§4.3); waveforms.
+   - Arming a track and recording takes, each entering the history as the person's command (§3.3).
+   - Monitoring, and latency compensation.
+   - Tested on the desktop with the Scarlett 2i2.
+8. **Render, export, analysis.**
+   - `render_section`, and export to WAV/FLAC, with seamless loops and stems.
+   - The analysis core (§7) and `analyze`.
+   - Tracktion's renderer stops every transport, so rendering while someone listens needs a second Edit. MCP replies over 30 s need progress notifications or a longer limit.
+9. **Finishing v1.** `formatVersion` 1 and the published JSON Schema (§4.1), with migrations from then on. Lee and Claude make a complete song in it, start to finish, and fix what that turns up. A fresh-clone acceptance run.
 
 ### 10.2 v1.x
 - Take comping, punch-in recording
@@ -457,5 +512,6 @@ Milestone 0 `project.json` subset: §4.4. Milestone 0 `.notes` subset: note line
 ## 11. Open questions
 - Analysis toolkit summary vocabulary and thresholds (§7.4) — tune against real renders during v1
 - CLAP support (Phase 2)
-- Device changes during playback: when the audio or MIDI device list changes (a MIDI keyboard plugged in, a driver's settings changed), Tracktion stops the transport. Keep playing, restart, or say so? Needed by v1, with MIDI input and hot-plugging.
+- Device changes during playback: when the audio or MIDI device list changes (a MIDI keyboard plugged in, a driver's settings changed), Tracktion stops the transport. Keep playing, restart, or say so? Settled in Milestone 3 (§10.1), with MIDI input: plugging a keyboard in mid-session is a realistic case.
+- Time signatures in eighths (6/8, 7/8): what a beat is for `.notes` positions and `+ticks`. Settled in Milestone 1, with the other time signatures.
 - Name check: confirm "Hocket" is clear on GitHub, domains, and trademarks before going public

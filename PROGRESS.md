@@ -2,25 +2,118 @@
 
 Status board for the current milestone. Read it at the start of a session; update it at the end of each step. Keep it current, not historical — git log is the history.
 
-## Milestone 0 — headless proof (SPEC §10.0): ✅ done, 2026-11-06
+## v1 (SPEC §10.1)
+Planned with Lee on 2026-11-06. What each milestone covers is in SPEC §10.1; each one's steps are planned here when it starts.
+
+| # | Milestone | Status |
+|---|---|---|
+| 0 | Headless proof (SPEC §10.0) | ✅ Done, 2026-11-06. Step record: `git log -- PROGRESS.md` |
+| 1 | A song, not a loop (no GUI yet) | Next; steps below |
+| 2 | The window | Not started |
+| 3 | Piano roll and MIDI, including MIDI recording | Not started. Needs the desktop's toolchain (Test hardware) |
+| 4 | Instruments: Hocket's synth, the full sampler, all three kits | Not started |
+| 5 | Effects and mixer | Not started |
+| 6 | Automation | Not started |
+| 7 | Audio and recording | Not started |
+| 8 | Render, export, analysis | Not started |
+| 9 | Finishing v1 | Not started |
+
+## Milestone 1 — a song, not a loop
+Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 2.
 
 | # | Step | Status |
 |---|---|---|
-| 1 | Build skeleton: pinned submodules, CMake + VS 2026 presets, `hocket-headless --list-devices` | ✅ Done |
-| 2 | `.notes` parser + canonical writer (M0 subset), round-trip / error / property / fuzz tests | ✅ Done |
-| 3 | `project.json` loader + canonical writer, project model, `hocket-headless --check`, tests | ✅ Done |
-| 4 | Command bus: `write_clip`, undo/redo with the AI author check, history, author tags, transactions; tests | ✅ Done |
-| 5 | Engine sync + playback: Edit built from the model, 4OSC, looping over ASIO; transport commands; offline-render test | ✅ Done. Heard looping over FL Studio ASIO on 2026-11-04 (below) |
-| 6 | WebSocket API on 127.0.0.1 + token file; interrupted-transaction handling | ✅ Done; the by-ear check of `write_clip` over the API moves to step 7 |
-| 7 | `hocket-mcp` stdio bridge + doc on connecting Claude Code | ✅ Done. Registered in Claude Code; `write_clip` and `undo` from Claude Code checked by ear on 2026-11-04 (below) |
-| 8 | Stress test, acceptance run, SPEC updates | ✅ Done, 2026-11-06. The stress tests found two Tracktion bugs: stuck notes (worked around) and a dropped block (fixed in Hocket's fork of Tracktion). SPEC v0.6 has what Milestone 0 taught. The code review of 2026-10-31 is fixed, except two items deferred (Loose ends) |
+| 1 | Device options and Milestone 0's loose ends | Not started |
+| 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Not started |
+| 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Not started |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | Not started |
+| 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
+| 6 | Sync: mix settings, tempo, time signature, seek and loop region | Not started |
+| 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
+| 8 | The first bundled drum kit | Not started |
+| 9 | Saving, the recovery copy, and changes made outside Hocket | Not started |
+| 10 | MCP tools for all of it | Not started |
+| 11 | Demo song, acceptance run, SPEC updates | Not started |
 
-**Milestone 0 was done when** (all met; how, below):
-- ✅ a fresh clone builds with the commands in CLAUDE.md;
-- ✅ the demo project loops over ASIO;
-- ✅ from Claude Code, `write_clip` is heard on the next loop with no glitch, `undo` restores the old clip, and `history` shows who made each change;
-- ✅ 200 rewrites at 20/sec during playback cause zero xruns (where the driver reports them) and no audible dropouts;
-- ✅ all tests pass.
+**Milestone 1 is done when:**
+- starting from an empty project, Claude builds a song with at least four tracks, drums among them, through the API while Lee listens, with no glitch;
+- Lee's and Claude's changes are in one history, and undo works across structural changes;
+- save, load and save again gives byte-identical files, and a crash leaves a recovery copy;
+- each new kind of change to the Edit has a real-time stress test, and all tests pass;
+- a fresh clone builds and passes `Run-Acceptance.ps1`.
+
+### The steps
+**1. Device options and Milestone 0's loose ends**
+- `--play --sample-rate <Hz> --buffer-size <samples>` (SPEC §9), and `--list-devices` shows what each device offers. Then, with Lee (it makes sound), try ASIO4ALL on the Magni at 48000 Hz (Loose ends).
+- `--play` prints when playback stops by itself, with the reason when Tracktion gives one.
+- The two items deferred from the review: the idle timeout counts notifications, and closing the console window stops cleanly, like Ctrl+C.
+- `--device` says "did you mean" when exactly one device name contains the text given. The acceptance script's xrun note gets the right wording.
+- Left out: text selection while `--play` runs. The GUI replaces `--play` for everyday use.
+
+**2. The format grows to a song** (core; `--check`; round-trip, error, property and fuzz tests)
+- Linked clips (SPEC §4.4): several clips naming one `.notes` file. The model keeps each file's notes once, keyed by file, and clips refer to it; the writer writes each file once.
+- Time signatures other than 4/4, one per song. To decide with Lee, since it's the format: which are allowed, and what a beat is in 6/8 or 7/8, which `.notes` positions and `+ticks` count (SPEC §11).
+- Each track's volume, pan, mute and solo in `project.json`, in real units (SPEC §4.1, rule 3). To decide: how they're written (`"volume": "-6dB"`, and pan how?) and whether defaults are written out.
+- Tracks with no device. An upper bound on clip starts (Loose ends), so a song can't be thousands of bars long either.
+- The synth's type becomes `hocket:synth`, with 4OSC standing in until Milestone 4 (SPEC §8.1), so songs written now keep working then. It has no parameters yet.
+
+**3. Drum tracks in the format** (SPEC §5.2)
+- A track's drum map in `project.json`, and drum names in `.notes`, read and written through the track's map, with note names as the fallback. General MIDI names by default.
+- `hocket:drum-sampler`, with the name of a kit: `{"id", "type": "hocket:drum-sampler", "kit": "<name>"}`. The model only checks the name against the kits it's given; step 7 says where kits come from.
+- To decide: how a kit's piece names and the track's drum map relate (the map comes from the kit, or kits put their pieces on General MIDI notes and use the default map); and what happens when one file is linked into tracks with different maps (each reads it with its own map, or it's an error).
+- The same tests as step 2, plus drum names round-tripping through `write_clip`.
+
+**4. Commands for the song's structure** (the bus)
+- Tracks: add, remove, rename, reorder, and set the instrument (`hocket:synth`, or `hocket:drum-sampler` with a kit). Clips: add one (with a new file, or linked to an existing one), move it (in time, or to another track), remove it, and make a linked clip unique. Also: tempo, time signature, a track's mix settings, and its drum map.
+- Transport: seek, loop region, loop on and off. Not history entries (SPEC §3.1).
+- Every edit has an inverse, so undo, redo, rollback and the split of another author's transaction work as they do for `write_clip`. History descriptions say what changed ("added track trk-drums", "moved clp-bass-2 to 9.1").
+- Gesture coalescing (SPEC §3.1), with the first continuous settings, volume and pan: a client marks where a gesture starts and ends, and its changes become one entry. Built and tested here; the GUI uses it in Milestone 2.
+- `Change` grows from `ClipContentChanged` to what the sync, and later the GUI, need to know.
+- Tests: validation messages written for an LLM reader; undo and redo of each command; property tests on random command sequences (undoing everything gives the original back, and redoing everything gives the same project again).
+
+**5. Sync: tracks and clips**
+- `EditSync` brings the Edit in line with the model after each change, matching tracks, devices and clips by ID and touching only what changed. (It asserts today that clips are never added or removed.)
+- Offline renders: tracks and clips added, moved, removed, linked, and undone.
+- Live tests: a change to one track doesn't stop or retrigger a held note on another, and a clip moved or removed ends its sounding notes.
+- A stress test for each kind of change: clips moved, added and removed, and tracks added and removed, 20 a second during playback. Each has Milestone 0's checks: no block over budget, no dropped block, gap, click, retriggered note or stuck note.
+
+**6. Sync: mix settings, tempo, time signature, transport**
+- Volume and pan through Tracktion's volume plugin, smoothed so that a jump doesn't click; mute and solo.
+- Tempo and time-signature changes during playback: the playhead keeps its place in bars, and held notes aren't retriggered.
+- Transport: seek, loop region, loop on and off.
+- Stress tests: volume and pan changed 20 a second with no click, mute toggled, tempo changed.
+
+**7. Hocket's drum sampler, and how kits work** (SPEC §8.1, §8.4)
+- Hocket's first device, a Tracktion plugin type of its own (`PluginManager::createBuiltInType`). It sets the pattern the synth and effects follow in Milestones 4 and 5.
+- One-shot pieces; velocity sets the level. Voices are allocated up front, samples are loaded on the message thread and handed over without locks, and nothing on the audio thread locks or allocates.
+- Not Tracktion's `SamplerPlugin`, which locks and allocates on the audio thread (Known upstream issues).
+- Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (piece names, notes, files, levels), and installed next to the programs. A project names its kit; nothing is copied into the project.
+- Tests use generated samples, not a real kit: hits land where the clip says, at the right level; a drum clip rewritten 20 times a second plays with no glitch, on the real-time harness with `MidiRecorder`.
+
+**8. The first bundled drum kit** (SPEC §8.4)
+- One kit now, in the style Lee picks. All three (acoustic, electronic/808-style, breakbeat/jungle) are in by Milestone 4.
+- Lee's rules: an explicit permissive license (CC0 or similar), nothing taken from copyrighted recordings, and short 16-bit one-shots. Each source and license goes in DEPENDENCIES.md, with the total size.
+- For the electronic kit, synthesizing the one-shots ourselves avoids sourcing altogether. The generator would stay in the repository, and the samples would be released as CC0.
+- Lee listens to it before it's committed.
+
+**9. Saving, the recovery copy, and changes made outside Hocket** (SPEC §4.5, §6.1)
+- `--new <folder>` makes an empty project.
+- Save is a command any client can send, and not a history entry. Each file is written atomically, clip files before `project.json`. The bus knows whether anything is unsaved.
+- To decide: what saving does with a `.notes` file that no clip uses any more.
+- The recovery copy: a few seconds after changes stop, the project is written to `%LOCALAPPDATA%\Hocket\Recovery\`. It's removed after a save, or a clean exit with nothing unsaved. Loading a folder that has a newer recovery copy says so, and `--play --recover` loads the copy.
+- Outside changes: save refuses to overwrite a file changed on disk since Hocket last read or wrote it, and names the file. `--watch` covers `project.json` too: a saved change becomes one command that replaces the project's structure, validated and undoable like any other.
+- Tests on a non-ASCII folder: atomic writes; save, load and save again byte-identical; recovery; outside changes.
+
+**10. MCP tools for all of it** (SPEC §6.4)
+- Tools for steps 4 and 9: tracks, clip placement, tempo and time signature, transport with seek and loop, and `save`. Also `patch_clip`, `history`'s author filter, and a `get_project_overview` that shows mix settings, links, drum maps and kits.
+- The set is designed at the start of the step, small and expressive as SPEC §6.4 asks, and written into §6.4.
+- Descriptions, results and errors are written for an LLM reader. The fingerprint changes, so `hocket-mcp` must be installed again (CLAUDE.md).
+- API tests for each tool; the bridge's and stress client's tests updated.
+
+**11. Demo song, acceptance run, SPEC updates**
+- The acceptance check itself: starting from `--new`, Claude builds a song with drums while Lee listens. It's saved as `examples/m1-demo`.
+- `hocket-stress` and `Run-Acceptance.ps1` get a structural mode: clips moved and tracks muted during playback, silently, on clips left empty.
+- SPEC gets what Milestone 1 taught. A fresh-clone run.
 
 ## What exists
 - `src/core` (`hocket_core`, no JUCE):
@@ -75,17 +168,12 @@ Status board for the current milestone. Read it at the start of a session; updat
   - `tests/acceptance` (`acceptance_checks`, CTest, Windows PowerShell): `Get-StopResults` on made-up `--play` logs and exit codes: clean stops, xruns, a crash before and after the `stopped` line, a `--play` that stopped early or ignored Ctrl+C, a token file left behind.
   - `tests/common`: `TemporaryFolder.h` (non-ASCII temp folders) and `FakeHocket.h` (a bus, handler and API server on a thread of their own, plus a token file: a running Hocket, as far as a client can tell).
 - `examples/m0-demo`: 120 BPM, 4/4, one track `trk-bass` with a 4OSC `dev-bass-synth`, one 2-bar clip `clp-bass` at 1.1.
+- **Threads**, as the code review of 2026-10-31 found them:
+  - No Hocket code runs on the audio thread. `EditSync` changes the Edit on the message thread; Tracktion builds the new graph there and destroys the retired one there too, after its pool threads let go (`LockFreeMultiThreadedNodePlayer::postNewGraph`).
+  - IXWebSocket's threads only post to the message thread; the bus, handler, the server's connection map and `EditSync` are only used there; `Client`'s shared state is behind its mutex; the Ctrl+C flag is atomic.
 
-## How Milestone 0 was verified
-- **A fresh clone**, on 2026-11-06: `Run-Acceptance.ps1 -FreshClone -Driver ASIO -Device "FL Studio ASIO"` cloned GitHub's `main` at `d0a1d31`, with Tracktion from Hocket's fork. The clone, submodules, configure, a clean Release build and its 11 tests passed in 4.7 min, then every silent check over FL Studio ASIO. The engine stress test dropped no blocks.
-- **By ear, with Lee**, on the laptop over FL Studio ASIO, on 2026-11-04 and 2026-11-06:
-  - The demo loops. Claude's `write_clip` from Claude Code was heard on the next pass with no click, gap or stutter, and `undo` brought the demo line back.
-  - `--watch`: Lee's save played as Lee's entry, with the warning naming the change of Claude's it replaced. A save with a mistake changed nothing. Claude's `undo` refused Lee's change, and `history` listed both of them.
-  - `hocket-stress`: three plain runs with nothing heard, and `--vary` (after the stuck-note fix) ending cleanly, with nothing left ringing.
-  - Ctrl+C: no audio callback took longer than its block. None of the laptop's drivers counts xruns (SPEC §9).
-- **Drivers:** ASIO4ALL buzzed on the Magni while FL Studio ASIO played cleanly (Loose ends). Device names as `--list-devices` prints them: `FL Studio ASIO`, `ASIO4ALL v2` and `Realtek ASIO` under ASIO; the Magni under Windows Audio is `Speakers (Magni Mesh Dac)`.
-
-**Set up on Lee's laptop:** `hocket-mcp.exe` is installed in `%LOCALAPPDATA%\Hocket\bin` and registered in Claude Code as `hocket` at user scope (API build `c4f35c9e10c86405`). Every Claude Code session gets the tools; they say "Hocket isn't running" until `--play` runs. After a change to the tools or the API, run CLAUDE.md's install command again and restart Claude Code sessions.
+## Set up on Lee's laptop
+`hocket-mcp.exe` is installed in `%LOCALAPPDATA%\Hocket\bin` and registered in Claude Code as `hocket` at user scope (API build `c4f35c9e10c86405`). Every Claude Code session gets the tools; they say "Hocket isn't running" until `--play` runs. After a change to the tools or the API, run CLAUDE.md's install command again and restart Claude Code sessions.
 
 **To do when Lee sets up Claude Desktop** (not started; don't drop this):
 1. Register the installed `hocket-mcp.exe` in Claude Desktop's config. It should be `%APPDATA%\Claude\claude_desktop_config.json`, under `"mcpServers": { "hocket": { "command": "<path to hocket-mcp.exe>" } }`; check against Claude Desktop's own docs. Then restart Claude Desktop.
@@ -94,79 +182,61 @@ Status board for the current milestone. Read it at the start of a session; updat
 4. Check the label too. Claude Desktop isn't started in a project folder, so the working folder's name may mean nothing (an app or system folder). If so, pass `--label` in its config, or pick a better default for clients that don't start the bridge in a project folder.
 
 ## Test hardware
-- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own. ASIO4ALL put a buzz over the bass (Loose ends); FL Studio ASIO works, so Milestone 0's ASIO checks (steps 5 and 8) use it, here.
-- **Desktop**: Focusrite Scarlett 2i2 with Focusrite's native ASIO driver and mic inputs. It'll be the test interface for v1 recording.
-
-## Next: plan v1 (SPEC §10.1)
-Milestone 0 is done. Next is a plan for v1, agreed with Lee before any of it starts, the GUI included. To settle in that plan:
-- Which loose ends go into v1's first steps: the two deferred review items, `--play` saying when playback stops by itself, text selection while it runs, choosing the sample rate and buffer size (SPEC §9), and device changes during playback (SPEC §11).
-- Claude Desktop, when Lee sets it up (above).
-- Where to start: SPEC §10.1's list for v1 and §11's open questions, plus Loose ends here. Milestone 0's test tooling is there to build on: the real-time stress harness and `MidiRecorder` for engine changes, `Run-Acceptance.ps1` for end-to-end checks.
-- Once the plan is agreed, this file's top section becomes v1's step table, and Milestone 0's record shrinks to a line pointing at SPEC §10.0 and git history.
-
-## Code review (2026-10-31)
-The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings are in this file's history (`git log -- PROGRESS.md`). Everything is fixed, each with a test, and merged into `main` on 2026-10-31 (from branch `m0-review-fixes`), except two Lee deferred, now in Loose ends: the idle timeout and notifications, and closing the console window. Looked for and not found:
-- Audio thread: no Hocket code runs on it. `EditSync` changes the Edit on the message thread; Tracktion builds the new graph there and destroys the retired one there too, after its pool threads let go (`LockFreeMultiThreadedNodePlayer::postNewGraph`).
-- Thread safety: IXWebSocket's threads only post to the message thread; the bus, handler, the server's connection map and `EditSync` are only used there; `Client`'s shared state is behind its mutex; the Ctrl+C flag is atomic.
+- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own. ASIO4ALL put a buzz over the bass (Loose ends); FL Studio ASIO works, so the ASIO checks use it here. Device names as `--list-devices` prints them: `FL Studio ASIO`, `ASIO4ALL v2` and `Realtek ASIO` under ASIO; the Magni under Windows Audio is `Speakers (Magni Mesh Dac)`. None of these drivers counts xruns (SPEC §9).
+- **Desktop**: Focusrite Scarlett 2i2 with Focusrite's native ASIO driver and mic inputs, the test interface for audio recording (Milestone 7). Lee's Yamaha piano connects to it for MIDI input and recording (Milestone 3).
+  - **It needs the toolchain by Milestone 3**: Visual Studio 2026, Git, a clone with its submodules, and a build that passes its tests (CLAUDE.md), then `hocket-mcp` installed and registered there. Check its free memory and disk first (Gotchas: build time).
 
 ## Loose ends
-- **Deferred from the review (2026-10-31):**
+- **Deferred from the review (2026-10-31)**, now Milestone 1's step 1:
   - The idle timeout doesn't count notifications: `Handler::handleRequest` returns for one before it sets `lastRequest`, while SPEC §3.1 says "last request of any kind". No effect yet: hocket-mcp forwards none. Fix: set it first, or change SPEC's wording.
   - Closing the console window isn't a clean stop: `handleConsoleControl` (`Console_windows.cpp`) returns FALSE for `CTRL_CLOSE_EVENT`, so the device isn't closed and the token file stays (the stale-file check copes). Fix: handle it like Ctrl+C; Windows gives the handler about 5 s.
-- **ASIO4ALL v2 on the Magni buzzes (2026-11-04).** Sharp, buzzy "NES helicopter" sounds came with the bass line. Windows Audio and FL Studio ASIO, on the same DAC, sounded fine. The cause isn't known.
+- **ASIO4ALL v2 on the Magni buzzes (2026-11-04).** Sharp, buzzy "NES helicopter" sounds came with the bass line. Windows Audio and FL Studio ASIO, on the same DAC, sounded fine. The cause isn't known. Milestone 1's step 1 adds the options to test it.
   - Hocket doesn't choose a sample rate or buffer size. It opens the device with whatever the driver or Tracktion's saved settings give, and prints both in its `Playing on` line. With no saved rate, JUCE takes the driver's current rate.
   - The log points at the sample rate, not the buffer. Both ASIO drivers ran at 44100 Hz with 512 samples, but Windows runs the Magni at 48000 Hz. FL Studio ASIO goes through Windows' audio engine, which converts the rate. ASIO4ALL drives the device directly, by kernel streaming, so it needs the DAC itself at 44.1 kHz while Windows holds it at 48 kHz.
-  - The test: set the Magni to 44100 Hz in Windows' Sound settings (the device's Properties, then Advanced) and try ASIO4ALL again. Or turn on "Always Resample 44.1kHz <-> 48kHz" in ASIO4ALL's advanced panel.
-  - `--play` has no option for the sample rate or buffer size. `--sample-rate` and `--buffer-size` would make this testable from the command line.
-  - It isn't in Milestone 0's way, since FL Studio ASIO works. But plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
-- **No text selection while `--play` runs (2026-11-04).** Lee couldn't select any text in the terminal, so had to stop `--play` to copy its log. The cause is the review's fix #10, which turns QuickEdit off. That keeps a selection from pausing console output (in the classic console, a selection blocks the writer, and so the message thread). Without QuickEdit, though, the classic console has no mouse selection, and Windows Terminal hands the mouse to the program. Shift+drag should still select in Windows Terminal, but Lee hasn't tried it.
-  - The fix: write console output from a thread of its own, through a queue, so a selection only pauses that thread. Then leave QuickEdit as the user had it.
-- **Small things from Lee's first run (2026-11-04):**
+  - The test: set the Magni to 44100 Hz in Windows' Sound settings (the device's Properties, then Advanced) and try ASIO4ALL again. Or turn on "Always Resample 44.1kHz <-> 48kHz" in ASIO4ALL's advanced panel. Or, after step 1, `--sample-rate 48000`.
+  - Plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
+- **No text selection while `--play` runs (2026-11-04).** Not being fixed: the GUI replaces `--play` for everyday use (decided 2026-11-06). The cause is the review's fix #10, which turns QuickEdit off, so that a selection can't pause console output and with it the message thread. Shift+drag should still select in Windows Terminal. If it's ever needed: write console output from a thread of its own, through a queue, and leave QuickEdit as the user had it.
+- **Small things from Lee's first run (2026-11-04)**, in Milestone 1's step 1:
   - `--device "Magni Mesh Dac"` was refused, since the name is `Speakers (Magni Mesh Dac)`. The error listed the right name, so it worked as designed. When exactly one device contains the given text, the error could say "did you mean...".
-  - `AcceptanceChecks.ps1`'s Xruns NOTE says "ASIO drivers usually do" report them; ASIO4ALL and FL Studio ASIO don't (item 8 above). Fix the wording, and its test if one matches the text.
-- **Clip starts in `project.json` have no upper bound.** A clip is at most 999 bars long, but one can start at bar 100000, which makes as long a loop. Only a hand-edited `project.json` can do it in Milestone 0.
-- **Dropped blocks: fixed in Hocket's Tracktion fork (2026-11-06).** Tracktion now and then played a whole block of silence (256 samples, 5.8 ms: a click) while a clip was rewritten during playback, about once per 1,700 graph rebuilds. The submodule now points at `pastaplsok/tracktion_engine`, branch `bugfix/graph_rebuild_skips_audio_block`: upstream plus one commit (DEPENDENCIES.md).
-  - **The cause:** `LockFreeMultiThreadedNodePlayer::prepareToPlay (node, oldGraph, ...)` calls `createThreads()` for every new graph, and that took `processMutex` even when the threads already existed. The audio thread's `process()` only try-locks `processMutex` and skips the whole block when that fails: no node runs, and the playhead moves on. The fix only takes the lock when there are threads to create.
-    - Don't simply remove that call: `numThreadsToUse` starts at the core count minus one, so a `setNumThreads` with the same value returns early, and that call is what starts the pool's threads.
-  - **How it was found** (temporary logging, since taken out): `MidiRecorder` saw edit time jump by exactly one block at each dropped block, so the plugins never ran there. The player's log showed `try_lock` failing on that block, right after a rebuild's `createThreads`.
-  - **Checked:** the "hammer" (1,000 comment-only rewrites at 100/s to a held note) dropped 2 blocks in 20 runs on upstream, and none in 60 runs with the fix, with the pool's threads running. The stress test's dropped-block check fails again instead of warning. Side effect: rebuilds no longer wait for the current block, so they don't bunch up (about 400 swaps per 1,000 rewrites before, about 1,000 after).
-  - **Kept long-term.** The fix stays in the fork, not reported upstream (Known upstream issues, below). When moving to a newer Tracktion, follow DEPENDENCIES.md's "Updating Tracktion": check whether upstream fixed it on its own, and if not, rebase the one commit in the fork.
-  - **One unexplained failure:** on 2026-10-30, a Debug run of the two stress tests failed once, right after a full Debug `ctest`. My filter hid the error, so which check failed isn't known. It didn't happen again in 23 Debug runs since: 11 of the stress tests alone, and 12 of the whole engine suite. If it shows up again, keep the whole output.
-- **Tracktion stops playback when it rebuilds its device lists.** Applying a new MIDI device list (or an audio device change) releases every playback context, which stops the playhead, and the transport then stops itself. `--play` works around the one that always happens: Tracktion's first MIDI scan otherwise lands 4 s after startup (see Gotchas). A MIDI device plugged in during playback would still stop it. Milestone 0 can live with that; v1, with MIDI input and device hot-plug, needs an answer (keep playing, or restart).
+  - `AcceptanceChecks.ps1`'s Xruns NOTE says "ASIO drivers usually do" report them; ASIO4ALL and FL Studio ASIO don't. Fix the wording, and its test if one matches the text.
+- **Clip starts in `project.json` have no upper bound** (Milestone 1's step 2). A clip is at most 999 bars long, but one can start at bar 100000, which makes as long a loop. Only a hand-edited `project.json` can do it today.
+- **One unexplained stress-test failure:** on 2026-10-30, a Debug run of the two stress tests failed once, right after a full Debug `ctest`. My filter hid the error, so which check failed isn't known. It didn't happen again in 23 Debug runs since: 11 of the stress tests alone, and 12 of the whole engine suite. If it shows up again, keep the whole output.
+- **Tracktion stops playback when it rebuilds its device lists** (Milestone 3 decides what Hocket does). Applying a new MIDI device list (or an audio device change) releases every playback context, which stops the playhead, and the transport then stops itself. `--play` works around the one that always happens: Tracktion's first MIDI scan otherwise lands 4 s after startup (see Gotchas). A MIDI device plugged in during playback would still stop it, and Lee plugging the piano in mid-session is realistic.
   - It happened over ASIO on 2026-11-04. During the first of Lee's ASIO4ALL runs, Lee changed the output device in ASIO4ALL's panel, and Ctrl+C later found playback "already stopped". That fits: a driver asks for a reset when its settings change (`kAsioResetRequest`), and JUCE then restarts the device. Not reproduced on purpose yet.
-  - `--play` prints nothing when playback stops by itself. It should, at least, so a stop isn't mistaken for silence or a crash.
-- **API (step 6):**
-  - `history` has no author filter yet (SPEC §6.4).
-  - The person's display name is `--user` only; it becomes a saved setting with the GUI's settings.
-  - When the server shuts down, open API transactions aren't interrupted: the process is exiting, and Milestone 0 doesn't save history.
+  - `--play` prints nothing when playback stops by itself (Milestone 1's step 1).
+- **API:**
+  - `history` has no author filter yet (SPEC §6.4; Milestone 1's step 10).
+  - The person's display name is `--user` only; it becomes a saved setting with the GUI's settings (Milestone 2).
+  - When the server shuts down, open API transactions aren't interrupted: the process is exiting, and history isn't saved.
   - A client whose last connection closed with an undelivered note keeps a small entry in the handler until it reconnects. It's never pruned.
   - No limit on message size: IXWebSocket has none. Localhost only, so it's left.
   - Replies are sent from the message thread, and IXWebSocket's server sends block until written. With the 2-second send timeout, a client that stops reading can hold up the message thread for at most that long before it's disconnected. The audio thread is never affected.
-- **MCP bridge (step 7):**
-  - Only Claude Code's `claude-code` maps to "Claude". Other clients appear under the `clientInfo` name they send, unless their config passes `--name`. Claude Desktop's name gets mapped once it's checked (see "To do when Lee sets up Claude Desktop" above); add others as clients are tried.
+- **MCP bridge:**
+  - Only Claude Code's `claude-code` maps to "Claude". Other clients appear under the `clientInfo` name they send, unless their config passes `--name`. Claude Desktop's name gets mapped once it's checked (Set up on Lee's laptop); add others as clients are tried.
   - It handles one request at a time: a call waits for Hocket's answer before the next message is read. That's fine while the DAW handles requests one at a time anyway. `notifications/cancelled` is ignored, and a `ping` sent during a call is answered after it.
-  - Replies time out after 30 s, and `hello` uses the same limit. `render_section` and the analysis tools (SPEC §7) may need longer, or progress notifications.
+  - Replies time out after 30 s, and `hello` uses the same limit. `render_section` and the analysis tools (Milestone 8) need longer, or progress notifications.
   - Supported MCP versions are 2024-11-05 to 2025-11-25; a client asking for a newer one is offered 2025-11-25. Claude Code 2.1.314 asks for 2025-11-25, but its MCP log calls that `"protocolEra": "legacy"`, so a newer era exists. Check what it changes before a future Claude Code stops accepting the old one.
   - A refused connection to a port on 127.0.0.1 takes about 2 s on Windows. It only happens when the token file names a running Hocket that isn't listening.
-- **Command bus:** continuous-gesture coalescing (SPEC §3.1) isn't built; nothing sends continuous parameter changes yet, so add it with the first parameter command. SPEC §6.4 has no MCP `redo`; if one is added, it gets the same author check as `undo`, applied to whoever did the undo.
-- **Sync coverage:** `EditSync` handles `ClipContentChanged` only, since `write_clip` is the only project command. Each new command that changes the project needs its sync code and a render or live test. `EditSync` asserts that clips are never added or removed.
+- **Command bus:** continuous-gesture coalescing (SPEC §3.1) comes with volume and pan, the first continuous settings (Milestone 1's step 4). SPEC §6.4 has no MCP `redo`; if one is added, it gets the same author check as `undo`, applied to whoever did the undo.
+- **Sync coverage:** `EditSync` handles `ClipContentChanged` only, and asserts that clips are never added or removed (Milestone 1's steps 5 and 6). Each new command that changes the project needs its sync code and a render or live test, and each new kind of change to the Edit a stress test (SPEC §3.3).
 - **Tracktion's undo** can't be fully off: JUCE keeps at least one step even at 0 levels, and some Tracktion setters (tempo, clip position) record into it. `EditSync` clears it after every sync; nothing ever undoes in the Edit.
-- **Render speed.** An offline render of a few seconds takes about 1.6 s (Release), and each live test about 0.5 s. That's most of the engine tests' time outside the stress tests (about 15 s of their 35). The cost looks like 4OSC building its wavetables each time it initialises ("Generating waves" in the Debug log). It doesn't matter for Milestone 0, but it will for `render_section` and the analysis tools (SPEC §7).
+- **Render speed.** An offline render of a few seconds takes about 1.6 s (Release), and each live test about 0.5 s: most of the engine tests' time outside the stress tests. The cost looks like 4OSC building its wavetables each time it initialises ("Generating waves" in the Debug log). Hocket's synth replaces 4OSC in Milestone 4, before `render_section` and the analysis tools need speed (Milestone 8).
 - **Debug engine tests:** no JUCE assertions fire and JUCE's leak detector is silent, but the MSVC CRT reports two to four 16-byte blocks at exit, even when no test case runs. Not chased.
 - **`--watch`** compares each file's modification time and size. A same-size rewrite within the file system's timestamp resolution could be missed, which is unlikely in practice.
-- **Saving to disk:** `project::write()` produces every file in memory; writing them to the folder (atomically, plus SPEC §6.1's external-change detection) isn't built. Milestone 0 doesn't need it.
-- **Tracktion pin:** upstream `develop` at 3.5.0 is untagged, and the submodule is Hocket's fork with one fix on top (Loose ends: dropped blocks). Move to the 3.5.0 tag when it exists, following DEPENDENCIES.md's "Updating Tracktion". It covers the fork's commit and Hocket's two workarounds (the first MIDI scan, and `setUsesProxy (false)`), each kept until upstream has its own fix, and moving the JUCE pin to match.
+- **Saving to disk:** `project::write()` produces every file in memory; writing them to the folder isn't built (Milestone 1's step 9).
+- **Tracktion pin:** upstream `develop` at 3.5.0 is untagged, and the submodule is Hocket's fork with one fix on top (DEPENDENCIES.md). Move to the 3.5.0 tag when it exists, following DEPENDENCIES.md's "Updating Tracktion". It covers the fork's commit and Hocket's two workarounds (the first MIDI scan, and `setUsesProxy (false)`), each kept until upstream has its own fix, and moving the JUCE pin to match.
 - **Known upstream issues (not reported, by Lee's decision, 2026-11-06).** Tracktion takes bug reports only on the JUCE forum, whose community guidelines don't allow content generated by AI ([policy](https://forum.juce.com/t/new-policy-no-content-generated-by-artificial-intelligence/66362)). Hocket works around or fixes each one itself instead.
   - The three Tracktion reports Claude drafted (the first MIDI scan, the dropped block, and `MidiNode`) stay unposted in Lee's `Documents\Hocket\upstream`, untouched, in case Lee decides otherwise. Anything posted would have to be in Lee's own words, per that policy.
   - Each time Tracktion is updated, DEPENDENCIES.md's "Updating Tracktion" checks whether the first three Tracktion items below are still needed.
-  - **Tracktion, the dropped block:** `LockFreeMultiThreadedNodePlayer::prepareToPlay` calls `createThreads()`, which takes `processMutex`, for every graph rebuild, so the audio thread's `try_lock` sometimes fails and a whole block plays as silence. Fixed in Hocket's fork, kept long-term (Loose ends: dropped blocks).
+  - **Tracktion, the dropped block:** `LockFreeMultiThreadedNodePlayer::prepareToPlay` calls `createThreads()`, which takes `processMutex`, for every graph rebuild, so the audio thread's `try_lock` sometimes fails and a whole block plays as silence (a 5.8 ms click, about once per 1,700 rebuilds). Fixed in Hocket's fork, kept long-term (DEPENDENCIES.md). How it was found: Gotchas, "Debugging Tracktion's playback".
   - **Tracktion, the first MIDI scan:** `DeviceManager::initialise()` calls `rescanMidiDeviceList()` (a 5 ms timer) and then `restartMidiCheckTimer()`, which replaces it with the 4 s rescan timer. So the first MIDI scan lands 4 s after startup and stops anything already playing. Workaround: `--play` runs the scan itself before playing (`src/app/Main.cpp`; Gotchas).
   - **Tracktion, `MidiNode`'s notes:** `MidiNode` (`tracktion_MidiNode.cpp`), which plays MIDI clips that use a proxy sequence (the default), keeps no note state across graph swaps.
     - `prepareToPlay` only checks whether the old graph had the node (54-60).
     - The new node then sends the new sequence's note-offs unchecked (171-197), and its loop-end note-offs come from that sequence too (201-205).
     - So a rewrite that changes a sounding note leaves the old one on for good. `LoopingMidiNode` gets this right.
     - Workaround: `EditSync` calls `setUsesProxy (false)` on each clip, so clips play through `LoopingMidiNode`. Repro: `hocket_engine_tests --test-case="stress: rewrites that change*"` with that call taken out.
-  - **Tracktion, 4OSC allocates on the audio thread:** it builds a `juce::MidiBuffer` for every 32-sample sub-block (`FourOscPlugin::applyToBuffer`, `tracktion_FourOscPlugin.cpp:1484`), and `addEvent` allocates whenever a sub-block has MIDI. Noticed while chasing the stuck notes; no glitch traced to it. 4OSC is Milestone 0's stand-in synth; Hocket's own comes in v1.
+  - **Tracktion, 4OSC allocates on the audio thread:** it builds a `juce::MidiBuffer` for every 32-sample sub-block (`FourOscPlugin::applyToBuffer`, `tracktion_FourOscPlugin.cpp:1484`), and `addEvent` allocates whenever a sub-block has MIDI. Noticed while chasing the stuck notes; no glitch traced to it. Hocket's synth replaces it in Milestone 4.
+  - **Tracktion, `SamplerPlugin` locks and allocates on the audio thread:** `applyToBuffer` takes `lock`, a `CriticalSection` the message thread also takes (`tracktion_SamplerPlugin.cpp:297`), and creates a `new SampledNote` for every note-on (`:336`), deleted on the audio thread when it ends. Found while planning Milestone 1 (2026-11-06), so Hocket's drum sampler is its own from the start (SPEC §8.1).
   - **Tracktion, the version string:** `Engine::getVersion()` is hardcoded to "v3.1.0"; we read `VERSION.md` instead.
   - **IXWebSocket:** its server sets `SO_REUSEADDR` unconditionally (`IXSocketServer.cpp:135`), so on Windows a second server can bind a port another is listening on. `listen()` is non-virtual and the socket private, so `SO_EXCLUSIVEADDRUSE` can't be set without forking. Also, its server sends block with no timeout by default (`kSendTimeoutSeconds = -1`); `Server.cpp` sets 2 s.
 
@@ -188,6 +258,7 @@ The whole of Milestone 0, reviewed against SPEC.md and CLAUDE.md; the findings a
 - **Engine tests that run the message loop** receive whatever Tracktion has posted before, and handling a device update stops the transport. A test that ran after another test's device was closed stopped playing within two blocks. `FakeAudioDevice` now handles pending messages when it opens and closes.
 - **Tracktion has two MIDI clip nodes.** A clip that can use a proxy sequence (`MidiClip::canUseProxy()`, true by default) plays through `MidiNode`, which keeps no note state across graph swaps, so a rewrite that changes a sounding note leaves it stuck. With `setUsesProxy (false)` it plays through `LoopingMidiNode`, which hands its sounding notes to the next graph and ends the ones the rewrite took away (`createNodeForMidiClip`, `tracktion_EditNodeBuilder.cpp:676`). `EditSync` turns the proxy off for that reason, until upstream's `MidiNode` hands its notes over too (checked on every Tracktion update, DEPENDENCIES.md). Read the node that actually plays before reasoning about Tracktion's MIDI.
 - **Tracktion renders** (`Renderer::renderToFile`) stop all transports, and they need a non-empty track bitset (`toBitSet (getAllTracks (edit))`), whatever the docs say about empty meaning all.
+- **Custom Tracktion devices:** Tracktion lets a program register plugin types of its own with `PluginManager::createBuiltInType<T>()` (`tracktion_PluginManager.h:75`; the DemoRunner's `DistortionEffectDemo.h` is an example). Hocket's devices use it (Milestone 1's step 7 onwards).
 - **Shell edits of C++ string literals.** In the Bash tool, `\\n` inside a heredoc can arrive as a real newline, and other backslashes in Python string literals get mangled too (Windows paths). Make code and doc edits with the Edit tool.
 - **Windows port probes** (measured on this machine; used by `platform::isTcpPortFree`):
   - A socket with `SO_EXCLUSIVEADDRUSE` bound to 0.0.0.0 fails against any listener on the port: loopback with `SO_REUSEADDR` (like IXWebSocket), loopback plain, or wildcard. It succeeds when the port has only `TIME_WAIT` connections.
