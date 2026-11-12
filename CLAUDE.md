@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 ```
 
 - Run these from the repository's folder. PowerShell needs the `.\` to run a program by a relative path; without it, `build\...` is taken for a module name.
-- On Lee's laptop, ASIO means `FL Studio ASIO`; ASIO4ALL buzzes there (PROGRESS.md, Loose ends).
+- On Lee's laptop, ASIO means `FL Studio ASIO`; ASIO4ALL buzzes there at 512 samples, but is clean at `--buffer-size 1024` (PROGRESS.md, Loose ends).
 
 - `--check <folder>` validates a project folder and prints every error as `file:line:column: message`. Run it after editing project files by hand.
 - `--play <folder>` loops the project until Ctrl+C, or until its console window is closed, which stops it just as cleanly. `--driver` and `--device` take names as `--list-devices` prints them, and `--sample-rate` and `--buffer-size` take values the device offers. Without them it reuses the last device, rate and size, which Tracktion saves in `%APPDATA%\Hocket\Settings.xml`. With `--watch`, each saved clip file is sent as a `write_clip`, with a warning when the save replaces a change made through the API. `--user <name>` is your name in the history (default `user`). If playback stops by itself (Tracktion does when its device lists change), it says so. At Ctrl+C it prints the driver's xrun count (where the driver keeps one) and how many audio callbacks took longer than their block.

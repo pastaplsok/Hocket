@@ -23,7 +23,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 
 | # | Step | Status |
 |---|---|---|
-| 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); the ASIO4ALL buzz is still open (Loose ends) |
+| 1 | Device options and Milestone 0's loose ends | Done (2026-11-12) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
 | 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 4 of 8 done |
@@ -57,7 +57,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Changing a setting in ASIO4ALL's panel during `--play` printed `Playback stopped by itself`, blaming Tracktion's device lists: the driver reset the device and reopened it as it was.
   - Closing the console window removed `api.json`.
   - Realtek ASIO opened and stopped cleanly. FL Studio ASIO wouldn't start ("Device didn't start correctly"), with or without `--sample-rate` (Loose ends).
-- Checked at the Magni on 2026-11-12: FL Studio ASIO opens there. ASIO4ALL still buzzes at 48000 Hz, so it isn't the rate (Loose ends).
+- Checked at the Magni on 2026-11-12: FL Studio ASIO opens there, and ASIO4ALL's buzz is its buffer size: it's clean at 1024 samples (Loose ends).
 - Left out: text selection while `--play` runs. The GUI replaces `--play` for everyday use.
 
 **2. The format grows to a song** — done, with tests (SPEC v0.8, §4.4 and §5)
@@ -279,15 +279,15 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 4. Check the label too. Claude Desktop isn't started in a project folder, so the working folder's name may mean nothing (an app or system folder). If so, pass `--label` in its config, or pick a better default for clients that don't start the bridge in a project folder.
 
 ## Test hardware
-- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own. ASIO4ALL put a buzz over the bass (Loose ends); FL Studio ASIO works on the Magni, so the ASIO checks use it here. Away from the desk, headphones go on the Realtek; FL Studio ASIO wouldn't start there on 2026-11-12, but Realtek ASIO works (Loose ends). Device names as `--list-devices` prints them: `FL Studio ASIO`, `ASIO4ALL v2` and `Realtek ASIO` under ASIO; the Magni under Windows Audio is `Speakers (Magni Mesh Dac)`. None of these drivers counts xruns (SPEC §9).
+- **Laptop** (main development machine): Magni Mesh DAC, used at the desk. It has no ASIO driver of its own. ASIO4ALL buzzes on it at 512 samples but is clean at 1024 (Loose ends); FL Studio ASIO works on the Magni at 512, so the ASIO checks use it here. Away from the desk, headphones go on the Realtek; FL Studio ASIO wouldn't start there on 2026-11-12, but Realtek ASIO works. Device names as `--list-devices` prints them: `FL Studio ASIO`, `ASIO4ALL v2` and `Realtek ASIO` under ASIO; the Magni under Windows Audio is `Speakers (Magni Mesh Dac)`. None of these drivers counts xruns (SPEC §9).
 - **Desktop**: Focusrite Scarlett 2i2 with Focusrite's native ASIO driver and mic inputs, the test interface for audio recording (Milestone 7). Lee's Yamaha piano connects to it for MIDI input and recording (Milestone 3).
   - **It needs the toolchain by Milestone 3**: Visual Studio 2026, Git, a clone with its submodules, and a build that passes its tests (CLAUDE.md), then `hocket-mcp` installed and registered there. Check its free memory and disk first (Gotchas: build time).
 
 ## Loose ends
-- **ASIO4ALL v2 on the Magni buzzes (2026-11-04).** Sharp, buzzy "NES helicopter" sounds came with the bass line. Windows Audio and FL Studio ASIO, on the same DAC, sound fine. The cause isn't known.
-  - **Not the sample rate (checked 2026-11-12):** it still buzzes with `--sample-rate 48000`, the rate Windows runs the Magni at. The guess had been that ASIO4ALL, which drives the device directly by kernel streaming, ran the DAC at 44.1 kHz while Windows held it at 48 kHz.
-  - Next to try, at the Magni with its knob well down (ASIO4ALL bypasses the Windows volume, and was very loud on 2026-11-06): a bigger buffer (`--buffer-size 1024`, then 2048), and note the late-callback count `--play` prints at Ctrl+C; then ASIO4ALL's own panel (its buffer size, "Allow Pull Mode", "Always Resample 44.1kHz <-> 48kHz").
-  - Plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job. Not urgent: Windows Audio and FL Studio ASIO work, and step 4 doesn't touch the audio path.
+- **ASIO4ALL v2 on the Magni buzzes at 512 samples (2026-11-04; cause found 2026-11-12).** Sharp, buzzy "NES helicopter" sounds came with the bass line. It's the buffer size: at 1024 samples (`--buffer-size 1024`) it plays cleanly. Not the sample rate: it still buzzed at 48000 Hz, the rate Windows runs the Magni at.
+  - FL Studio ASIO plays cleanly at 512 on the same DAC, so Hocket keeps up at 512 in general. ASIO4ALL streams to the device directly (kernel streaming), while FL Studio ASIO goes through Windows' audio engine and its buffering, so ASIO4ALL most likely needs more room with this USB DAC. The late-callback count at 512 wasn't noted; if it ever matters, a nonzero count would point at Hocket instead.
+  - For Milestone 2's audio settings: the person picks the buffer size (planned, SPEC §9), and Hocket could suggest a bigger one when it hears of trouble: late callbacks, or a driver like ASIO4ALL on a USB device. To decide then.
+  - Tracktion saved the last device used, so the next `--play` without options opens whatever Lee ran last (ASIO4ALL at 1024, or FL Studio ASIO).
 - **FL Studio ASIO wouldn't start with headphones on the Realtek (2026-11-12).** "Device didn't start correctly", with or without `--sample-rate`. On the Magni it opens and plays (checked 2026-11-12, `--sample-rate 44100`), so the Realtek setup was the cause, not Hocket. The saved device is FL Studio ASIO again. If it matters away from the desk, its output setting (`HKCU\Software\Image-Line\ASIO`, `outputEndPoint`) is blank, which seems to mean the Windows default output.
 - **Milestone 2: dragging a clip shorter than its notes** (Lee asked for this to be noted, 2026-11-12). Resizing is `write_clip` with a new `@length` (step 4), and a note can't start at or after a clip's end (SPEC §5.4), so a drag that cuts into a clip's notes must either remove them or stop. To decide with Lee then. [Claude's proposal: the drag removes the notes that would start past the new end, in the same undo step, and the clip shows which while dragging; undo brings them back. On a linked clip it changes every clip using the file, so the drag should show that too. The alternative is a drag that stops at the bar holding the last note.] Notes that start before the new end but run past it are kept and cut off at playback.
 - **`hocket-stress` can't rewrite a drum clip yet (2026-11-12).** It parses `read_clip`'s text with no drum map, so a clip using drum names fails with "couldn't parse clip". The fix: pass the names through untouched, since the default rewrite only adds a comment, and have `--vary` move notes by name or give it the map. Step 11's structural mode is the time to do it.
