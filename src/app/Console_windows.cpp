@@ -23,11 +23,24 @@ namespace
     // Windows calls this on a thread of its own.
     BOOL WINAPI handleConsoleControl (DWORD event)
     {
-        if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
-            return FALSE; // closing the console window etc.: the default, which ends the process
+        if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT)
+        {
+            interrupted = true;
+            return TRUE;
+        }
 
-        interrupted = true;
-        return TRUE;
+        if (event == CTRL_CLOSE_EVENT)
+        {
+            // The console window is closing. Windows ends the process as soon as
+            // this returns, or about 5 s after the window closed, whichever comes
+            // first. So stop as for Ctrl+C, and don't return: the program stops
+            // playback, closes the device, removes the token file and exits by
+            // itself, well within the 5 s, and exiting ends this thread too.
+            interrupted = true;
+            Sleep (INFINITE);
+        }
+
+        return FALSE; // logging off or shutting down: the default, which ends the process
     }
 }
 

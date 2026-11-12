@@ -629,6 +629,28 @@ TEST_CASE ("the idle timeout commits a transaction only after the owner has been
            == "Note: after 10 minutes with no request from you, your transaction \"wrote bridge\" was closed; its edits are #1 \"wrote bridge (interrupted)\"");
 }
 
+TEST_CASE ("a notification from the owner restarts the idle clock too")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+
+    client.call ("begin_transaction", { { "name", "wrote bridge" } });
+    client.call ("write_clip", { { "clip_id", "clp-bass" }, { "notes", "@length 1bar\n\n1.1 C2 1/4 v100\n" } });
+
+    fixture.now += 9min;
+    const auto reply = client.send (R"({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}})");
+    CHECK (reply.text.empty());
+    CHECK_FALSE (reply.close);
+
+    fixture.now += 9min;
+    fixture.handler.checkIdle();
+    CHECK (fixture.bus.openTransaction().has_value());
+
+    fixture.now += 1min;
+    fixture.handler.checkIdle();
+    CHECK_FALSE (fixture.bus.openTransaction().has_value());
+}
+
 TEST_CASE ("the idle timeout leaves the person at the DAW alone")
 {
     Fixture fixture;

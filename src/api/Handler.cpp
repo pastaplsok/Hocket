@@ -291,14 +291,15 @@ Reply Handler::handleRequest (int connectionId, std::string_view message)
         return { resultReply (id, { { "server", options.serverName }, { "version", hocketVersion() }, { "author", commands::displayName (author) } }) };
     }
 
-    // Notifications get no reply, and the API has none of its own.
-    if (! hasId)
-        return {};
-
+    // A request of any kind restarts the idle clock (SPEC §3.1), notifications included.
     const auto& author = *connection->second;
     auto* client = findClient (author);
     assert (client != nullptr);
     client->lastRequest = options.now();
+
+    // Notifications get no reply, and the API has none of its own.
+    if (! hasId)
+        return {};
 
     if (method == "hello")
         return fail (id, invalidRequest, "this connection has already said hello");

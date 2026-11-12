@@ -161,6 +161,7 @@ void EditSync::clearTracktionUndo()
 commands::Result EditSync::play()
 {
     auto& transport = tracktionEdit->getTransport();
+    playRequested = true;
 
     if (transport.isPlaying())
         return { true, "already playing" };
@@ -178,6 +179,7 @@ commands::Result EditSync::play()
 commands::Result EditSync::stop()
 {
     auto& transport = tracktionEdit->getTransport();
+    playRequested = false;
 
     if (! transport.isPlaying())
         return { true, "already stopped" };
@@ -190,5 +192,10 @@ bool EditSync::isPlaying() const
 {
     // Tracktion can stop by itself, e.g. when it rebuilds its device lists.
     return tracktionEdit->getTransport().isPlaying();
+}
+
+bool EditSync::stoppedByItself() const
+{
+    return playRequested && ! isPlaying();
 }
 }

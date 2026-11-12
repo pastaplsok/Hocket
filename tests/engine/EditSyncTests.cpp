@@ -173,3 +173,24 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
     // Once the EditSync is gone, the bus has no transport again.
     CHECK_FALSE (bus.execute (commands::Play {}, testing::claude).ok);
 }
+
+TEST_CASE ("a stop no transport command asked for is told apart from one that was")
+{
+    commands::CommandBus bus (twoTracks());
+    engine::EditSync sync (testEngine(), bus);
+    CHECK_FALSE (sync.stoppedByItself()); // it never played
+
+    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    CHECK_FALSE (sync.stoppedByItself());
+
+    // As when Tracktion rebuilds its device lists.
+    sync.edit().getTransport().stop (false, false);
+    CHECK (sync.stoppedByItself());
+    CHECK (bus.isPlaying() == false);
+
+    REQUIRE (bus.execute (commands::Play {}, testing::claude).ok);
+    CHECK_FALSE (sync.stoppedByItself());
+
+    REQUIRE (bus.execute (commands::Stop {}, testing::lee).ok);
+    CHECK_FALSE (sync.stoppedByItself());
+}

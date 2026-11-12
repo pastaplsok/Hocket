@@ -13,7 +13,9 @@ namespace hocket
 
     // From now on, Ctrl+C (and Ctrl+Break on Windows) sets a flag instead of
     // ending the process, so the app can stop playback and close the audio
-    // device cleanly. Poll interruptRequested() from the message thread.
+    // device cleanly. Poll interruptRequested() from the message thread. On
+    // Windows, closing the console window sets it too, and the app then has
+    // about 5 s to stop and exit before Windows ends it.
     void catchInterrupts();
     bool interruptRequested();
 }

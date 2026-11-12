@@ -21,6 +21,7 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <charconv>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -44,23 +45,44 @@ namespace
     void printUsage (std::ostream& out)
     {
         out << "usage: hocket-headless --check <project-folder>   validate a project; errors go to stderr\n"
-               "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>] [--watch] [--user <name>]\n"
+               "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>]\n"
+               "                       [--sample-rate <Hz>] [--buffer-size <samples>] [--watch] [--user <name>]\n"
                "                                                  play the project on a loop until Ctrl+C\n"
-               "       hocket-headless --list-devices             list audio devices by driver type\n"
+               "       hocket-headless --list-devices [--driver <type>] [--device <name>]\n"
+               "                                                  list audio devices by driver type; for a driver\n"
+               "                                                  or device named, also the sample rates and\n"
+               "                                                  buffer sizes it offers\n"
                "       hocket-headless --version                  print version numbers\n"
                "\n"
                "While --play plays, AI clients can work on the project through its API on 127.0.0.1;\n"
                "the port and token are in %LOCALAPPDATA%\\Hocket\\api.json until it stops.\n"
                "\n"
                "--play options:\n"
-               "  --driver <type>   a driver type as --list-devices prints it, e.g. ASIO\n"
-               "  --device <name>   an output device as --list-devices prints it, e.g. \"ASIO4ALL v2\"\n"
-               "                    Without these, it plays on the device used last time, or the\n"
-               "                    system default. --device alone picks the first driver listing it.\n"
-               "  --watch           when a clip's .notes file is saved, play the change: it's sent\n"
-               "                    as a write_clip, so it can be undone like any other edit\n"
-               "  --user <name>     your name in the history and in messages to AI clients, e.g. \"was\n"
-               "                    made by Lee, not Claude\". Default: user\n";
+               "  --driver <type>           a driver type as --list-devices prints it, e.g. ASIO\n"
+               "  --device <name>           an output device as --list-devices prints it, e.g. \"ASIO4ALL v2\"\n"
+               "                            Without these, it plays on the device used last time, or the\n"
+               "                            system default. --device alone picks the first driver listing it.\n"
+               "  --sample-rate <Hz>        e.g. 48000, and\n"
+               "  --buffer-size <samples>   e.g. 256: values the device offers (--list-devices --device <name>\n"
+               "                            lists them). Without these, it keeps the device's last ones.\n"
+               "                            The device, sample rate and buffer size are kept for the next run.\n"
+               "  --watch                   when a clip's .notes file is saved, play the change: it's sent\n"
+               "                            as a write_clip, so it can be undone like any other edit\n"
+               "  --user <name>             your name in the history and in messages to AI clients, e.g. \"was\n"
+               "                            made by Lee, not Claude\". Default: user\n";
+    }
+
+    // A whole number above zero, or nullopt.
+    std::optional<int> positiveNumber (const std::string& text)
+    {
+        int value = 0;
+        const auto* end = text.data() + text.size();
+        const auto [next, error] = std::from_chars (text.data(), end, value);
+
+        if (error != std::errc() || next != end || value <= 0)
+            return {};
+
+        return value;
     }
 
     int checkProject (const std::string& folder)
@@ -85,30 +107,46 @@ namespace
         return 0;
     }
 
-    void printDeviceNames (const juce::StringArray& names, std::string_view label)
+    struct ListOptions
     {
-        std::cout << "  " << label << ":\n";
+        std::string driver; // empty: every driver
+        std::string device; // empty: every device
+    };
 
-        if (names.isEmpty())
-            std::cout << "    (none)\n";
-
-        for (const auto& name : names)
-            std::cout << "    " << name.toStdString() << "\n";
-    }
-
-    int listDevices()
+    std::optional<ListOptions> parseListOptions (const std::vector<std::string>& arguments)
     {
-        tracktion::Engine engine { "Hocket", nullptr, std::make_unique<ListDevicesBehaviour>() };
-        auto& deviceManager = engine.getDeviceManager().deviceManager;
+        if (arguments.size() < 2 || arguments[1] != "--list-devices")
+            return {};
 
-        for (auto* type : deviceManager.getAvailableDeviceTypes())
+        ListOptions options;
+
+        for (std::size_t i = 2; i < arguments.size(); ++i)
         {
-            type->scanForDevices();
-            std::cout << type->getTypeName().toStdString() << "\n";
-            printDeviceNames (type->getDeviceNames (false), "outputs");
-            printDeviceNames (type->getDeviceNames (true), "inputs");
+            const auto hasValue = i + 1 < arguments.size();
+
+            if (arguments[i] == "--driver" && hasValue)
+                options.driver = arguments[++i];
+            else if (arguments[i] == "--device" && hasValue)
+                options.device = arguments[++i];
+            else
+                return {};
         }
 
+        return options;
+    }
+
+    int listDevices (const ListOptions& options)
+    {
+        tracktion::Engine engine { "Hocket", nullptr, std::make_unique<ListDevicesBehaviour>() };
+        const auto list = hocket::engine::listDevices (engine.getDeviceManager().deviceManager, options.driver, options.device);
+
+        if (! list.error.empty())
+        {
+            std::cerr << list.error << "\n";
+            return 1;
+        }
+
+        std::cout << list.text;
         return 0;
     }
 
@@ -116,8 +154,7 @@ namespace
     struct PlayOptions
     {
         std::string folder;
-        std::string driver; // empty: the last one used, or the system default
-        std::string device;
+        hocket::engine::DeviceChoice device; // empty and zero: as last time, or the system default
         bool watch = false;
         std::string user = "user"; // the display name of the person at the DAW (SPEC §3.1)
     };
@@ -132,13 +169,24 @@ namespace
         for (std::size_t i = 3; i < arguments.size(); ++i)
         {
             const auto hasValue = i + 1 < arguments.size();
+            const auto number = hasValue ? positiveNumber (arguments[i + 1]) : std::nullopt;
 
             if (arguments[i] == "--watch")
                 options.watch = true;
             else if (arguments[i] == "--driver" && hasValue)
-                options.driver = arguments[++i];
+                options.device.driver = arguments[++i];
             else if (arguments[i] == "--device" && hasValue)
-                options.device = arguments[++i];
+                options.device.device = arguments[++i];
+            else if (arguments[i] == "--sample-rate" && number)
+            {
+                options.device.sampleRate = *number;
+                ++i;
+            }
+            else if (arguments[i] == "--buffer-size" && number)
+            {
+                options.device.bufferSize = *number;
+                ++i;
+            }
             else if (arguments[i] == "--user" && hasValue && ! arguments[i + 1].empty())
                 options.user = arguments[++i];
             else
@@ -158,14 +206,15 @@ namespace
     };
 
     // Runs on the message thread while --play plays: stops the message loop on
-    // Ctrl+C, closes API transactions left idle, and, with --watch, sends each
-    // saved clip file to the bus.
+    // Ctrl+C, says when playback stops by itself, closes API transactions left
+    // idle, and, with --watch, sends each saved clip file to the bus.
     class PlayLoop final : private juce::Timer
     {
     public:
-        PlayLoop (hocket::commands::CommandBus& commandBus, hocket::api::Handler& apiHandler, const std::filesystem::path& folder, bool watch,
-                  hocket::commands::Author localUser)
-            : api (apiHandler)
+        PlayLoop (hocket::commands::CommandBus& commandBus, const hocket::engine::EditSync& editSync,
+                  const hocket::engine::PlaybackDevice& playbackDevice, hocket::api::Handler& apiHandler, const std::filesystem::path& folder,
+                  bool watch, hocket::commands::Author localUser)
+            : sync (editSync), device (playbackDevice), api (apiHandler), deviceWhilePlaying (playbackDevice.description())
         {
             if (watch)
             {
@@ -179,9 +228,13 @@ namespace
         ~PlayLoop() override { stopTimer(); }
 
     private:
+        const hocket::engine::EditSync& sync;
+        const hocket::engine::PlaybackDevice& device;
         hocket::api::Handler& api;
         std::optional<hocket::project::ClipFileWatcher> watcher;
         std::optional<hocket::commands::WatchedSaves> saves;
+        std::string deviceWhilePlaying; // the device's description, as of the last check
+        bool stopReported = false;
 
         void timerCallback() override
         {
@@ -195,6 +248,7 @@ namespace
             // An exception here would end --play, music and all, so it's reported instead.
             try
             {
+                reportStopByItself();
                 api.checkIdle();
                 pollWatcher();
             }
@@ -202,6 +256,32 @@ namespace
             {
                 std::cerr << "internal error: " << error.what() << std::endl;
             }
+        }
+
+        // Once per stop, so that it isn't taken for silence or a crash. A
+        // change of device is the likely cause, so it says what changed.
+        void reportStopByItself()
+        {
+            if (! sync.stoppedByItself())
+            {
+                stopReported = false;
+                deviceWhilePlaying = device.description();
+                return;
+            }
+
+            if (stopReported)
+                return;
+
+            stopReported = true;
+            const auto now = device.description();
+
+            const auto why = now.empty()                ? std::string ("the audio device closed")
+                           : now != deviceWhilePlaying ? "the audio device changed, and is now " + now
+                                                       : std::string ("most likely Tracktion rebuilt its device lists, as it does when a MIDI or "
+                                                                      "audio device is plugged in, unplugged, or reset by its driver");
+
+            std::cerr << "Playback stopped by itself: " << why << ". An API client's transport play starts it again; Ctrl+C quits."
+                      << std::endl;
         }
 
         void pollWatcher()
@@ -282,8 +362,8 @@ namespace
         tracktion::Engine engine { "Hocket", nullptr, std::make_unique<PlayBehaviour>() };
         auto& devices = engine.getDeviceManager().deviceManager;
 
-        // Without --driver and --device, it keeps what Tracktion opened.
-        if (const auto error = hocket::engine::openDevice (devices, options.driver, options.device); ! error.empty())
+        // Without --driver, --device, --sample-rate and --buffer-size, it keeps what Tracktion opened.
+        if (const auto error = hocket::engine::openDevice (devices, options.device); ! error.empty())
         {
             std::cerr << error << "\n";
             return 1;
@@ -366,7 +446,7 @@ namespace
 
         hocket::catchInterrupts();
         {
-            PlayLoop loop (bus, api, folder, options.watch, localUser);
+            PlayLoop loop (bus, sync, playbackDevice, api, folder, options.watch, localUser);
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 
@@ -396,14 +476,11 @@ int main (int argc, char* argv[])
     // caught where they run (PlayLoop, the API's Handler and Server).
     try
     {
-        if (arguments.size() == 2)
-        {
-            if (arguments[1] == "--list-devices")
-                return listDevices();
+        if (arguments.size() == 2 && arguments[1] == "--version")
+            return printVersion();
 
-            if (arguments[1] == "--version")
-                return printVersion();
-        }
+        if (const auto options = parseListOptions (arguments))
+            return listDevices (*options);
 
         if (arguments.size() == 3 && arguments[1] == "--check")
             return checkProject (arguments[2]);

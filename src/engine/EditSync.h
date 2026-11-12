@@ -36,11 +36,17 @@ namespace hocket::engine
         // rounded up to a bar line, and at least one bar.
         tracktion::TimeRange loopRange() const;
 
+        // Whether playback has stopped though the last transport command was
+        // play. Tracktion stops by itself when it rebuilds its device lists: a
+        // MIDI or audio device plugged in, unplugged, or reset by its driver.
+        bool stoppedByItself() const;
+
     private:
         commands::CommandBus& bus;
         std::unique_ptr<tracktion::Edit> tracktionEdit;
         std::map<std::string, tracktion::MidiClip::Ptr, std::less<>> clips; // by Hocket clip ID
         int listenerId = 0;
+        bool playRequested = false; // by the last transport command
 
         void clipContentChanged (const std::string& clipId);
         void clearTracktionUndo();

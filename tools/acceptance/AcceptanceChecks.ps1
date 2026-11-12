@@ -63,7 +63,7 @@ function Get-StopResults ([string] $PlayLog, [string] $HowItEnded, [int] $ExitCo
         New-Check 'No xruns' ([int] $Matches[1] -eq 0) $Matches[0]
     }
     else {
-        New-Result 'Xruns' 'NOTE' "this driver doesn't report them (WASAPI doesn't; ASIO drivers usually do)"
+        New-Result 'Xruns' 'NOTE' "this driver doesn't report them; many don't, WASAPI, ASIO4ALL and FL Studio ASIO among them"
     }
 
     # JUCE's own count. Not a failure: one late callback needn't be heard, with a driver that buffers.
