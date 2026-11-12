@@ -12,7 +12,9 @@ add_library(hocket_core STATIC
     commands/Commands.h
     commands/Edits.cpp
     commands/Edits.h
+    commands/Planning.cpp
     commands/Planning.h
+    commands/SongCommands.cpp
     commands/WatchedSaves.cpp
     commands/WatchedSaves.h
     notes/DrumMap.cpp

@@ -99,6 +99,8 @@ edits::Plan CommandBus::plan (const Command& command) const
 {
     return std::visit (Overloaded {
                            [this] (const WriteClip& c) { return planning::plan (currentProject, c); },
+                           [this] (const SetTempo& c) { return planning::plan (currentProject, c); },
+                           [this] (const SetTimeSignature& c) { return planning::plan (currentProject, c); },
                            [] (const Play&) { return edits::Plan {}; }, // transport commands never get here
                            [] (const Stop&) { return edits::Plan {}; },
                        },

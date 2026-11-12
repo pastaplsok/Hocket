@@ -197,20 +197,18 @@ std::optional<std::string> tempoProblem (double bpm)
     if (bpm >= minTempo && bpm <= maxTempo)
         return {};
 
-    std::string number;
+    return formatTempo (bpm) + " is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120";
+}
 
+std::string formatTempo (double bpm)
+{
     if (std::isfinite (bpm) && std::floor (bpm) == bpm && std::abs (bpm) < 1e15)
-    {
-        number = std::to_string (static_cast<long long> (bpm));
-    }
-    else
-    {
-        char buffer[32] {};
-        const auto written = std::to_chars (buffer, buffer + sizeof (buffer), bpm);
-        number.assign (buffer, written.ptr);
-    }
+        return std::to_string (static_cast<long long> (bpm));
 
-    return number + " is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120";
+    // The shortest text that reads back as the same number.
+    char buffer[32] {};
+    const auto written = std::to_chars (buffer, buffer + sizeof (buffer), bpm);
+    return std::string (buffer, written.ptr);
 }
 
 notes::Parsed<TrackType> parseTrackType (std::string_view text)

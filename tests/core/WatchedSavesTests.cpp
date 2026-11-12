@@ -161,3 +161,17 @@ TEST_CASE ("a save of a file linked clips share goes to the first of them, and c
     CHECK (saved.warning->find ("(the latest: #1 \"wrote clip clp-bass-again (2 notes), and its linked clip clp-bass\" by Claude (m0-demo))")
            != std::string::npos);
 }
+
+TEST_CASE ("a save after a time signature change names it: the file's positions are in bars, so the save may have meant other times")
+{
+    CommandBus bus (makeProject());
+    WatchedSaves saves (bus, lee);
+
+    // The notes keep their times, but the file is written in 2/4 bars now.
+    REQUIRE (bus.execute (SetTimeSignature { "2/4" }, claude).ok);
+
+    const auto saved = saves.save ("clips/bass.notes", "@length 4bars\n\n1.1 C2 1/4 v100\n1.2 G2 1/4 v90\n");
+    CHECK (saved.result.message == "#2 wrote clip clp-bass (2 notes)");
+    REQUIRE (saved.warning);
+    CHECK (saved.warning->find ("(the latest: #1 \"set the time signature to 2/4\" by Claude (m0-demo))") != std::string::npos);
+}

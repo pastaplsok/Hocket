@@ -20,6 +20,21 @@ namespace hocket::commands
         std::string notes;
     };
 
+    //==============================================================================
+    // The song's tempo, in quarter notes per minute (SPEC §4.4).
+    struct SetTempo
+    {
+        double bpm = 120.0;
+    };
+
+    // "6/8". Every clip and note keeps its time (SPEC §4.4), so it's refused
+    // unless every clip is a whole number of the new bars.
+    struct SetTimeSignature
+    {
+        std::string timeSignature;
+    };
+
+    //==============================================================================
     // Transport commands (SPEC §3.1). They don't change the project, so they're
     // never validated against it, never enter the history, and don't split an
     // open transaction.
@@ -31,7 +46,7 @@ namespace hocket::commands
     {
     };
 
-    using Command = std::variant<WriteClip, Play, Stop>;
+    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, Play, Stop>;
 
     // Who sends a command (SPEC §3.1). Two authors are the same when their names
     // and sessions match, so two Claude sessions are different authors, and a

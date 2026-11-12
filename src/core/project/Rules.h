@@ -55,6 +55,9 @@ namespace hocket::project
     // minTempo to maxTempo quarter notes per minute.
     std::optional<std::string> tempoProblem (double bpm);
 
+    // For messages: "120", "97.5".
+    std::string formatTempo (double bpm);
+
     // "midi" or "drums".
     notes::Parsed<TrackType> parseTrackType (std::string_view text);
 

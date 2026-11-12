@@ -5,29 +5,6 @@
 
 namespace hocket::commands::planning
 {
-namespace
-{
-    std::string singleQuoted (std::string_view text)
-    {
-        return "'" + std::string (text) + "'";
-    }
-
-    std::string barsText (int bars)
-    {
-        return std::to_string (bars) + (bars == 1 ? "bar" : "bars");
-    }
-
-    std::string countText (std::size_t count, std::string_view noun)
-    {
-        return std::to_string (count) + " " + std::string (noun) + (count == 1 ? "" : "s");
-    }
-
-    edits::Plan refused (std::string message)
-    {
-        return { { false, std::move (message) }, {}, {}, {} };
-    }
-}
-
 edits::Plan plan (const project::Project& project, const WriteClip& command)
 {
     const project::Track* clipTrack = nullptr;
@@ -125,8 +102,7 @@ edits::Plan plan (const project::Project& project, const WriteClip& command)
     // text had them, so two texts that write out the same can parse differently,
     // e.g. a client sending back read_clip's text for a clip loaded from looser text.
     if (notes::write (*parsed.clip, meter, drumMap) == notes::write (project::notesOf (project, *clip), meter, drumMap))
-        return { { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" },
-                 {}, {}, {} };
+        return unchanged ("clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added");
 
     auto description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
 
