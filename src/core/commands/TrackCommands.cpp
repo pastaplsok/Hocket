@@ -5,6 +5,7 @@
 #include "core/units/Units.h"
 
 #include <algorithm>
+#include <set>
 
 namespace hocket::commands::planning
 {
@@ -334,5 +335,175 @@ edits::Plan plan (const project::Project& project, const SetMix& command)
         description = "set " + track->id + "'s " + listText (parts);
 
     return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), {} };
+}
+
+//==============================================================================
+edits::Plan plan (const project::Project& project, const SetInstrument& command)
+{
+    const auto* track = project::findTrack (project, command.trackId);
+
+    if (track == nullptr)
+        return refused ("set a track's instrument: " + project::unknownTrackMessage (project, command.trackId));
+
+    const auto* current = track->devices.empty() ? nullptr : &track->devices.front();
+    auto settings = settingsOf (*track);
+
+    if (! command.instrument)
+    {
+        if (current == nullptr)
+            return unchanged (track->id + " has no instrument already, so nothing changed and no history entry was added");
+
+        settings.devices.clear();
+        return { { true, {} }, { edits::SetTrack { std::move (settings) } }, "removed " + track->id + "'s instrument " + current->id, {} };
+    }
+
+    auto device = deviceFor (project, *command.instrument, *track,
+                             "A track's type doesn't change, so add a \"drums\" track for a kit, or use \"hocket:synth\"");
+
+    if (! device.device)
+        return refused ("set " + track->id + "'s instrument: " + device.error);
+
+    // The same kind of device: only its kit can differ, and it keeps its ID.
+    if (current != nullptr && current->type == device.device->type)
+    {
+        if (current->kit == device.device->kit)
+            return unchanged (track->id + "'s instrument is already " + describeDevice (*current) + ", so nothing changed and no history entry was added");
+
+        settings.devices.front().kit = device.device->kit;
+        return { { true, {} }, { edits::SetTrack { std::move (settings) } },
+                 "set " + track->id + "'s kit to " + singleQuoted (device.device->kit) + ", on " + current->id, {} };
+    }
+
+    auto description = "set " + track->id + "'s instrument to " + describeDevice (*device.device);
+
+    if (current != nullptr)
+        description += ", replacing " + current->id;
+
+    settings.devices = { std::move (*device.device) };
+    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), {} };
+}
+
+namespace
+{
+    // What changed between two drum maps, for the history: "renamed snare2 to
+    // rim", "moved clap from 39 to 40", "added perc-1 (82)", "removed cowbell (56)".
+    std::vector<std::string> drumMapChanges (const notes::DrumMap& before, const notes::DrumMap& after)
+    {
+        std::vector<std::string> renamed;
+        std::vector<std::string> moved;
+        std::vector<std::string> added;
+        std::vector<std::string> removed;
+        std::set<std::string, std::less<>> renamedTo;
+
+        for (const auto& [note, name] : before.byNote())
+        {
+            if (after.noteOf (name))
+                continue;
+
+            if (const auto* now = after.nameOf (note); now != nullptr && ! before.noteOf (*now))
+            {
+                renamed.push_back ("renamed " + name + " to " + *now);
+                renamedTo.insert (*now);
+            }
+            else
+            {
+                removed.push_back ("removed " + name + " (" + std::to_string (note) + ")");
+            }
+        }
+
+        for (const auto& [note, name] : after.byNote())
+        {
+            if (const auto was = before.noteOf (name))
+            {
+                if (*was != note)
+                    moved.push_back ("moved " + name + " from " + std::to_string (*was) + " to " + std::to_string (note));
+            }
+            else if (! renamedTo.contains (name))
+            {
+                added.push_back ("added " + name + " (" + std::to_string (note) + ")");
+            }
+        }
+
+        std::vector<std::string> changes;
+
+        for (auto* list : { &renamed, &moved, &added, &removed })
+            changes.insert (changes.end(), list->begin(), list->end());
+
+        return changes;
+    }
+}
+
+edits::Plan plan (const project::Project& project, const SetDrumMap& command)
+{
+    const auto* track = project::findTrack (project, command.trackId);
+
+    if (track == nullptr)
+        return refused ("set a track's drum map: " + project::unknownTrackMessage (project, command.trackId));
+
+    const auto fail = [track] (const std::string& why) { return refused ("set " + track->id + "'s drum map: " + why); };
+
+    if (track->type != project::TrackType::drums)
+        return fail ("only \"drums\" tracks have a drum map; " + track->id + " is a \"" + project::trackTypeName (track->type)
+                     + "\" track, whose clips use note names, and a track's type doesn't change. To use drum names, add a \"drums\" track "
+                       "and move the clips to it");
+
+    auto settings = settingsOf (*track);
+    settings.drumMap = {};
+
+    if (const auto problems = project::buildDrumMap (command.entries, settings.drumMap); ! problems.empty())
+    {
+        auto message = countText (problems.size(), "problem") + ", so nothing was changed: ";
+
+        for (std::size_t i = 0; i < problems.size(); ++i)
+            message += (i == 0 ? "" : "; ") + problems[i].message;
+
+        return fail (message);
+    }
+
+    if (settings.drumMap == track->drumMap)
+        return unchanged (track->id + "'s drum map is already exactly that, so nothing changed and no history entry was added");
+
+    // Files linked into other tracks must still mean the same notes on each (SPEC §5.2),
+    // and the clips whose files are written differently now are worth naming.
+    edits::Files files;
+    std::vector<std::string> rewritten;
+
+    for (const auto& clip : track->clips)
+    {
+        if (! files.insert (clip.file).second)
+            continue;
+
+        const auto& content = project.notesFiles.at (clip.file);
+
+        for (const auto* other : project::tracksUsing (project, clip.file))
+            if (other != track)
+                if (const auto conflicts = project::drumNameConflicts (content, settings, *other); ! conflicts.empty())
+                    return fail (clip.file + " is also used on " + other->id + ", and with this map the two tracks wouldn't name its notes alike: "
+                                 + conflicts + ". A file used on several tracks must mean the same notes on each, so change both maps alike, "
+                                   "or make the clips unique first");
+
+        if (notes::write (content, project.meter, &track->drumMap) != notes::write (content, project.meter, &settings.drumMap))
+            for (const auto* user : project::clipsUsing (project, clip.file))
+                rewritten.push_back (user->id);
+    }
+
+    auto changes = drumMapChanges (track->drumMap, settings.drumMap);
+    constexpr std::size_t shown = 4;
+
+    if (changes.size() > shown + 1)
+    {
+        const auto more = changes.size() - shown;
+        changes.resize (shown);
+        changes.push_back (std::to_string (more) + " more changes");
+    }
+
+    std::string remarks;
+
+    if (! rewritten.empty())
+        remarks = (rewritten.size() == 1 ? rewritten.front() + " is" : "These clips are") + std::string (" written with the new names now")
+                + (rewritten.size() == 1 ? "" : ": " + listText (rewritten));
+
+    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, "changed " + track->id + "'s drum map: " + listText (changes),
+             std::move (remarks) };
 }
 }

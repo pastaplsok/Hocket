@@ -355,3 +355,172 @@ TEST_CASE ("track commands go into a transaction, and another author's edit spli
     REQUIRE (bus.rollbackTransaction (claude).ok);
     CHECK (bus.project() == makeProject());
 }
+
+//==============================================================================
+namespace
+{
+    // trk-drums: a drum sampler and a small map; clp-beat plays kick and
+    // snare2. trk-perc: the same map, and clp-perc linked to clp-beat.
+    // trk-bass: a synth.
+    project::Project makeDrumProject()
+    {
+        notes::DrumMap map;
+        map.add ("kick", 36);
+        map.add ("snare", 38);
+        map.add ("clap", 39);
+        map.add ("snare2", 40);
+
+        project::Project project;
+        project::Track drums { "trk-drums", "Drums", project::TrackType::drums, { { "dev-drums-kit", project::DeviceType::drumSampler, "acoustic" } }, {} };
+        project::Track perc { "trk-perc", "Perc", project::TrackType::drums, {}, {} };
+        project::Track bass { "trk-bass", "Bass", project::TrackType::midi, { { "dev-bass-synth", project::DeviceType::synth } }, {} };
+        drums.drumMap = map;
+        perc.drumMap = map;
+
+        project.notesFiles["clips/beat.notes"] = parsedNotes ("@length 1bar\n\n1.1 kick 1/16 v100\n1.2 snare2 1/16 v90\n", {}, &map);
+        drums.clips.push_back ({ "clp-beat", "clips/beat.notes", 0 });
+        perc.clips.push_back ({ "clp-perc", "clips/beat.notes", 2 * bar });
+
+        project.tracks.push_back (std::move (drums));
+        project.tracks.push_back (std::move (perc));
+        project.tracks.push_back (std::move (bass));
+        return project;
+    }
+
+    std::vector<project::DrumMapEntry> entriesOf (const notes::DrumMap& map)
+    {
+        std::vector<project::DrumMapEntry> entries;
+
+        for (const auto& [note, name] : map.byNote())
+            entries.push_back ({ name, note });
+
+        return entries;
+    }
+}
+
+TEST_CASE ("set a track's instrument: add, replace or remove it, or change only the kit")
+{
+    CommandBus bus (makeDrumProject());
+    ChangeLog log (bus);
+
+    CHECK (bus.execute (SetInstrument { "trk-bass", {} }, claude).message == "#1 removed trk-bass's instrument dev-bass-synth");
+    CHECK (trackOf (bus, "trk-bass").devices.empty());
+    CHECK (log.take() == std::vector<std::string> { "InstrumentChanged trk-bass" });
+
+    CHECK (bus.execute (SetInstrument { "trk-bass", Instrument { "hocket:synth", {} } }, claude).message
+           == "#2 set trk-bass's instrument to dev-bass-synth, a hocket:synth");
+
+    // Only the kit: the device stays.
+    CHECK (bus.execute (SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "electronic" } }, claude).message
+           == "#3 set trk-drums's kit to 'electronic', on dev-drums-kit");
+    CHECK (trackOf (bus, "trk-drums").devices
+           == std::vector<project::Device> { { "dev-drums-kit", project::DeviceType::drumSampler, "electronic" } });
+
+    // Another kind of device replaces it.
+    CHECK (bus.execute (SetInstrument { "trk-drums", Instrument { "hocket:synth", {} } }, claude).message
+           == "#4 set trk-drums's instrument to dev-drums-synth, a hocket:synth, replacing dev-drums-kit");
+    CHECK (bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "jungle-breaks" } }, claude).message
+           == "#5 set trk-perc's instrument to dev-perc-kit, a hocket:drum-sampler playing kit 'jungle-breaks'");
+    checkReadsBack (bus.project());
+
+    const auto same = bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "jungle-breaks" } }, claude);
+    CHECK (same.ok);
+    CHECK (same.message == "trk-perc's instrument is already dev-perc-kit, a hocket:drum-sampler playing kit 'jungle-breaks', so nothing changed "
+                           "and no history entry was added");
+
+    REQUIRE (bus.execute (SetInstrument { "trk-bass", {} }, claude).ok);
+    CHECK (bus.execute (SetInstrument { "trk-bass", {} }, claude).message
+           == "trk-bass has no instrument already, so nothing changed and no history entry was added");
+
+    checkRefused (bus, SetInstrument { "trk-bass", Instrument { "hocket:drum-sampler", "acoustic" } },
+                  "set trk-bass's instrument: a \"hocket:drum-sampler\" goes on a \"drums\" track, whose drum map names the kit's pieces; this is a "
+                  "\"midi\" track. A track's type doesn't change, so add a \"drums\" track for a kit, or use \"hocket:synth\"");
+    checkRefused (bus, SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", {} } },
+                  "set trk-perc's instrument: a \"hocket:drum-sampler\" needs a kit, e.g. \"acoustic\"");
+    checkRefused (bus, SetInstrument { "trk-x", {} }, "set a track's instrument: there's no track 'trk-x'; the tracks are 'trk-drums', 'trk-perc', 'trk-bass'");
+
+    while (! bus.history().empty())
+        REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+
+    CHECK (bus.project() == makeDrumProject());
+}
+
+TEST_CASE ("set a drum map: the notes stay, the names change, and the history says how")
+{
+    auto project = makeDrumProject();
+    project.tracks.erase (project.tracks.begin() + 1); // no trk-perc: clips/beat.notes is trk-drums's alone
+    CommandBus bus (project);
+    ChangeLog log (bus);
+
+    notes::DrumMap renamed;
+    renamed.add ("kick", 36);
+    renamed.add ("snare", 38);
+    renamed.add ("clap", 39);
+    renamed.add ("rim", 40);
+
+    CHECK (bus.execute (SetDrumMap { "trk-drums", entriesOf (renamed) }, claude).message
+           == "#1 changed trk-drums's drum map: renamed snare2 to rim. clp-beat is written with the new names now");
+    CHECK (bus.project().notesFiles == project.notesFiles); // the notes didn't change
+    CHECK (contains (*project::clipFileText (bus.project(), "clips/beat.notes"), "1.2      rim"));
+    CHECK (log.take() == std::vector<std::string> { "DrumMapChanged trk-drums" });
+    CHECK (bus.changesTo ("clips/beat.notes").size() == 1);
+    checkReadsBack (bus.project());
+
+    // Moved, added, removed; nothing the clip uses.
+    CHECK (bus.execute (SetDrumMap { "trk-drums", { { "kick", 36 }, { "rim", 40 }, { "clap", 41 }, { "perc", 82 } } }, claude).message
+           == "#2 changed trk-drums's drum map: moved clap from 39 to 41, added perc (82) and removed snare (38)");
+    CHECK (bus.changesTo ("clips/beat.notes").size() == 1);
+
+    // A note the map no longer names is written as its note name.
+    CHECK (bus.execute (SetDrumMap { "trk-drums", { { "kick", 36 } } }, claude).message
+           == "#3 changed trk-drums's drum map: removed rim (40), removed clap (41) and removed perc (82). clp-beat is written with the new "
+              "names now");
+    CHECK (contains (*project::clipFileText (bus.project(), "clips/beat.notes"), "1.2      E2"));
+    checkReadsBack (bus.project());
+
+    // A long list of changes is cut short.
+    CHECK (bus.execute (SetDrumMap { "trk-drums", entriesOf (notes::standardDrumMap()) }, claude).message
+           == "#4 changed trk-drums's drum map: added kick2 (35), added sidestick (37), added snare (38), added clap (39) and 42 more changes. "
+              "clp-beat is written with the new names now");
+
+    const auto same = bus.execute (SetDrumMap { "trk-drums", entriesOf (notes::standardDrumMap()) }, claude);
+    CHECK (same.ok);
+    CHECK (same.message == "trk-drums's drum map is already exactly that, so nothing changed and no history entry was added");
+
+    // An empty map is allowed.
+    CHECK (bus.execute (SetDrumMap { "trk-drums", {} }, claude).ok);
+    checkReadsBack (bus.project());
+
+    while (! bus.history().empty())
+        REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+
+    CHECK (bus.project() == project);
+}
+
+TEST_CASE ("set a drum map: every refusal says what's wrong")
+{
+    CommandBus bus (makeDrumProject());
+
+    checkRefused (bus, SetDrumMap { "trk-bass", { { "kick", 36 } } },
+                  "set trk-bass's drum map: only \"drums\" tracks have a drum map; trk-bass is a \"midi\" track, whose clips use note names, and a "
+                  "track's type doesn't change. To use drum names, add a \"drums\" track and move the clips to it");
+    checkRefused (bus, SetDrumMap { "trk-x", {} }, "set a track's drum map: there's no track 'trk-x'; the tracks are 'trk-drums', 'trk-perc', 'trk-bass'");
+
+    // Every problem, as the reader reports them.
+    const auto result = bus.execute (SetDrumMap { "trk-drums", { { "kick", 36 }, { "Snare", 38 }, { "rim", 36 }, { "kick", 35 }, { "tom", 200 } } }, claude);
+    CHECK_FALSE (result.ok);
+    CHECK (result.message.starts_with ("set trk-drums's drum map: 4 problems, so nothing was changed: 'Snare' isn't a valid drum name"));
+    CHECK (contains (result.message, "; \"rim\" and \"kick\" are both note 36"));
+    CHECK (contains (result.message, "; \"kick\" appears twice"));
+    CHECK (contains (result.message, "; \"tom\" should be a MIDI note number from 0 to 127, e.g. 36"));
+
+    // clips/beat.notes is on trk-perc too, which still calls note 40 snare2.
+    checkRefused (bus, SetDrumMap { "trk-drums", { { "kick", 36 }, { "snare", 38 }, { "clap", 39 }, { "rim", 40 } } },
+                  "set trk-drums's drum map: clips/beat.notes is also used on trk-perc, and with this map the two tracks wouldn't name its notes alike: "
+                  "note 40 (E2) is 'rim' on trk-drums but 'snare2' on trk-perc. A file used on several tracks must mean the same notes on each, so "
+                  "change both maps alike, or make the clips unique first");
+
+    // Names the file doesn't use may differ.
+    CHECK (bus.execute (SetDrumMap { "trk-drums", { { "kick", 36 }, { "snare2", 40 } } }, claude).ok);
+    checkReadsBack (bus.project());
+}

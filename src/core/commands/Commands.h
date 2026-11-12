@@ -7,9 +7,12 @@
 // "9.1", volumes like "-6dB", so the bus validates them with the format's own
 // parsers, and its errors are the format's.
 
+#include "core/project/Rules.h"
+
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace hocket::commands
 {
@@ -90,6 +93,22 @@ namespace hocket::commands
         std::optional<bool> solo;
     };
 
+    // A track's instrument: one, or none. Changing only a drum sampler's kit
+    // keeps its device; in v1, setting a kit only names it (kits come in step 7).
+    struct SetInstrument
+    {
+        std::string trackId;
+        std::optional<Instrument> instrument;
+    };
+
+    // Replaces a drums track's drum map whole (SPEC §5.2). The notes don't
+    // change, only the names its clips are written with.
+    struct SetDrumMap
+    {
+        std::string trackId;
+        std::vector<project::DrumMapEntry> entries; // a list, not a map, so a name given twice is reported
+    };
+
     //==============================================================================
     // What a new clip holds: one of these.
     struct EmptyClip
@@ -157,8 +176,8 @@ namespace hocket::commands
     {
     };
 
-    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, AddClip, MoveClip,
-                                 RemoveClip, MakeClipUnique, Play, Stop>;
+    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, SetInstrument,
+                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, Play, Stop>;
 
     // Who sends a command (SPEC §3.1). Two authors are the same when their names
     // and sessions match, so two Claude sessions are different authors, and a
