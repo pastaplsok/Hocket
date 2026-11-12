@@ -48,6 +48,16 @@ namespace hocket::project
     // joined by single hyphens, at most maxIdLength bytes in all (SPEC §4.1).
     std::optional<std::string> idProblem (std::string_view id, IdKind kind);
 
+    // The ASCII letters and digits of text, lowercased, in words joined by
+    // single hyphens: "Bass (Verse) #2" is "bass-verse-2". Empty if it has none.
+    std::string hyphenatedWords (std::string_view text);
+
+    // A new ID made of words (hyphenated, as hyphenatedWords makes them) that
+    // nothing in the project has (SPEC §4.1): the prefix and the words, then
+    // with "-2", "-3" and so on, starting from firstNumber (1: the words
+    // alone first). The words are cut short to fit maxIdLength.
+    std::string unusedId (const Project& project, IdKind kind, std::string_view words, int firstNumber = 1);
+
     //==============================================================================
     // One line of text, 1 to maxTrackNameLength bytes (isOneLineText).
     std::optional<std::string> trackNameProblem (std::string_view name);

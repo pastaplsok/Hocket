@@ -148,6 +148,51 @@ const Clip* findClip (const Project& project, std::string_view id, const Track**
     return nullptr;
 }
 
+const Track* findTrack (const Project& project, std::string_view id)
+{
+    const auto found = std::ranges::find (project.tracks, id, &Track::id);
+    return found == project.tracks.end() ? nullptr : &*found;
+}
+
+std::optional<std::string> whatHasId (const Project& project, std::string_view id)
+{
+    for (const auto& track : project.tracks)
+    {
+        if (track.id == id)
+            return "track " + singleQuoted (id) + " (\"" + track.name + "\")";
+
+        for (const auto& device : track.devices)
+            if (device.id == id)
+                return "device " + singleQuoted (id) + " on " + track.id;
+
+        for (const auto& clip : track.clips)
+            if (clip.id == id)
+                return "clip " + singleQuoted (id) + " on " + track.id;
+    }
+
+    return {};
+}
+
+std::string unknownTrackMessage (const Project& project, std::string_view id)
+{
+    if (findClip (project, id) != nullptr)
+        return singleQuoted (id) + " is a clip ID; this needs a track ID like 'trk-bass'";
+
+    std::string trackIds;
+
+    for (const auto& track : project.tracks)
+    {
+        for (const auto& device : track.devices)
+            if (device.id == id)
+                return singleQuoted (id) + " is a device ID, on track " + singleQuoted (track.id) + "; this needs a track ID like 'trk-bass'";
+
+        trackIds += (trackIds.empty() ? "" : ", ") + singleQuoted (track.id);
+    }
+
+    return "there's no track " + singleQuoted (id) + "; "
+         + (trackIds.empty() ? std::string ("the project has no tracks yet") : "the tracks are " + trackIds);
+}
+
 std::string unknownClipMessage (const Project& project, std::string_view id, std::string_view toolName)
 {
     std::string clipIds;

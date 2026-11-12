@@ -7,6 +7,7 @@
 // "9.1", volumes like "-6dB", so the bus validates them with the format's own
 // parsers, and its errors are the format's.
 
+#include <optional>
 #include <string>
 #include <variant>
 
@@ -35,6 +36,61 @@ namespace hocket::commands
     };
 
     //==============================================================================
+    // Where a track goes in the display order: before or after another track,
+    // by ID, never by index (SPEC §4.1). Give one or neither.
+    struct TrackPlace
+    {
+        std::string before;
+        std::string after;
+    };
+
+    // A track's instrument (SPEC §4.4): "hocket:synth", or "hocket:drum-sampler"
+    // with its kit, on drums tracks only.
+    struct Instrument
+    {
+        std::string type;
+        std::string kit;
+    };
+
+    struct AddTrack
+    {
+        std::string type;                     // "midi" or "drums"; a drums track gets the standard drum map
+        std::string name;                     // "Drums"
+        std::string id;                       // optional: Hocket makes one from the name
+        TrackPlace place;                     // neither: at the end
+        std::optional<Instrument> instrument; // none if not given
+    };
+
+    // With its clips. A file no other clip uses leaves the project.
+    struct RemoveTrack
+    {
+        std::string trackId;
+    };
+
+    struct RenameTrack
+    {
+        std::string trackId;
+        std::string name;
+    };
+
+    // Give one place: to move a track last, put it after the last track.
+    struct MoveTrack
+    {
+        std::string trackId;
+        TrackPlace place;
+    };
+
+    // Any of a track's volume ("-6dB"), pan ("L20"), mute and solo; at least one.
+    struct SetMix
+    {
+        std::string trackId;
+        std::optional<std::string> volume;
+        std::optional<std::string> pan;
+        std::optional<bool> mute;
+        std::optional<bool> solo;
+    };
+
+    //==============================================================================
     // Transport commands (SPEC §3.1). They don't change the project, so they're
     // never validated against it, never enter the history, and don't split an
     // open transaction.
@@ -46,7 +102,7 @@ namespace hocket::commands
     {
     };
 
-    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, Play, Stop>;
+    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, Play, Stop>;
 
     // Who sends a command (SPEC §3.1). Two authors are the same when their names
     // and sessions match, so two Claude sessions are different authors, and a

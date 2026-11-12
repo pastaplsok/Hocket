@@ -26,7 +26,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); two checks wait for the Magni (Loose ends) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 3 of 8 done |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 4 of 8 done |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
@@ -140,7 +140,10 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
      - `SetTempo { bpm }` and `SetTimeSignature { "6/8" }`. A time-signature change is a `SetMeter` and a `SetNotes` for each file whose `@length` changes. It's refused when a clip wouldn't be a whole number of the new bars, naming the clips (linked ones together) and the shortest length that fits both ("a multiple of 3bars fits (3bars of 4/4 is 4 bars of 3/4)"), or when a clip would be over 999 bars or end after bar 999 in the new bars. Clips it leaves off a bar line are listed after the entry.
      - Errors start with what was being done ("set the tempo: 1000 is out of range: ..."), not a tool name, since the tools come in step 10.
      - `tests/core/BusTesting.h`: helpers for the bus's tests (`ChangeLog`, `checkReadsBack`).
-  4. Tracks: add, remove, rename, move, mix.
+  4. Tracks: add, remove, rename, move, mix. Done (`TrackCommands.cpp`, tests in `TrackCommandTests.cpp`):
+     - `AddTrack`, `RemoveTrack`, `RenameTrack`, `MoveTrack`, `SetMix` in `commands/Commands.h`, planned in `TrackCommands.cpp`; `project::findTrack`, `whatHasId`, `unknownTrackMessage`; `Rules`' `hyphenatedWords` and `unusedId`. The bus's `plan` now dispatches any command with a `planning::plan` overload.
+     - A track's place is `TrackPlace { before, after }`, a neighbour's ID, never an index (CLAUDE.md). Adding with neither puts it last; a move must name one.
+     - Device IDs cut the track's words short, not the role, to fit 64 characters (`dev-<track>-synth`, `dev-<track>-kit`). An added track's result names its device, and a drums track's says it has the standard map.
   5. Clips: add (each way), move, remove, make unique.
   6. Drum maps and instruments.
   7. Gestures.
@@ -244,7 +247,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - What it makes of a run's end is `Get-StopResults` in `AcceptanceChecks.ps1`, tested by `tests/acceptance`.
   - `-Driver`/`-Device` go to `--play`. `-FreshClone` (with `-CloneFrom`) also clones and builds with CLAUDE.md's commands. `Send-CtrlC.ps1` stops `--play` the way Ctrl+C does.
 - Tests (`ctest`, 13 tests, 40 to 60 s, most of it the stress tests running in real time; 48 s on 2026-11-12):
-  - `tests/core` (`hocket_core_tests`): 141 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
+  - `tests/core` (`hocket_core_tests`): 150 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
   - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 37 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
     - Edit structure (6/8, linked clips, a track with no device); offline renders (notes start where `.notes` says, in five time signatures; `write_clip` and undo move them); a stop no command asked for.
     - `PlaybackDevice` against a fake JUCE device type that a test can unplug, and whose rates, sizes and stubbornness a test picks; it never opens a real device. Choosing rates and sizes, suggestions, `listDevices`, `formatNumbers`.

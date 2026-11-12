@@ -138,6 +138,14 @@ namespace hocket::project
     // The clip with this ID, or nullptr. Sets *track to the clip's track if asked.
     const Clip* findClip (const Project& project, std::string_view id, const Track** track = nullptr);
 
+    // The track with this ID, or nullptr.
+    const Track* findTrack (const Project& project, std::string_view id);
+
+    // What has this ID, for messages: "track 'trk-bass' (\"Bass\")", "clip
+    // 'clp-a' on trk-bass", "device 'dev-bass-synth' on trk-bass"; nullopt
+    // if nothing does. IDs are unique across the project (SPEC §4.1).
+    std::optional<std::string> whatHasId (const Project& project, std::string_view id);
+
     // The clips whose notes are this file's, in track order, then clip order.
     std::vector<const Clip*> clipsUsing (const Project& project, std::string_view file);
 
@@ -162,6 +170,10 @@ namespace hocket::project
     // Why `id` isn't a clip, for a tool's error message: "there's no clip 'clp-x';
     // the clips are 'clp-a', 'clp-b'", or a hint when it's a track or device ID.
     std::string unknownClipMessage (const Project& project, std::string_view id, std::string_view toolName);
+
+    // Why `id` isn't a track: "there's no track 'trk-x'; the tracks are
+    // 'trk-a', 'trk-b'", or a hint when it's a clip or device ID.
+    std::string unknownTrackMessage (const Project& project, std::string_view id);
 
     // As written in project.json: "midi", "drums", "hocket:synth", "hocket:drum-sampler".
     const char* trackTypeName (TrackType type);

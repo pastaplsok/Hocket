@@ -166,6 +166,50 @@ std::optional<std::string> idProblem (std::string_view id, IdKind kind)
     return {};
 }
 
+std::string hyphenatedWords (std::string_view text)
+{
+    std::string words;
+    bool gap = false;
+
+    for (const auto c : text)
+    {
+        const auto isLetterOrDigit = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+
+        if (! isLetterOrDigit)
+        {
+            gap = true;
+            continue;
+        }
+
+        if (gap && ! words.empty())
+            words += '-';
+
+        words += c >= 'A' && c <= 'Z' ? static_cast<char> (c - 'A' + 'a') : c;
+        gap = false;
+    }
+
+    return words;
+}
+
+std::string unusedId (const Project& project, IdKind kind, std::string_view words, int firstNumber)
+{
+    const auto prefix = std::string (idPrefix (kind));
+
+    for (auto number = std::max (1, firstNumber);; ++number)
+    {
+        const auto suffix = number == 1 ? std::string() : "-" + std::to_string (number);
+        auto base = std::string (words.substr (0, maxIdLength - prefix.size() - suffix.size()));
+
+        while (! base.empty() && base.back() == '-')
+            base.pop_back();
+
+        const auto id = prefix + base + suffix;
+
+        if (! whatHasId (project, id))
+            return id;
+    }
+}
+
 //==============================================================================
 std::optional<std::string> trackNameProblem (std::string_view name)
 {

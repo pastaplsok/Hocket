@@ -11,6 +11,13 @@ namespace hocket::commands::planning
     edits::Plan plan (const project::Project& project, const SetTempo& command);
     edits::Plan plan (const project::Project& project, const SetTimeSignature& command);
 
+    // TrackCommands.cpp
+    edits::Plan plan (const project::Project& project, const AddTrack& command);
+    edits::Plan plan (const project::Project& project, const RemoveTrack& command);
+    edits::Plan plan (const project::Project& project, const RenameTrack& command);
+    edits::Plan plan (const project::Project& project, const MoveTrack& command);
+    edits::Plan plan (const project::Project& project, const SetMix& command);
+
     // ClipCommands.cpp
     edits::Plan plan (const project::Project& project, const WriteClip& command);
 
