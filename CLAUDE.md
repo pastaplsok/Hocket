@@ -67,3 +67,4 @@ powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1
 - Propose a plan before large changes; keep milestones small
 - When something in the spec turns out to be wrong or awkward in practice, say so and propose the fix rather than working around it
 - Branches: milestone steps commit straight to `main`. A larger batch of fixes (a code review's, say) goes on a branch, pushed, with a PR to merge it.
+- Small follow-ups that finish a step Lee has approved (a fix, a clearer message, a missing test) can be committed and pushed without asking. Anything that changes the file format, a spec decision, or behaviour outside the step waits for Lee.
