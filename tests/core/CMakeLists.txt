@@ -10,6 +10,7 @@ add_executable(hocket_core_tests
     PathsTests.cpp
     ProjectPropertyTests.cpp
     ProjectTests.cpp
+    RulesTests.cpp
     UnitsTests.cpp
     WatchedSavesTests.cpp)
 

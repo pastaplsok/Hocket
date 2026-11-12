@@ -24,6 +24,8 @@ add_library(hocket_core STATIC
     project/Project.h
     project/ProjectReader.cpp
     project/ProjectWriter.cpp
+    project/Rules.cpp
+    project/Rules.h
     units/Units.cpp
     units/Units.h)
 

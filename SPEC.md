@@ -133,7 +133,7 @@ my-song/
 5. **Stable IDs, never list positions.** Every track, clip, device, and send has an ID (`trk-bass`, `dev-pad-filter`). References are by ID.
    - **IDs are permanent:** assigned once and never changed, even when the display name changes. Names are free text and can change at any time.
    - **Format:** a type prefix (`trk-`, `clp-`, `dev-`), then lowercase letters and digits in hyphen-separated words, at most 64 characters in all, the prefix included. Unique across the whole project, so an ID always names exactly one thing.
-   - **New IDs:** a client adding a track or clip may choose its ID; otherwise Hocket makes one from the name (`trk-drums`, then `trk-drums-2`), and the result says which. A device's ID comes from its track's (`dev-drums-kit`).
+   - **New IDs:** a client adding a track or clip may choose its ID; otherwise Hocket makes one, and the result says which. A track's comes from its name (`trk-drums`, then `trk-drums-2`); a new clip's from its track's (`clp-drums`, then `clp-drums-2`); a copy's or a linked clip's from the clip it came from (`clp-verse` → `clp-verse-2`, `clp-verse-2` → `clp-verse-3`). A device's ID comes from its track's (`dev-drums-kit`).
 6. **Canonical formatting.** The DAW always writes files in a fixed order and style so diffs are minimal and meaningful.
 7. **Binary stays out of text.** Audio, recordings, and plugin state live in their own files, referenced by relative path.
 8. **Schema versioning.** `project.json` carries a format version; the DAW migrates older projects forward. Version 0 is the pre-release format: it may change without migrations until v1, which starts at version 1.
@@ -192,6 +192,7 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 ```
 - **Strict:** every key shown is required. Unknown keys and duplicate keys are errors, so a typo is never silently ignored.
 - **Order:** `tracks` is in display order, `devices` in signal-chain order.
+- **Track names** are one line of text: 1 to 100 bytes of UTF-8, with no control characters (so no line breaks or tabs), since lists show one track per line. Otherwise they're free text.
 - **Tempo** is in quarter notes per minute, whatever the time signature: 20–999.
 - **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion counts beats the same way, with its default engine behaviour, so its BPM is quarter notes per minute too.)
   - **Changing it** keeps every clip and note at the same time. Since `@length` is in bars, the change is refused if any clip wouldn't then be a whole number of the new bars, or the song would pass 999 of them; the message lists those clips and lengths that would work. So 4/4 to 2/4 or 8/8 always works, and 4/4 to 3/4 works on an empty song or when the clips fit. When a change goes through and leaves clips starting off a bar line, the result lists them.

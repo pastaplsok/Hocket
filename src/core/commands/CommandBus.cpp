@@ -1,5 +1,6 @@
 #include "core/commands/CommandBus.h"
 #include "core/notes/NotesSyntax.h"
+#include "core/project/Rules.h"
 
 #include <algorithm>
 #include <cassert>
@@ -256,9 +257,7 @@ Result CommandBus::beginTransaction (const Author& author, const std::string& na
         return { false, "a transaction needs a name that says what it does, e.g. \"wrote bridge\"; it becomes the undo step's name" };
 
     // The name goes into the history, which tools list one entry per line, and the log.
-    const auto hasControlCharacter = std::ranges::any_of (name, [] (unsigned char c) { return c < 0x20 || c == 0x7f; });
-
-    if (hasControlCharacter || name.size() > maxTransactionNameLength)
+    if (! project::isOneLineText (name, maxTransactionNameLength))
         return { false, "a transaction's name is one line of text, 1 to " + std::to_string (maxTransactionNameLength)
                             + " bytes with no control characters, e.g. \"wrote bridge\"; it becomes the history entry's name" };
 

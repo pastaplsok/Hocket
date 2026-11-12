@@ -2,6 +2,7 @@
 #include "core/Suggestions.h"
 #include "core/project/JsonText.h"
 #include "core/project/Project.h"
+#include "core/project/Rules.h"
 #include "core/notes/NotesSyntax.h"
 #include "core/units/Units.h"
 
@@ -19,7 +20,6 @@ namespace
     using Json = nlohmann::json;
 
     constexpr std::size_t maxErrors = 20;
-    constexpr std::size_t maxIdLength = 64;
     constexpr const char* projectFileName = "project.json";
 
     struct KeySpec
@@ -120,58 +120,6 @@ namespace
             text += (text.size() > 2 ? ", " : "") + jsonQuoted (key.name) + ": " + std::string (key.example);
 
         return text + " }";
-    }
-
-    // "bass", "bass-verse-2": lowercase letters and digits, in words joined by single hyphens.
-    bool isHyphenatedName (std::string_view name)
-    {
-        if (name.empty() || name.front() == '-' || name.back() == '-' || name.find ("--") != std::string_view::npos)
-            return false;
-
-        return std::ranges::all_of (name, [] (char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
-    }
-
-    std::optional<std::string> idProblem (std::string_view id, std::string_view kind, std::string_view prefix, std::string_view example)
-    {
-        static constexpr std::pair<std::string_view, std::string_view> kinds[] = {
-            { "trk-", "track" },
-            { "clp-", "clip" },
-            { "dev-", "device" },
-        };
-
-        const auto kindName = std::string (kind);
-        const auto prefixName = std::string (prefix);
-
-        if (! id.starts_with (prefix))
-        {
-            for (const auto& [otherPrefix, otherKind] : kinds)
-                if (id.starts_with (otherPrefix))
-                    return singleQuoted (id) + " is a " + std::string (otherKind) + " ID; a " + kindName + " ID starts with "
-                         + singleQuoted (prefix) + ", e.g. " + singleQuoted (example);
-
-            return singleQuoted (id) + " isn't a valid " + kindName + " ID: " + kindName + " IDs start with " + singleQuoted (prefix)
-                 + ", e.g. " + singleQuoted (example);
-        }
-
-        if (id.size() > maxIdLength)
-            return singleQuoted (id) + " is too long: IDs are at most " + std::to_string (maxIdLength) + " characters";
-
-        if (! isHyphenatedName (id.substr (prefix.size())))
-            return singleQuoted (id) + " isn't a valid " + kindName + " ID: after " + singleQuoted (prefixName)
-                 + ", use lowercase letters and digits in words joined by single hyphens, e.g. " + singleQuoted (example);
-
-        return {};
-    }
-
-    // Clip files: "clips/<name>.notes" with a hyphenated name. The
-    // narrow character set also keeps paths safe and case-insensitive file systems happy.
-    bool isValidClipFile (std::string_view file)
-    {
-        constexpr std::string_view folder = "clips/";
-        constexpr std::string_view extension = ".notes";
-
-        return file.starts_with (folder) && file.ends_with (extension) && file.size() > folder.size() + extension.size()
-            && isHyphenatedName (file.substr (folder.size(), file.size() - folder.size() - extension.size()));
     }
 
     class Reader
@@ -394,8 +342,7 @@ namespace
         }
 
         // Checks the ID's format and that no other object has it. Returns it if it's usable.
-        std::optional<std::string> readId (const Json& object, std::string_view kind, std::string_view prefix,
-                                           std::string_view example, const std::string& where, std::span<const KeySpec> keys)
+        std::optional<std::string> readId (const Json& object, IdKind kind, const std::string& where, std::span<const KeySpec> keys)
         {
             const auto id = readString (object, "id", where, keys);
 
@@ -404,7 +351,7 @@ namespace
 
             const auto& value = object.at ("id");
 
-            if (const auto problem = idProblem (*id, kind, prefix, example))
+            if (const auto problem = idProblem (*id, kind))
             {
                 errorAt (value, where + ": " + *problem);
                 return {};
@@ -448,10 +395,10 @@ namespace
             {
                 if (! tempo->is_number())
                     errorAt (*tempo, where + ": \"tempo\" should be a number of quarter notes per minute (BPM), e.g. 120");
-                else if (const auto bpm = tempo->get<double>(); bpm < 20.0 || bpm > 999.0)
-                    errorAt (*tempo, where + ": \"tempo\" must be between 20 and 999 BPM (quarter notes per minute), e.g. 120");
+                else if (const auto problem = tempoProblem (tempo->get<double>()))
+                    errorAt (*tempo, where + ": \"tempo\": " + *problem);
                 else
-                    project.tempo = bpm;
+                    project.tempo = tempo->get<double>();
             }
 
             // Read before the tracks: clip starts are positions in it.
@@ -476,23 +423,31 @@ namespace
                 return;
 
             Track track;
-            const auto id = readId (value, "track", "trk-", "trk-bass", fallback, trackKeys);
+            const auto id = readId (value, IdKind::track, fallback, trackKeys);
             const auto where = id ? "track " + singleQuoted (*id) : fallback;
 
             if (id)
                 track.id = *id;
 
             // The type says which keys the track has.
-            if (const auto type = readString (value, "type", where, trackKeys); type && *type == "drums")
-                track.type = TrackType::drums;
-            else if (type && *type != "midi")
-                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type) + " tracks aren't supported yet; so far there are \"midi\" and \"drums\" tracks");
+            if (const auto type = readString (value, "type", where, trackKeys))
+            {
+                if (const auto parsed = parseTrackType (*type); parsed.value)
+                    track.type = *parsed.value;
+                else
+                    errorAt (value.at ("type"), where + ": " + parsed.error);
+            }
 
             const auto keys = track.type == TrackType::drums ? std::span<const KeySpec> (drumTrackKeys) : std::span<const KeySpec> (trackKeys);
             checkKeys (value, where, keys, misplacedTrackKeys);
 
             if (const auto name = readString (value, "name", where, keys))
-                track.name = *name;
+            {
+                if (const auto problem = trackNameProblem (*name))
+                    errorAt (value.at ("name"), where + ": \"name\": " + *problem);
+                else
+                    track.name = *name;
+            }
 
             readMix (value, where, track);
 
@@ -606,51 +561,31 @@ namespace
                 return;
             }
 
-            const auto prefix = where + ": \"drumMap\": ";
-            std::set<std::string> seen;
+            std::vector<DrumMapEntry> entries;
+            std::vector<std::pair<std::size_t, const Json*>> places; // each entry's name offset and note value
 
             for (const auto& [name, offset] : keysOfObject (text, map->start_pos()))
             {
-                const auto errorHere = [&] (std::size_t at, std::string message)
-                {
-                    errorAtOffset (at, prefix + std::move (message));
-                    drumMapFailed = true;
-                };
-
-                if (! seen.insert (name).second)
-                {
-                    errorHere (offset, jsonQuoted (name) + " appears twice; a name stands for one note, so keep only one");
-                    continue;
-                }
-
-                if (const auto problem = notes::drumNameProblem (name))
-                {
-                    errorHere (offset, *problem);
-                    continue;
-                }
-
+                // Anything that isn't a whole number from 0 to 127 is out of range.
                 const auto& note = map->at (name);
+                const auto inRange = note.is_number_integer() && note.get<std::int64_t>() >= 0 && note.get<std::int64_t>() <= 127;
 
-                if (! note.is_number_integer() || note.get<std::int64_t>() < 0 || note.get<std::int64_t>() > 127)
-                {
-                    auto message = jsonQuoted (name) + " should be a MIDI note number from 0 to 127, e.g. 36";
+                entries.push_back ({ name, inRange ? static_cast<int> (note.get<std::int64_t>()) : -1 });
+                places.emplace_back (offset, &note);
+            }
 
-                    // "kick": "C2"
-                    if (note.is_string())
-                        if (const auto pitch = notes::parsePitch (note.get<std::string>()); pitch.value)
-                            message += ", not a note name: drum maps use General MIDI's numbers, and "
-                                     + singleQuoted (note.get<std::string>()) + " is " + std::to_string (pitch.value->pitch);
+            for (auto& problem : buildDrumMap (entries, track.drumMap))
+            {
+                drumMapFailed = true;
+                const auto [nameOffset, note] = places[problem.entry];
 
-                    errorHere (offsetOf (note), std::move (message));
-                    continue;
-                }
+                // "kick": "C2"
+                if (problem.aboutNote && note->is_string())
+                    if (const auto pitch = notes::parsePitch (note->get<std::string>()); pitch.value)
+                        problem.message += ", not a note name: drum maps use General MIDI's numbers, and "
+                                         + singleQuoted (note->get<std::string>()) + " is " + std::to_string (pitch.value->pitch);
 
-                const auto number = static_cast<int> (note.get<std::int64_t>());
-
-                if (! track.drumMap.add (name, number))
-                    errorHere (offsetOf (note), jsonQuoted (name) + " and " + jsonQuoted (*track.drumMap.nameOf (number)) + " are both note "
-                                                    + std::to_string (number) + ", but a note has one name in a drum map, so that clips "
-                                                      "are written one way; remove one, or give it another note");
+                errorAtOffset (problem.aboutNote ? offsetOf (*note) : nameOffset, where + ": \"drumMap\": " + problem.message);
             }
         }
 
@@ -662,41 +597,35 @@ namespace
                 return;
 
             Device device;
-            const auto id = readId (value, "device", "dev-", "dev-bass-synth", fallback, deviceKeys);
+            const auto id = readId (value, IdKind::device, fallback, deviceKeys);
             const auto where = id ? trackWhere + ", device " + singleQuoted (*id) : fallback;
 
             if (id)
                 device.id = *id;
 
             // The type says which keys the device has.
-            const auto type = readString (value, "type", where, deviceKeys);
-
-            if (type == "hocket:drum-sampler")
-                device.type = DeviceType::drumSampler;
-            else if (type && *type != "hocket:synth")
-                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type)
-                                                + (*type == "tracktion:4osc" ? std::string (" is now written \"hocket:synth\": Hocket's synth, which 4OSC plays for now")
-                                                                             : std::string (" isn't available; so far there are \"hocket:synth\", Hocket's synth, "
-                                                                                            "and \"hocket:drum-sampler\", which plays a drum kit")));
+            if (const auto type = readString (value, "type", where, deviceKeys))
+            {
+                if (const auto parsed = parseDeviceType (*type); parsed.value)
+                    device.type = *parsed.value;
+                else
+                    errorAt (value.at ("type"), where + ": " + parsed.error);
+            }
 
             const auto keys = device.type == DeviceType::drumSampler ? std::span<const KeySpec> (drumSamplerKeys) : std::span<const KeySpec> (deviceKeys);
             checkKeys (value, where, keys, misplacedDeviceKeys);
 
+            if (const auto problem = devicePlacementProblem (device.type, track.type))
+                errorAt (value.at ("type"), where + ": " + *problem + ". Make it \"type\": \"drums\" with a \"drumMap\", or use \"hocket:synth\"");
+
             if (device.type == DeviceType::drumSampler)
             {
-                if (track.type != TrackType::drums)
-                    errorAt (value.at ("type"), where + ": a \"hocket:drum-sampler\" goes on a \"drums\" track, whose drum map names the kit's pieces; "
-                                                        "this is a \"" + std::string (trackTypeName (track.type)) + "\" track. Make it \"type\": \"drums\" "
-                                                        "with a \"drumMap\", or use \"hocket:synth\"");
-
-                // Kits are folders, assets/kits/<name> (SPEC §8.4).
                 if (const auto kit = readString (value, "kit", where, keys))
                 {
-                    if (kit->size() <= maxIdLength && isHyphenatedName (*kit))
-                        device.kit = *kit;
+                    if (const auto problem = kitNameProblem (*kit))
+                        errorAt (value.at ("kit"), where + ": " + *problem);
                     else
-                        errorAt (value.at ("kit"), where + ": " + singleQuoted (*kit) + " isn't a valid kit name: kit names are lowercase letters "
-                                                                                         "and digits in words joined by single hyphens, e.g. \"acoustic\"");
+                        device.kit = *kit;
                 }
             }
 
@@ -711,7 +640,7 @@ namespace
                 return;
 
             Clip clip;
-            const auto id = readId (value, "clip", "clp-", "clp-bass-verse", fallback, clipKeys);
+            const auto id = readId (value, IdKind::clip, fallback, clipKeys);
             const auto where = id ? trackWhere + ", clip " + singleQuoted (*id) : fallback;
             checkKeys (value, where, clipKeys);
 
@@ -744,20 +673,12 @@ namespace
             if (ok)
             {
                 const auto end = clipEnd (project, clip);
-                const auto songLimit = maxSongLengthInBars * project.meter.ticksPerBar();
                 const auto& start = value.at ("start");
 
-                if (end > songLimit)
-                {
-                    errorAt (start, where + ": it runs from " + notes::formatPosition (clip.start, project.meter) + " to "
-                                        + notes::formatPosition (end, project.meter) + ", but a song is at most " + std::to_string (maxSongLengthInBars)
-                                        + " bars long, so every clip ends by " + notes::formatPosition (songLimit, project.meter)
-                                        + "; start it at " + notes::formatPosition (songLimit - (end - clip.start), project.meter) + " or earlier");
-                }
+                if (const auto problem = songLengthProblem (project.meter, clip.start, end))
+                    errorAt (start, where + ": " + *problem);
                 else
-                {
                     placed.push_back ({ clip.id, clip.start, end, offsetOf (start) });
-                }
             }
 
             track.clips.push_back (std::move (clip));
@@ -769,10 +690,9 @@ namespace
         // same notes on each (SPEC §5.2).
         bool readClipFile (const Json& value, const std::string& file, const std::string& where, const Track& track, Clip& clip)
         {
-            if (! isValidClipFile (file))
+            if (const auto problem = clipFileProblem (file))
             {
-                errorAt (value, where + ": " + singleQuoted (file) + " isn't a valid clip file: clip files are 'clips/<name>.notes' "
-                                        "with a lowercase, hyphenated name, e.g. 'clips/bass-verse.notes'");
+                errorAt (value, where + ": " + *problem);
                 return false;
             }
 

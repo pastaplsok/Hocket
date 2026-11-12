@@ -49,17 +49,18 @@ namespace
         return word;
     }
 
-    // Display names are free text: quotes, backslashes, control characters, UTF-8.
+    // Display names are one line of free text: quotes, backslashes, JSON's
+    // own characters, UTF-8.
     std::string randomName (Rng& rng)
     {
-        static const std::string_view pieces[] = { "Bass", " ", "\"", "\\", "\t", "\n", "—", "é", "Lead 2", "/", "{}", "" };
+        static const std::string_view pieces[] = { "Bass", " ", "\"", "\\", "#", "'", "—", "é", "Lead 2", "/", "{}", "" };
         std::string name;
-        const auto count = randomInt (rng, 0, 5);
+        const auto count = randomInt (rng, 1, 5);
 
         for (int i = 0; i < count; ++i)
             name += pieces[static_cast<std::size_t> (randomInt (rng, 0, 11))];
 
-        return name;
+        return name.empty() ? "Track" : name;
     }
 
     // One note per position, so the writer's chord grouping can't reorder them.

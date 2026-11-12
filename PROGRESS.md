@@ -26,7 +26,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); two checks wait for the Magni (Loose ends) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | Next; planned with Lee (2026-11-12) |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: part 1 of 8 done |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
@@ -113,6 +113,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - **A track's type stays as created** in v1. Moving its clips to a new track of the other type does the same job.
   - **Transport** (seek, loop region, loop on and off) moves to step 6, with its engine side. Step 4 is only project edits.
   - **Commit after each part** of the build order below, updating PROGRESS.md as each part lands.
+  - **Track names** (asked at the start of the step): one line of text, 1 to 100 bytes of UTF-8 with no control characters, in the reader and the bus alike (SPEC §4.4). The reader took any string before.
+  - **New clip IDs** (asked at the start of the step): a new clip's from its track's (`clp-drums`, then `clp-drums-2`); a copy's or linked clip's from the clip it came from (`clp-verse` → `clp-verse-2`, `clp-verse-2` → `clp-verse-3`) (SPEC §4.1).
 - Commands, each validated with errors written for an LLM reader, undoable, and usable in transactions (split by another author's edit) just as `write_clip` is:
   - **Song:** set the tempo (20–999); set the time signature.
   - **Tracks:** add (type midi or drums, name, position, instrument); remove, with its clips; rename; move to a position; set the instrument (none, `hocket:synth`, or `hocket:drum-sampler` with a kit name, on drums tracks only); set the mix (any of volume, pan, mute, solo); set the drum map, replacing it whole.
@@ -128,7 +130,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - **Change notices** grow from `NotesChanged` to name each track, clip and song setting that changed, for steps 5 and 6 to touch only that.
   - No client can send these commands until step 10's tools, and steps 5 and 6 sync them, so `--play` can't fall out of step meanwhile. But `EditSync::notesChanged` asserts that every clip using a file is in the Edit: a `NotesChanged` for a clip a step 4 command added would trip it. Engine tests mustn't send structural commands to an `EditSync` before step 5.
 - Build order, committing each part:
-  1. The shared checks, out of the reader.
+  1. The shared checks, out of the reader. Done: `project/Rules.h` has IDs, track names, tempo, track and device types, where a drum sampler goes, kit names, building a drum map from entries (duplicates included), clip files and the 999-bar song. Transaction names use its `isOneLineText`, so they must be valid UTF-8 now too. Overlaps stay in the reader for now: the bus needs a different check (where a moved clip would fit), written with the clip commands.
   2. Edits with their inverses (`CommandBus::Edit` grows past `SetNotes`), and the change notices.
   3. Song: tempo and time signature.
   4. Tracks: add, remove, rename, move, mix.
@@ -197,6 +199,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - `src/core` (`hocket_core`, no JUCE):
   - `notes/`: the `.notes` model, parser and canonical writer. A clip is at most 999 bars (`maxLengthInBars`). `Meter` is the time signature (numerator 1–32, denominator 2/4/8/16; ticks per beat, bar and sixteenths per beat), with `parseMeter`. `parse` and `write` take a drums track's `DrumMap` (names both ways, `drumNameProblem`, `nearestNames`, `standardDrumMap()`).
   - `project/`: the `project.json` model, reader, writer, and lookups like `findClip`, `notesOf`, `clipsUsing`, `tracksUsing` and `songEnd`. Each clip file's notes are kept once in `Project::notesFiles`, so linked clips share them. Tracks are `midi` or `drums`, with volume, pan, mute and solo; a drums track has a `drumMap` (`drumMapOf`, and `drumMapOfFile` for a file's), and a drum sampler a `kit`. `drumNameConflicts` says where a linked file's tracks would name its notes differently. A song ends by 1000.1 (`maxSongLengthInBars`). `ClipFileWatcher` for `--watch` watches each file once, and keeps trying a settled file it can't read yet, for up to 2 s.
+  - `project/Rules`: the rules a valid project keeps, shared by the reader and the bus (step 4).
   - `Suggestions`: `editDistance`, for "did you mean".
   - `units/`: values with units (`units::parse`/`format` for any `Quantity`; `units::volume()`), and pan (`parsePan`/`formatPan`).
   - `commands/CommandBus`: the only way to change a `project::Project`. Authors are `Author { name, session, label }`, compared by name + session. A write is a no-op when the clip's canonical text wouldn't change. Edits and change notices (`NotesChanged`) are per clip file, so a write reaches every linked clip. `interruptTransaction`, `openTransaction`, `changesTo` (the entries that changed a clip file); it also routes transport commands to the engine, and `isPlaying()` asks it.
@@ -234,7 +237,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - What it makes of a run's end is `Get-StopResults` in `AcceptanceChecks.ps1`, tested by `tests/acceptance`.
   - `-Driver`/`-Device` go to `--play`. `-FreshClone` (with `-CloneFrom`) also clones and builds with CLAUDE.md's commands. `Send-CtrlC.ps1` stops `--play` the way Ctrl+C does.
 - Tests (`ctest`, 13 tests, 40 to 60 s, most of it the stress tests running in real time; 48 s on 2026-11-12):
-  - `tests/core` (`hocket_core_tests`): 124 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
+  - `tests/core` (`hocket_core_tests`): 131 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
   - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 37 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
     - Edit structure (6/8, linked clips, a track with no device); offline renders (notes start where `.notes` says, in five time signatures; `write_clip` and undo move them); a stop no command asked for.
     - `PlaybackDevice` against a fake JUCE device type that a test can unplug, and whose rates, sizes and stubbornness a test picks; it never opens a real device. Choosing rates and sizes, suggestions, `listDevices`, `formatNumbers`.

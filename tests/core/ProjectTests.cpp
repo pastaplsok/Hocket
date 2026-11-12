@@ -352,7 +352,8 @@ TEST_CASE ("errors in project.json point at the value, say what's wrong, and sho
         { R"("hocket-project")", R"("daw-project")", R"("daw-project")", R"("format" must be "hocket-project")" },
         { R"("formatVersion": 0)", R"("formatVersion": 7)", "7,", "format version 7, but this build of Hocket reads only format version 0" },
         { R"("formatVersion": 0)", R"("formatVersion": "zero")", R"("zero")", R"("formatVersion" should be a whole number, e.g. 0)" },
-        { "97.5", "1000", "1000", R"("tempo" must be between 20 and 999 BPM (quarter notes per minute), e.g. 120)" },
+        { "97.5", "1000", "1000", R"(the project: "tempo": 1000 is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120)" },
+        { "97.5", "19.5", "19.5", R"("tempo": 19.5 is out of range)" },
         { "97.5", R"("fast")", R"("fast")", R"("tempo" should be a number of quarter notes per minute (BPM), e.g. 120)" },
         { R"("4/4")", R"("6/3")", R"("6/3")", "the project: '6/3' isn't a time signature Hocket supports: the bottom number is 3. The top number is 1 to 32 "
                                               "and the bottom one 2, 4, 8 or 16, e.g. '4/4', '3/4', '6/8', '7/8'" },
@@ -384,6 +385,11 @@ TEST_CASE ("errors in project.json point at the value, say what's wrong, and sho
       "id": "trk-bass")", R"(track 'trk-bass': missing "pan"; add e.g. "pan": "C")" },
         { R"("volume": "0dB",)", R"("volume": "0dB", "loudness": "0dB",)", R"("loudness")", R"(track 'trk-bass': unknown key "loudness"; the keys are "id", "name", "type", "volume", "pan", "mute", "solo", "devices", "clips")" },
         { R"("Bass \"low\" — main")", "42", "42", R"(track 'trk-bass': "name" should be a string, e.g. "Bass")" },
+        { R"("Bass \"low\" — main")", R"("")", R"("")", R"(track 'trk-bass': "name": a track's name is one line of text, 1 to 100 bytes )"
+                                                         R"(with no control characters, e.g. "Bass"; this one is empty)" },
+        { R"("Bass \"low\" — main")", R"("Bass\nline")", R"("Bass\nline")", "this one has a line break" },
+        { R"("Bass \"low\" — main")", R"("Bass\tline")", R"("Bass\tline")", "this one has a tab" },
+        { R"("Bass \"low\" — main")", R"("Bass\u0007")", R"("Bass\u0007")", "this one has a control character" },
         { R"("hocket:synth")", R"("vst3:serum")", R"("vst3:serum")", R"(device 'dev-bass-synth': "vst3:serum" isn't available; so far there are "hocket:synth", )"
                                                                      R"(Hocket's synth, and "hocket:drum-sampler", which plays a drum kit)" },
         { R"("hocket:synth")", R"("tracktion:4osc")", R"("tracktion:4osc")", R"(device 'dev-bass-synth': "tracktion:4osc" is now written "hocket:synth")" },
@@ -468,7 +474,7 @@ TEST_CASE ("project.json errors come first, in file order, then the clip files'"
     const auto result = parseFiles (files);
     REQUIRE (result.errors.size() == 3);
     CHECK (result.errors[0].file == "project.json");
-    CHECK (contains (result.errors[0].message, "\"tempo\" must be between"));
+    CHECK (contains (result.errors[0].message, "\"tempo\": 5 is out of range"));
     CHECK (result.errors[1].file == "project.json");
     CHECK (contains (result.errors[1].message, "'lead' isn't a valid track ID"));
     CHECK (result.errors[2].file == "clips/bass-verse.notes");
