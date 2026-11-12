@@ -24,17 +24,23 @@ namespace hocket::commands::edits
     {
         std::string file;
         std::optional<notes::Clip> content;
+
+        bool operator== (const SetNotes&) const = default;
     };
 
     struct SetTempo
     {
         double bpm = 120.0;
+
+        bool operator== (const SetTempo&) const = default;
     };
 
     // The time signature only: each file's @length changes with SetNotes.
     struct SetMeter
     {
         notes::Meter meter;
+
+        bool operator== (const SetMeter&) const = default;
     };
 
     // A track with its clips, whose files must be in the project already.
@@ -42,11 +48,15 @@ namespace hocket::commands::edits
     {
         std::size_t index = 0; // in the display order
         project::Track track;
+
+        bool operator== (const InsertTrack&) const = default;
     };
 
     struct RemoveTrack
     {
         std::string trackId;
+
+        bool operator== (const RemoveTrack&) const = default;
     };
 
     // To this place in the display order, counted without the track itself.
@@ -54,6 +64,8 @@ namespace hocket::commands::edits
     {
         std::string trackId;
         std::size_t index = 0;
+
+        bool operator== (const MoveTrack&) const = default;
     };
 
     // Everything about a track but its ID, type and clips: its name, mix,
@@ -61,6 +73,8 @@ namespace hocket::commands::edits
     struct SetTrack
     {
         project::Track track;
+
+        bool operator== (const SetTrack&) const = default;
     };
 
     // Its file must be in the project already.
@@ -69,17 +83,23 @@ namespace hocket::commands::edits
         std::string trackId;
         std::size_t index = 0; // in the track's clips
         project::Clip clip;
+
+        bool operator== (const InsertClip&) const = default;
     };
 
     struct RemoveClip
     {
         std::string clipId;
+
+        bool operator== (const RemoveClip&) const = default;
     };
 
     // A clip's start and file; clip.id says which clip. Its file must be in the project already.
     struct SetClip
     {
         project::Clip clip;
+
+        bool operator== (const SetClip&) const = default;
     };
 
     using Edit = std::variant<SetNotes, SetTempo, SetMeter, InsertTrack, RemoveTrack, MoveTrack, SetTrack, InsertClip, RemoveClip, SetClip>;
@@ -104,5 +124,6 @@ namespace hocket::commands::edits
         std::vector<Edit> edits; // in the order they apply
         std::string description; // the history entry's: "added track trk-drums \"Drums\""
         std::string remarks;     // anything else the result says, a sentence after the entry's: "clp-b now starts off a bar line, at 2.2"
+        std::string setting;     // for a gesture (SPEC §3.1): what it sets, e.g. "tempo"; changes to another setting end a gesture
     };
 }

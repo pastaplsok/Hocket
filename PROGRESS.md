@@ -26,7 +26,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 6 of 8 done |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 7 of 8 done |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
@@ -152,7 +152,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   6. Drum maps and instruments. Done (`TrackCommands.cpp`, tests in `TrackCommandTests.cpp`):
      - `SetInstrument { track, instrument }`: none, or one. Changing only a drum sampler's kit keeps its device and ID; another kind of device gets a new ID and the history says which it replaced. Setting a kit only names it until step 7.
      - `SetDrumMap { track, entries }` replaces a drums track's map whole, built with the reader's `buildDrumMap`, so every problem is listed at once. The history says what changed (`renamed snare2 to rim`, `moved clap from 39 to 41`, `added perc (82)`, `removed snare (38)`; after four, "and N more changes"), and the result names the clips now written differently. A file shared with another track must still mean the same notes on each.
-  7. Gestures.
+  7. Gestures. Done (in `CommandBus`, tests in `GestureTests.cpp`): `SetTempo` and `SetMix` take a `gesture` ID. The bus remembers the one entry a gesture may still merge into; a merge keeps the entry's inverse (the value before the first step) and takes the latest step's edits and description, and the entry goes when the two match. Any other new entry, undo or redo ends it; inside a transaction, steps just join the transaction. Each step still announces its change, so the engine follows the drag. Edits gained `==` for this.
   8. Random command sequences.
 - Tests:
   - Each command: success, its history description, undo, redo, and every error message's wording.
@@ -253,7 +253,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - What it makes of a run's end is `Get-StopResults` in `AcceptanceChecks.ps1`, tested by `tests/acceptance`.
   - `-Driver`/`-Device` go to `--play`. `-FreshClone` (with `-CloneFrom`) also clones and builds with CLAUDE.md's commands. `Send-CtrlC.ps1` stops `--play` the way Ctrl+C does.
 - Tests (`ctest`, 13 tests, 40 to 60 s, most of it the stress tests running in real time; 48 s on 2026-11-12):
-  - `tests/core` (`hocket_core_tests`): 163 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
+  - `tests/core` (`hocket_core_tests`): 167 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
   - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 37 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
     - Edit structure (6/8, linked clips, a track with no device); offline renders (notes start where `.notes` says, in five time signatures; `write_clip` and undo move them); a stop no command asked for.
     - `PlaybackDevice` against a fake JUCE device type that a test can unplug, and whose rates, sizes and stubbornness a test picks; it never opens a real device. Choosing rates and sizes, suggestions, `listDevices`, `formatNumbers`.

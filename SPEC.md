@@ -75,7 +75,8 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - A command that changes nothing (e.g. writing a clip's current text again) adds no history entry. Clips are compared in canonical form (§5.4): text that the writer would write out the same as the clip changes nothing, however its lines are laid out or ordered.
 - **Continuous gestures coalesce.** A knob drag or fader move is one undo step, not one step per value change.
   - A command can carry a gesture ID. Changes in a row with the same ID, from the same author, to the same setting become one history entry, which undoes to the value before the first of them.
-  - A gesture that ends where it started leaves no entry. Undo, another author's edit, or a change to another setting ends the gesture.
+  - A gesture that ends where it started leaves no entry. Undo, redo, another author's edit, or a change to another setting ends the gesture. Inside an open transaction, its steps are simply part of the transaction's one entry.
+  - The tempo and a track's mix take gestures; a change to several mix settings at once is one setting, so dragging volume alone and then volume with pan are two gestures.
   - There's no start or end call, so a client that disconnects mid-gesture leaves nothing open.
 - **Transport actions** (play, stop, seek, the loop region, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
 

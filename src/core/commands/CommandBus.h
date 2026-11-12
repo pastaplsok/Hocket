@@ -126,6 +126,15 @@ namespace hocket::commands
             Edits edits;
         };
 
+        // The gesture whose next step can still merge into the newest entry (SPEC §3.1).
+        struct Gesture
+        {
+            std::string id; // the client's
+            Author author;
+            std::string setting; // edits::Plan::setting
+            int entryId = 0;
+        };
+
         struct Transaction
         {
             Author author;
@@ -138,6 +147,7 @@ namespace hocket::commands
         std::vector<Entry> done;
         std::vector<Entry> undone;
         std::optional<Transaction> transaction;
+        std::optional<Gesture> gesture;
         int nextEntryId = 1;
         std::vector<std::pair<int, std::function<void (const Change&)>>> listeners;
         int nextListenerId = 1;

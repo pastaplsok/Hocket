@@ -25,10 +25,20 @@ namespace hocket::commands
     };
 
     //==============================================================================
+    // Gestures (SPEC §3.1): a fader or knob drag sends many commands, which
+    // should be one undo step. Commands with a gesture field may carry an ID
+    // the client picks for the drag. Changes in a row with the same ID, from
+    // the same author, to the same setting, make one history entry, which
+    // undoes to the value before the first; a gesture that ends where it
+    // started leaves none. Undo, redo, another author's edit or a change to
+    // another setting ends it. There's no start or end call, so a client that
+    // disconnects mid-drag leaves nothing open.
+
     // The song's tempo, in quarter notes per minute (SPEC §4.4).
     struct SetTempo
     {
         double bpm = 120.0;
+        std::string gesture; // optional: see Gestures, below
     };
 
     // "6/8". Every clip and note keeps its time (SPEC §4.4), so it's refused
@@ -91,6 +101,7 @@ namespace hocket::commands
         std::optional<std::string> pan;
         std::optional<bool> mute;
         std::optional<bool> solo;
+        std::string gesture; // optional: see Gestures, below
     };
 
     // A track's instrument: one, or none. Changing only a drum sampler's kit

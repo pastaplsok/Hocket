@@ -45,7 +45,7 @@ edits::Plan plan (const project::Project& project, const SetTempo& command)
     if (command.bpm == project.tempo)
         return unchanged ("the tempo is already " + project::formatTempo (project.tempo) + ", so nothing changed and no history entry was added");
 
-    return { { true, {} }, { edits::SetTempo { command.bpm } }, "set the tempo to " + project::formatTempo (command.bpm), {} };
+    return { { true, {} }, { edits::SetTempo { command.bpm } }, "set the tempo to " + project::formatTempo (command.bpm), {}, "tempo" };
 }
 
 // Every clip and note keeps its time, in ticks; only @length, which is in

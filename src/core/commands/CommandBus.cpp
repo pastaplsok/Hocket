@@ -75,13 +75,59 @@ Result CommandBus::execute (const Command& command, const Author& author)
 
     if (transaction && transaction->author == author)
     {
+        // A transaction is one entry anyway: a gesture in it just adds to it.
         transaction->edits.append (std::move (applied));
+        gesture.reset();
         return { true, planned.description + " in your open transaction " + doubleQuoted (transaction->name)
                            + "; it becomes a history entry when you commit" + remarks };
     }
 
+    // The next step of a gesture: the same ID, author and setting as the
+    // newest entry's, with nothing in between (SPEC §3.1).
+    const auto gestureId = std::visit ([] (const auto& c) -> std::string
+    {
+        if constexpr (requires { c.gesture; })
+            return c.gesture;
+        else
+            return {};
+    }, command);
+
+    std::optional<Gesture> step;
+
+    if (! gestureId.empty() && ! planned.setting.empty())
+        step = Gesture { gestureId, author, planned.setting, 0 };
+
+    if (step && gesture && gesture->id == step->id && gesture->author == step->author && gesture->setting == step->setting
+        && ! done.empty() && done.back().info.id == gesture->entryId)
+    {
+        // The entry undoes to the value before the gesture's first step, and
+        // redoes to its latest.
+        auto& entry = done.back();
+        entry.edits.forward = std::move (applied.forward);
+        entry.edits.rewritten.merge (applied.rewritten);
+
+        if (entry.edits.forward == entry.edits.inverse)
+        {
+            const auto id = entry.info.id;
+            done.pop_back();
+            gesture.reset();
+            return { true, planned.description + "; that's where this gesture started, so it leaves no history entry, and #" + std::to_string (id)
+                               + " is gone" + remarks };
+        }
+
+        entry.info.description = planned.description;
+        return { true, "#" + std::to_string (entry.info.id) + " " + planned.description + remarks };
+    }
+
     const auto id = nextEntryId;
     record (author, planned.description, std::move (applied));
+
+    if (step)
+    {
+        step->entryId = id;
+        gesture = std::move (step);
+    }
+
     return { true, "#" + std::to_string (id) + " " + planned.description + remarks };
 }
 
@@ -166,6 +212,7 @@ void CommandBus::record (const Author& author, std::string description, Edits ed
 {
     done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (edits) });
     undone.clear();
+    gesture.reset(); // any new entry ends a gesture; execute starts one again if this is its first step
 }
 
 void CommandBus::closeTransactionPart()
@@ -298,6 +345,7 @@ Result CommandBus::undo (const Author& author, UndoScope scope)
     done.pop_back();
 
     applyInverse (entry.edits);
+    gesture.reset();
 
     const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     undone.push_back (std::move (entry));
@@ -316,6 +364,7 @@ Result CommandBus::redo (const Author& author)
     undone.pop_back();
 
     applyForward (entry.edits);
+    gesture.reset();
 
     const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     done.push_back (std::move (entry));

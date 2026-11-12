@@ -334,7 +334,15 @@ edits::Plan plan (const project::Project& project, const SetMix& command)
     else
         description = "set " + track->id + "'s " + listText (parts);
 
-    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), {} };
+    // A gesture drags one control, or a few together: these ones, on this track.
+    auto setting = track->id + "'s";
+
+    for (const auto& [given, name] : { std::pair (command.volume.has_value(), " volume"), std::pair (command.pan.has_value(), " pan"),
+                                       std::pair (command.mute.has_value(), " mute"), std::pair (command.solo.has_value(), " solo") })
+        if (given)
+            setting += name;
+
+    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), {}, std::move (setting) };
 }
 
 //==============================================================================
