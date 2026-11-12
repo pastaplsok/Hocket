@@ -191,7 +191,7 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Tempo** is in quarter notes per minute, whatever the time signature: 20–999.
 - **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion counts beats the same way, with its default engine behaviour, so its BPM is quarter notes per minute too.)
 - **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name. A clip's length comes from its `.notes` file (`@length`), never from `project.json`. Clips on one track may not overlap. A song is at most 999 bars long: every clip ends by 1000.1, so a typo in a start can't make a loop thousands of bars long.
-- **Linked clips:** several clips may name the same `.notes` file, pattern-style as in FL Studio. They share its notes and its `@length`, so editing one edits them all (`write_clip` says which others changed). Hocket reads each file once and writes it once.
+- **Linked clips:** several clips may name the same `.notes` file, pattern-style as in FL Studio. They share its notes and its `@length`, so editing one edits them all (`write_clip` says which others changed). Hocket reads each file once and writes it once. A file linked into drum tracks must mean the same notes on each (§5.2).
 - **Mix:** each track's `volume`, `pan`, `mute` and `solo`, always written.
   - **Values with units** are a number and then the unit: an optional sign, digits, and an optional decimal point with digits after it. The writer puts no space between number and unit; the reader accepts one. Units are case-sensitive (`dB`, not `db`). Device parameters use the same syntax from Milestone 4 (`"2.4kHz"`, `"12ms"`).
   - **`volume`** is in dB, from `"-96dB"` to `"+6dB"` in steps of 0.1 dB (finer values are rounded), or `"-infdB"` for silence. `"0dB"` leaves the signal as it is. The writer drops trailing zeros and puts `+` on boosts: `"-6.5dB"`, `"0dB"`, `"+3dB"`. The top is Tracktion's fader's.
@@ -248,19 +248,42 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 - **Ghost notes:** just low velocity (e.g. `v25`). No special syntax.
 
 ### 5.2 Drum maps
-Drum tracks define a **drum map** in `project.json` that maps names to MIDI notes. Clips on that track use the names:
+A drum track has a **drum map** in `project.json` that maps names to MIDI notes. Clips on that track use the names:
 ```
 1.1    kick       1/16  v110
 1.2    snare      1/16  v100
 1.2.3  snare      1/16  v28      # ghost note
 1.1    hat-closed 1/16  v80
 ```
+- **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples; assigning a kit to a track seeds the track's map with the kit's names. From then on the map is the project's own.
+- **Standard names:** one list of piece names on the General MIDI percussion notes (below). A drum track with no kit gets this list as its map. Bundled kits (§8.4) use these names on these notes, and may add extra pieces on other notes.
 - **Naming rules:** lowercase, hyphenated, unique within the map. Not `pb`, `at`, or `cc` and a number, which are controllers.
-- **Descriptive names beat numbers** where the kit allows it: `crash-left` / `crash-right`, `crash-18`, `china`, `splash`.
+- **Descriptive names beat numbers** where a kit allows it: `crash-left` / `crash-right`, `crash-18`, `china`, `splash`. The standard list numbers General MIDI's duplicates (`crash` / `crash2`) because General MIDI doesn't say what they are.
 - **Articulations are their own entries:** `hat-closed`, `hat-open`, `hat-pedal`, `ride`, `ride-bell`, `snare-rim`, `sidestick`.
-- **Default map** follows General MIDI percussion, which numbers duplicates: `crash` / `crash2`, `ride` / `ride2`, `tom-low` / `tom-mid` / `tom-high`, etc. Users or models can rename entries per kit.
-- **Fallback:** a note with no map entry is written as its note name (`C#1`), so nothing is ever lost or unreadable.
+- **Fallback:** a note with no map entry is written as its note name (`A#5`), so nothing is ever lost or unreadable.
+- **A file linked into several tracks** (§4.4) must mean the same notes on each. It's an error when the tracks' maps disagree on a name the file uses, or when one track's map lacks it; the message names the piece, the tracks, and the notes. This may later be relaxed, so that each track reads the file with its own map.
 - Choke groups (e.g. closed hat cutting off open hat) belong to the instrument / drum map, not the notation.
+
+**The standard names**, on General MIDI's notes. Note names are Hocket's, where C4 is 60, so the kick is C2; many drum charts call it C1, counting middle C as C3.
+
+| Note | Name | Note | Name | Note | Name |
+|---|---|---|---|---|---|
+| 35 (B1) | `kick2` | 51 (D#3) | `ride` | 67 (G4) | `agogo-high` |
+| 36 (C2) | `kick` | 52 (E3) | `china` | 68 (G#4) | `agogo-low` |
+| 37 (C#2) | `sidestick` | 53 (F3) | `ride-bell` | 69 (A4) | `cabasa` |
+| 38 (D2) | `snare` | 54 (F#3) | `tambourine` | 70 (A#4) | `maracas` |
+| 39 (D#2) | `clap` | 55 (G3) | `splash` | 71 (B4) | `whistle-short` |
+| 40 (E2) | `snare2` | 56 (G#3) | `cowbell` | 72 (C5) | `whistle-long` |
+| 41 (F2) | `tom-floor-low` | 57 (A3) | `crash2` | 73 (C#5) | `guiro-short` |
+| 42 (F#2) | `hat-closed` | 58 (A#3) | `vibraslap` | 74 (D5) | `guiro-long` |
+| 43 (G2) | `tom-floor-high` | 59 (B3) | `ride2` | 75 (D#5) | `claves` |
+| 44 (G#2) | `hat-pedal` | 60 (C4) | `bongo-high` | 76 (E5) | `woodblock-high` |
+| 45 (A2) | `tom-low` | 61 (C#4) | `bongo-low` | 77 (F5) | `woodblock-low` |
+| 46 (A#2) | `hat-open` | 62 (D4) | `conga-high-mute` | 78 (F#5) | `cuica-mute` |
+| 47 (B2) | `tom-mid-low` | 63 (D#4) | `conga-high-open` | 79 (G5) | `cuica-open` |
+| 48 (C3) | `tom-mid-high` | 64 (E4) | `conga-low` | 80 (G#5) | `triangle-mute` |
+| 49 (C#3) | `crash` | 65 (F4) | `timbale-high` | 81 (A5) | `triangle-open` |
+| 50 (D3) | `tom-high` | 66 (F#4) | `timbale-low` |  |  |
 
 ### 5.3 MIDI interop
 - MIDI import → readable `.notes` clips. MIDI export of any clip or the whole song.
@@ -426,6 +449,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
 - **A kit is part of Hocket, like a preset.** A project names its kit, and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
+- **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track seeds the track's drum map from it.
 
 ---
 

@@ -83,10 +83,23 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Not yet played: volume, pan, mute and solo reach the Edit in step 6. Until then `--play` says so when a project has any.
 
 **3. Drum tracks in the format** (SPEC §5.2)
-- A track's drum map in `project.json`, and drum names in `.notes`, read and written through the track's map, with note names as the fallback. General MIDI names by default.
-- `hocket:drum-sampler`, with the name of a kit: `{"id", "type": "hocket:drum-sampler", "kit": "<name>"}`. The model only checks the name against the kits it's given; step 7 says where kits come from.
-- To decide: how a kit's piece names and the track's drum map relate (the map comes from the kit, or kits put their pieces on General MIDI notes and use the default map); and what happens when one file is linked into tracks with different maps (each reads it with its own map, or it's an error).
-- The same tests as step 2, plus drum names round-tripping through `write_clip`.
+- Lee's decisions (2026-11-12), now in SPEC §5.2 and §8.4:
+  - **The map lives on the track** in `project.json` (name to note), so a project reads and validates without any kit present. A kit's manifest maps notes to samples, and seeds the track's map when the kit is assigned.
+  - **One list of standard names** on the General MIDI notes, in SPEC §5.2 (kick 36, snare 38, hat-closed 42, …). A drum track with no kit gets it; bundled kits use those names on those notes, and may add extra pieces on other notes. Notes with no map entry fall back to note names. The names in the list are mine: rename any before step 3 builds on them.
+  - **A file linked into several tracks:** an error when the tracks' maps disagree on a name the file uses, or one track's map lacks it. The message names the piece, the tracks and the notes. SPEC says it may later be relaxed to each track reading the file with its own map.
+- To build:
+  - The map in `project.json`, read, validated and written canonically; drum names in `.notes`, read and written through the track's map, with note names as the fallback.
+  - `hocket:drum-sampler`, with the name of a kit: `{"id", "type": "hocket:drum-sampler", "kit": "<name>"}`. The model only checks the name against the kits it's given; step 7 says where kits come from.
+  - The linked-file check, with its message.
+  - The same tests as step 2, plus drum names round-tripping through `write_clip`, and `--check` of a drum project with no kits installed.
+- To decide with Lee at the start of step 3 (my proposals in brackets):
+  - **How a drum track is marked:** its own track type, or a `"midi"` track that has a map. [`"type": "drums"`, with a required `"drumMap"`: keys stay required for each type, and a melodic track can't half-have a map.]
+  - **How notes are written in the map:** note names (`"kick": "C2"`) or numbers (`"kick": 36`). [Numbers. Drum charts disagree about octave names: Hocket's kick is C2 (C4 = 60), but many charts call it C1. General MIDI's numbers are what everyone, models included, knows for drums.]
+  - **One name per note in a map, as well as one note per name.** Otherwise the writer can't tell which name to write. [Yes; this also means a kit's extra pieces can't reuse a standard note, which SPEC already says.]
+  - **Canonical text for a linked file:** the rule covers names the file uses, but not a note the file writes as a note name. If one track's map names that note (`snare` on 38) and another's doesn't, the two tracks' canonical texts differ (`snare` against `D2`). [Widen the rule to every note in the file: all the tracks' maps give it the same name, or none does.]
+  - **Names that look like note names:** the parser takes a lowercase `c2` or `eb3` for a mistyped note name. [Map names may not have that form.]
+  - On a drum track, a note named in the map is always written by its name: `D2` becomes `snare`, as `Cb4` becomes `B3`. Drum names on a track with no map are an error that says so.
+  - Canonical order of the map in `project.json`: by note.
 
 **4. Commands for the song's structure** (the bus)
 - Tracks: add, remove, rename, reorder, and set the instrument (`hocket:synth`, or `hocket:drum-sampler` with a kit). Clips: add one (with a new file, or linked to an existing one), move it (in time, or to another track), remove it, and make a linked clip unique. Also: tempo, time signature, a track's mix settings, and its drum map.
@@ -94,6 +107,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Every edit has an inverse, so undo, redo, rollback and the split of another author's transaction work as they do for `write_clip`. History descriptions say what changed ("added track trk-drums", "moved clp-bass-2 to 9.1").
 - Gesture coalescing (SPEC §3.1), with the first continuous settings, volume and pan: a client marks where a gesture starts and ends, and its changes become one entry. Built and tested here; the GUI uses it in Milestone 2.
 - `Change` grows from `NotesChanged` (a clip file's notes) to what the sync, and later the GUI, need to know.
+- To decide: what assigning a kit does to a drum map that's been edited (renamed pieces, added ones): replace it with the kit's names, or keep the edits where the kit has the same notes.
 - To decide: what a time-signature change keeps. Clip starts and notes are stored in ticks, and `@length` in bars, so a change from 4/4 to 6/8 either keeps clips at the same `bar.beat` (moving them in time) or at the same time (which can leave them off the bar lines). Clips' `@length` changes with the bar either way.
 - Tests: validation messages written for an LLM reader; undo and redo of each command; property tests on random command sequences (undoing everything gives the original back, and redoing everything gives the same project again).
 
@@ -114,7 +128,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Hocket's first device, a Tracktion plugin type of its own (`PluginManager::createBuiltInType`). It sets the pattern the synth and effects follow in Milestones 4 and 5.
 - One-shot pieces; velocity sets the level. Voices are allocated up front, samples are loaded on the message thread and handed over without locks, and nothing on the audio thread locks or allocates.
 - Not Tracktion's `SamplerPlugin`, which locks and allocates on the audio thread (Known upstream issues).
-- Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (piece names, notes, files, levels), and installed next to the programs. A project names its kit; nothing is copied into the project.
+- Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (notes, files and levels, and names for any pieces beyond the standard ones), and installed next to the programs. A project names its kit; nothing is copied into the project. A test checks that every bundled kit uses the standard names on the standard notes (SPEC §5.2).
 - Tests use generated samples, not a real kit: hits land where the clip says, at the right level; a drum clip rewritten 20 times a second plays with no glitch, on the real-time harness with `MidiRecorder`.
 
 **8. The first bundled drum kit** (SPEC §8.4)
@@ -224,7 +238,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - The test: `--sample-rate 48000` with ASIO4ALL. Other ways: set the Magni to 44100 Hz in Windows' Sound settings (the device's Properties, then Advanced) and try ASIO4ALL again, or turn on "Always Resample 44.1kHz <-> 48kHz" in ASIO4ALL's advanced panel.
   - Plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
 - **FL Studio ASIO wouldn't start with headphones on the Realtek (2026-11-12).** "Device didn't start correctly", with or without `--sample-rate`. Nothing else was using audio, FL Studio wasn't running, and Realtek ASIO opened fine straight after. Its output setting (`HKCU\Software\Image-Line\ASIO`, `outputEndPoint`) is blank, which seems to mean the Windows default output. Without `--sample-rate`, Hocket opens it the same way as in Milestone 0, when it worked on the Magni, so the setup is more likely than step 1's code.
-  - **The check, at the Magni:** `--play <a silent project> --driver ASIO --device "FL Studio ASIO" --sample-rate 44100`. If it opens, the problem was the headphones setup; if not, look at Hocket. Either way this puts the saved device back, which is Realtek ASIO at 44100 Hz until then.
+  - **The check, at the Magni:** `--play <a silent project> --driver ASIO --device "FL Studio ASIO" --sample-rate 44100`. A silent project is a copy of `examples\m0-demo` with `clips\bass.notes` cut down to its `@length 2bars` line. If it opens, the problem was the headphones setup; if not, look at Hocket. Either way this puts the saved device back, which is Realtek ASIO at 44100 Hz until then.
 - **A per-track stereo width control** (added 2026-11-12; planned for Milestone 5, and needed by Milestone 7's stereo audio). It runs from 0% (mono) to 100% (unchanged), and applies before pan. Pan is a balance control that never moves one channel's content to the other side (SPEC §4.4). So width is how a stereo source, like a stereo recording, gets narrowed before it's panned. To decide then: its `project.json` key and how it's written, e.g. `"width": "100%"` through the units parser.
 - **No text selection while `--play` runs (2026-11-04).** Not being fixed: the GUI replaces `--play` for everyday use (decided 2026-11-06). The cause is the review's fix #10, which turns QuickEdit off, so that a selection can't pause console output and with it the message thread. Shift+drag should still select in Windows Terminal. If it's ever needed: write console output from a thread of its own, through a queue, and leave QuickEdit as the user had it.
 - **One unexplained stress-test failure:** on 2026-10-30, a Debug run of the two stress tests failed once, right after a full Debug `ctest`. My filter hid the error, so which check failed isn't known. It didn't happen again in 23 Debug runs since: 11 of the stress tests alone, and 12 of the whole engine suite. If it shows up again, keep the whole output.
