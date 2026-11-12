@@ -52,7 +52,20 @@ namespace
             Json deviceValue = Json::object();
             deviceValue["id"] = device.id;
             deviceValue["type"] = deviceTypeName (device.type);
+
+            if (device.type == DeviceType::drumSampler)
+                deviceValue["kit"] = device.kit;
+
             devices.push_back (std::move (deviceValue));
+        }
+
+        // A drums track's names for its notes, by note (SPEC §5.2).
+        if (const auto* drumMap = drumMapOf (track))
+        {
+            auto& names = value["drumMap"] = Json::object();
+
+            for (const auto& [note, name] : drumMap->byNote())
+                names[name] = note;
         }
 
         // Clips sit on a timeline, so their canonical order is by start.
@@ -93,7 +106,7 @@ std::map<std::string, std::string> write (const Project& project)
 
     // Once each, however many clips are linked to it.
     for (const auto& [file, content] : project.notesFiles)
-        files[file] = notes::write (content, project.meter);
+        files[file] = notes::write (content, project.meter, drumMapOfFile (project, file));
 
     return files;
 }

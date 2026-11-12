@@ -331,6 +331,11 @@ namespace
         if (mixed)
             std::cerr << "Note: --play doesn't apply tracks' volume, pan, mute and solo yet, so every track plays at 0dB, centred.\n";
 
+        // Hocket's drum sampler arrives in Milestone 1's step 7.
+        for (const auto& track : loaded.project->tracks)
+            if (std::ranges::any_of (track.devices, [] (const auto& device) { return device.type == hocket::project::DeviceType::drumSampler; }))
+                std::cerr << "Note: track " << track.id << " is silent: Hocket's drum sampler isn't built yet.\n";
+
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();
 

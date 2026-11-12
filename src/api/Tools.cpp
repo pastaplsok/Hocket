@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <map>
 
 namespace hocket::api
 {
@@ -49,6 +50,51 @@ namespace
                 others += (others.empty() ? "" : ", ") + other->id;
 
         return others.empty() ? std::string() : " (linked with " + others + ")";
+    }
+
+    // "kick=36, snare=38", by note
+    std::string drumMapText (const notes::DrumMap& drumMap)
+    {
+        if (drumMap.empty())
+            return "empty, so the track's clips use note names";
+
+        std::string text;
+
+        for (const auto& [note, name] : drumMap.byNote())
+            text += (text.empty() ? "" : ", ") + name + "=" + std::to_string (note);
+
+        return text;
+    }
+
+    // On a drums track, the notes its drum map doesn't name (SPEC §5.2): they're
+    // written as note names, and a kit may have no piece there. Empty otherwise.
+    std::string unnamedNotesText (const project::Track& track, const notes::Clip& content)
+    {
+        const auto* drumMap = project::drumMapOf (track);
+
+        if (drumMap == nullptr)
+            return {};
+
+        std::map<int, std::pair<notes::Accidental, std::size_t>> unnamed; // pitch -> spelling, count
+
+        for (const auto& note : content.notes)
+            if (drumMap->nameOf (note.pitch) == nullptr)
+                ++unnamed.try_emplace (note.pitch, note.spelling, 0).first->second.second;
+
+        if (unnamed.empty())
+            return {};
+
+        std::string list;
+
+        for (const auto& [pitch, spellingAndCount] : unnamed)
+        {
+            const auto& [spelling, count] = spellingAndCount;
+            list += (list.empty() ? "" : ", ") + notes::formatPitch (pitch, spelling) + " (note " + std::to_string (pitch)
+                  + (count > 1 ? ", " + countText (count, "note") : "") + ")";
+        }
+
+        return "These notes have no name in " + track.id + "'s drum map, so they're written as note names: " + list
+             + ". They only sound if the kit has a piece there.";
     }
 
     std::string tempoText (double tempo)
@@ -188,9 +234,16 @@ namespace
                   + (track.solo ? ", soloed" : "") + "), devices: ";
 
             for (std::size_t i = 0; i < track.devices.size(); ++i)
-                text += (i > 0 ? ", " : "") + track.devices[i].id + " (" + project::deviceTypeName (track.devices[i].type) + ")";
+            {
+                const auto& device = track.devices[i];
+                text += (i > 0 ? ", " : "") + device.id + " (" + project::deviceTypeName (device.type)
+                      + (device.type == project::DeviceType::drumSampler ? ", kit " + doubleQuoted (device.kit) : "") + ")";
+            }
 
             text += track.devices.empty() ? "none\n" : "\n";
+
+            if (const auto* drumMap = project::drumMapOf (track))
+                text += "  - drum map: " + drumMapText (*drumMap) + "\n";
 
             if (track.clips.empty())
                 text += "  - no clips\n";
@@ -246,17 +299,21 @@ namespace
 
         const auto& content = project::notesOf (project, *clip);
         const auto linked = linkedText (project, *clip);
+        const auto* drumMap = project::drumMapOf (*track);
 
         const auto details = "clip " + clip->id + " on track " + track->id + " " + doubleQuoted (track->name) + "\n"
                            + "file: " + clip->file + linked + "\n"
                            + "from " + notes::formatPosition (clip->start, project.meter) + " to "
                            + notes::formatPosition (project::clipEnd (project, *clip), project.meter)
                            + " (@length " + lengthText (content.lengthInBars) + "), " + countText (content.notes.size(), "note") + "\n"
+                           + (drumMap != nullptr ? "Its notes are named by " + track->id + "'s drum map, which get_project_overview lists; "
+                                                   "notes the map doesn't name are written as note names.\n"
+                                                 : std::string())
                            + "The next block is the clip's .notes text, exactly as stored. To change the clip, "
                              "edit that text and send all of it to write_clip"
                            + (linked.empty() ? std::string (".") : std::string ("; its linked clips change with it, since they share the file."));
 
-        return { { details, notes::write (content, project.meter) }, false };
+        return { { details, notes::write (content, project.meter, drumMap) }, false };
     }
 
     ToolResult writeClip (const Call& call)
@@ -273,12 +330,16 @@ namespace
             return failure (result.message);
 
         const auto& project = call.bus.project();
-        const auto stored = notes::write (project::notesOf (project, *project::findClip (project, clipId)), project.meter);
+        const project::Track* track = nullptr;
+        const auto& content = project::notesOf (project, *project::findClip (project, clipId, &track));
+        const auto stored = notes::write (content, project.meter, project::drumMapOf (*track));
         const auto changes = describeChanges (sent, stored);
+        const auto unnamed = unnamedNotesText (*track, content);
 
         return success (result.message + "\n"
                         + (changes.empty() ? "Stored exactly as you sent it."
-                                           : "Stored in canonical form, which differs from what you sent: " + changes + ". read_clip returns the stored text."));
+                                           : "Stored in canonical form, which differs from what you sent: " + changes + ". read_clip returns the stored text.")
+                        + (unnamed.empty() ? std::string() : "\n" + unnamed));
     }
 
     ToolResult undo (const Call& call)
@@ -376,8 +437,8 @@ namespace
     constexpr std::array tools {
         Tool { "get_project_overview", true,
                "Summarizes the project open in Hocket: tempo, time signature, song length, and whether it's playing; every "
-               "track with its devices and clips (IDs, positions, lengths, note counts); the latest history entry; and any "
-               "open transaction. "
+               "track with its mix, devices, drum map (on drums tracks: the names its clips use for notes) and clips (IDs, "
+               "positions, lengths, note counts); the latest history entry; and any open transaction. "
                "Start here: the other tools take the IDs it lists.",
                noArguments,
                getProjectOverview },
@@ -407,7 +468,10 @@ namespace
                "- position: bar.beat[.sixteenth][+ticks], 1-based and relative to the clip start. A beat is the time "
                "signature's: a quarter note in 4/4, an eighth in 6/8 (get_project_overview gives the signature). 1.1 is "
                "the first beat; 2.3.2 is bar 2, beat 3, second sixteenth of that beat; +ticks adds ticks, 960 per quarter note.\n"
-               "- pitch: note name and octave, e.g. C2, F#4, Bb3 (C4 is middle C). A chord is [C3 E3 G3].\n"
+               "- pitch: note name and octave, e.g. C2, F#4, Bb3 (C4 is middle C). A chord is [C3 E3 G3]. On a drums "
+               "track, use the names in the track's drum map instead (kick, snare, hat-closed; get_project_overview "
+               "lists each map), e.g. \"1.1 [kick hat-closed] 1/16 v100\". Hocket writes every note the map names by "
+               "its name, and other notes by note name.\n"
                "- length: a fraction of a whole note (1/4, 1/8, 3/16), a triplet (1/8t), or ticks (250tk).\n"
                "- velocity: v1 to v127, required on every line.\n"
                "- # starts a comment, kept as written.\n"

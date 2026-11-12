@@ -197,8 +197,10 @@ TEST_CASE ("errors give line, column, the problem, and a valid example")
     const Case cases[] = {
         { "1.5 C2 1/8 v96", 1, 1, "'1.5' isn't a valid position: beat 5 doesn't exist in 4/4" },
         { "1.1 H2 1/8 v96", 1, 5, "'H2' isn't a note name: it must start with a letter from A to G" },
-        { "1.1 c2 1/8 v96", 1, 5, "note names start with an uppercase letter, e.g. 'C2'. Lowercase names are drum-map names" },
-        { "1.1 kick 1/16 v110", 1, 5, "'kick' looks like a drum-map name; drum maps aren't supported yet" },
+        { "1.1 c2 1/8 v96", 1, 5, "'c2' isn't a note name: note names start with an uppercase letter, e.g. 'C2'" },
+        { "1.1 kick 1/16 v110", 1, 5, "'kick' looks like a drum name, but this clip's track has no drum map, so write a note name such as 'C2'. "
+                                      "Drum names work on \"drums\" tracks" },
+        { "1.1 60 1/4 v96", 1, 5, "'60' isn't a note name: clips write notes by name, not number. Note 60 is 'C4' (C4 is 60)" },
         { "2.1 cc74 ramp 40->100 until 3.1", 1, 5, "controller lines ('cc74', 'pb', 'at') aren't supported yet (they come in Milestone 6)" },
         { "3.3 pb +0.5 until 3.4", 1, 5, "controller lines" },
         { "2.1 at ramp 0->100 until 3.1", 1, 5, "controller lines" },
@@ -263,6 +265,144 @@ TEST_CASE ("a flood of errors stops at twenty")
     const auto result = parse (input);
     REQUIRE (result.errors.size() == 21);
     CHECK (contains (result.errors.back().message, "stopping after 20 errors"));
+}
+
+//==============================================================================
+namespace
+{
+    DrumMap smallKit()
+    {
+        DrumMap map;
+        map.add ("kick", 36);
+        map.add ("sidestick", 37);
+        map.add ("snare", 38);
+        map.add ("hat-closed", 42);
+        map.add ("crash", 49);
+        map.add ("crash2", 57);
+        return map;
+    }
+
+    Clip parseDrumsOrFail (std::string_view text, const DrumMap& map)
+    {
+        auto result = parse (text, {}, &map);
+
+        for (const auto& error : result.errors)
+            MESSAGE (formatDiagnostic (error, "input"));
+
+        REQUIRE (result.clip);
+        return std::move (*result.clip);
+    }
+
+    Diagnostic onlyDrumError (std::string_view text, const DrumMap& map)
+    {
+        const auto result = parse (text, {}, &map);
+        CHECK_FALSE (result.clip);
+        REQUIRE (result.errors.size() == 1);
+        return result.errors.front();
+    }
+
+    constexpr std::string_view canonicalDrums = R"(# a beat
+@length 1bar
+
+1.1      [kick hat-closed]  1/16  v100
+1.1.3    hat-closed  1/16  v70
+1.2      snare 1/16  v100  # backbeat
+1.2.3    snare 1/16  v28
+1.3      kick  1/16  v110
+1.4      sidestick  1/16  v90
+1.4      A#5   1/16  v80
+)";
+}
+
+TEST_CASE ("on a drums track, clips name the drum map's pieces, and round-trip byte for byte")
+{
+    const auto map = smallKit();
+    const auto clip = parseDrumsOrFail (canonicalDrums, map);
+
+    REQUIRE (clip.notes.size() == 8);
+    CHECK (clip.notes[0].pitch == 36);
+    CHECK (clip.notes[1].pitch == 42);
+    CHECK (clip.notes[3].pitch == 38);
+    CHECK (clip.notes[3].comments.trailing == " backbeat");
+
+    // A named note on a black key is kept sharp, so it falls back to A#-style names.
+    CHECK (clip.notes[6].pitch == 37);
+    CHECK (clip.notes[6].spelling == Accidental::sharp);
+
+    // A note the map doesn't name stays a note name.
+    CHECK (clip.notes[7].pitch == 82);
+
+    CHECK (write (clip, {}, &map) == canonicalDrums);
+
+    // Without the map, the same notes are note names.
+    CHECK (contains (write (clip), "1.1      [C2 F#2]  1/16  v100\n"));
+}
+
+TEST_CASE ("on a drums track, every note the map names is written by its name")
+{
+    const auto map = smallKit();
+
+    // As Cb4 becomes B3: the map's name is the canonical spelling.
+    CHECK (write (parseDrumsOrFail ("1.1 D2 1/4 v100\n1.2 Db2 1/4 v100\n1.3 C#2 1/4 v90\n1.4 [C2 F#2] 1/8 v80", map), {}, &map)
+           == "@length 1bar\n\n1.1      snare 1/4   v100\n1.2      sidestick  1/4   v100\n1.3      sidestick  1/4   v90\n"
+              "1.4      [kick hat-closed]  1/8   v80\n");
+
+    // The model is the same however the note was written.
+    CHECK (parseDrumsOrFail ("1.1 Db2 1/4 v100", map) == parseDrumsOrFail ("1.1 sidestick 1/4 v100", map));
+
+    // Notes the map doesn't name keep their spelling.
+    CHECK (write (parseDrumsOrFail ("1.1 Bb5 1/4 v100\n1.2 A#5 1/4 v100", map), {}, &map)
+           == "@length 1bar\n\n1.1      Bb5   1/4   v100\n1.2      A#5   1/4   v100\n");
+}
+
+TEST_CASE ("drum names in errors, and errors about drum names")
+{
+    const auto map = smallKit();
+
+    // A note named twice, by name and by note name, is one note.
+    const auto duplicate = onlyDrumError ("1.1 kick 1/16 v100\n1.1 C2 1/8 v90", map);
+    CHECK (duplicate.line == 2);
+    CHECK (contains (duplicate.message, "duplicate note: kick at 1.1 is already on line 1"));
+
+    CHECK (contains (onlyDrumError ("@length 1bar\n2.1 snare 1/16 v100", map).message, "snare at 2.1 starts at or after the end of the clip"));
+
+    struct Case
+    {
+        std::string_view input;
+        int column;
+        std::string_view message;
+    };
+
+    const Case cases[] = {
+        { "1.1 kik 1/16 v100", 5, "'kik' isn't in this track's drum map (did you mean 'kick'?). Its names are kick, sidestick, snare, "
+                                  "hat-closed, crash, crash2. A note the map doesn't name is written as a note name, e.g. 'A#5'" },
+        { "1.1 crash3 1/16 v100", 5, "'crash3' isn't in this track's drum map (did you mean 'crash' or 'crash2'?)" },
+        { "1.1 crsh 1/16 v100", 5, "(did you mean 'crash'?)" },
+        { "1.1 bell 1/16 v100", 5, "'bell' isn't in this track's drum map. Its names are kick" },
+        { "1.1 Kick 1/16 v100", 5, "'Kick' isn't a drum name: drum names are lowercase, so write 'kick'" },
+        { "1.1 36 1/16 v100", 5, "'36' isn't a note name: clips write notes by name, not number. Note 36 is 'kick' in this track's drum map, or 'C2'" },
+        { "1.1 c2 1/16 v100", 5, "'c2' isn't a note name: note names start with an uppercase letter, e.g. 'C2'" },
+        { "1.1 cc7 1/16 v100", 5, "controller lines ('cc74', 'pb', 'at') aren't supported yet" },
+        { "1.1 [kick snre] 1/16 v100", 11, "'snre' isn't in this track's drum map (did you mean 'snare'?)" },
+    };
+
+    for (const auto& c : cases)
+    {
+        CAPTURE (c.input);
+        const auto error = onlyDrumError (c.input, map);
+        CHECK (error.column == c.column);
+        CHECK_MESSAGE (contains (error.message, c.message), error.message);
+    }
+
+    // A map can have dozens of names, so only the first such error lists them.
+    const auto twice = parse ("1.1 bell 1/16 v100\n1.2 gong 1/16 v100", {}, &map);
+    REQUIRE (twice.errors.size() == 2);
+    CHECK (contains (twice.errors[0].message, "Its names are kick, sidestick"));
+    CHECK (twice.errors[1].message == "'gong' isn't in this track's drum map; the first error like this one lists its names");
+
+    const DrumMap empty;
+    CHECK (contains (onlyDrumError ("1.1 kick 1/16 v100", empty).message,
+                     "'kick' isn't in this track's drum map, which is empty, so write a note name such as 'C2'"));
 }
 
 TEST_CASE ("diagnostics are formatted as source:line:column: message")

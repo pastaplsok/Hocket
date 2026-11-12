@@ -227,6 +227,37 @@ TEST_CASE ("a track with no device gets no instrument")
     CHECK (tracks[0]->getClips().size() == 1);
 }
 
+TEST_CASE ("a drums track's clips play their notes, with no instrument until Hocket's drum sampler is built")
+{
+    auto project = makeProject ({
+        makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, "@length 1bar\n\n1.1 C2 1/4 v100\n") }),
+        makeTrack ("trk-drums", "Drums", { makeClip ("clp-beat", 0, "@length 1bar\n\n1.1 [C2 F#2] 1/16 v100\n1.2 D2 1/16 v90\n") }),
+    });
+
+    auto& drums = project.tracks[1];
+    drums.type = project::TrackType::drums;
+    drums.drumMap = notes::standardDrumMap();
+    drums.devices = { { "dev-drums-kit", project::DeviceType::drumSampler, "acoustic" } };
+
+    commands::CommandBus bus (std::move (project));
+    engine::EditSync sync (testEngine(), bus);
+
+    const auto tracks = tracktion::getAudioTracks (sync.edit());
+    REQUIRE (tracks.size() == 2);
+    CHECK (tracks[0]->pluginList.getPluginsOfType<tracktion::FourOscPlugin>().size() == 1);
+    CHECK (tracks[1]->pluginList.getPluginsOfType<tracktion::FourOscPlugin>().isEmpty());
+
+    // The notes are pitches, whatever the clip calls them.
+    REQUIRE (bus.execute (commands::WriteClip { "clp-beat", "1.1 [kick hat-closed] 1/16 v100\n1.3 snare 1/16 v90\n" }, claude).ok);
+    std::vector<int> pitches;
+
+    for (auto* note : clipNamed (sync.edit(), "clp-beat").getSequence().getNotes())
+        pitches.push_back (note->getNoteNumber());
+
+    std::ranges::sort (pitches);
+    CHECK (pitches == std::vector<int> { 36, 38, 42 });
+}
+
 TEST_CASE ("play and stop go through the bus to the Edit's transport")
 {
     commands::CommandBus bus (twoTracks());

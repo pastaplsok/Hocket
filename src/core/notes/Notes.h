@@ -3,6 +3,8 @@
 // The .notes clip format (SPEC §5): the in-memory model, the parser, and the
 // canonical writer.
 
+#include "core/notes/DrumMap.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -98,11 +100,21 @@ namespace hocket::notes
     };
 
     // Parses .notes text. Every error is reported, not just the first (up to a limit).
-    ParseResult parse (std::string_view text, Meter meter = {});
+    //
+    // A clip on a drums track is read with the track's drum map (SPEC §5.2):
+    // its names stand for their notes, and notes it names are kept with the
+    // spelling namedSpelling() gives, since the writer writes their names.
+    // Without a map, a drum name is an error saying the track has none.
+    ParseResult parse (std::string_view text, Meter meter = {}, const DrumMap* drumMap = nullptr);
 
     // Writes a clip in canonical form (SPEC §5.4). The clip must be valid:
     // pitches 0-127, velocities 1-127, lengths > 0, starts inside the clip.
-    std::string write (const Clip& clip, Meter meter = {});
+    // With a drum map, a note it names is written by its name; others by note name.
+    std::string write (const Clip& clip, Meter meter = {}, const DrumMap* drumMap = nullptr);
+
+    // How a note that a drum map names is spelt in the model: sharp on a black
+    // key, so it falls back to "A#5" if the map stops naming it.
+    Accidental namedSpelling (int pitch);
 
     // "<sourceName>:<line>:<column>: <message>"
     std::string formatDiagnostic (const Diagnostic& diagnostic, std::string_view sourceName);

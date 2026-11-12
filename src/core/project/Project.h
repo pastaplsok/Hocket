@@ -20,7 +20,8 @@ namespace hocket::project
 
     enum class TrackType
     {
-        midi
+        midi, // clips are written with note names
+        drums // a drums track: its drum map names its notes (SPEC §5.2)
     };
 
     // The longest a song can be (SPEC §4.4): every clip ends by the end of
@@ -29,13 +30,15 @@ namespace hocket::project
 
     enum class DeviceType
     {
-        synth // "hocket:synth": Hocket's synth, with Tracktion's 4OSC standing in until Milestone 4 (SPEC §8.1)
+        synth,      // "hocket:synth": Hocket's synth, with Tracktion's 4OSC standing in until Milestone 4 (SPEC §8.1)
+        drumSampler // "hocket:drum-sampler": Hocket's drum sampler, playing a kit (SPEC §8.4); on drums tracks only
     };
 
     struct Device
     {
         std::string id;
         DeviceType type = DeviceType::synth;
+        std::string kit; // the drum sampler's kit, e.g. "acoustic"; empty for other devices
 
         bool operator== (const Device&) const = default;
     };
@@ -64,6 +67,9 @@ namespace hocket::project
         int pan = 0;         // -100 (L100) to 100 (R100); a balance control, so 0 (C) leaves the signal as it is
         bool mute = false;
         bool solo = false;
+
+        // A drums track's names for its notes (SPEC §5.2); empty on other tracks.
+        notes::DrumMap drumMap;
 
         bool operator== (const Track&) const = default;
     };
@@ -131,11 +137,29 @@ namespace hocket::project
     // The clips whose notes are this file's, in track order, then clip order.
     std::vector<const Clip*> clipsUsing (const Project& project, std::string_view file);
 
+    // The tracks with clips whose notes are this file's, in display order, each once.
+    std::vector<const Track*> tracksUsing (const Project& project, std::string_view file);
+
+    // A drums track's drum map; nullptr for a track that has none.
+    const notes::DrumMap* drumMapOf (const Track& track);
+
+    // The drum map a clip file is read and written with: its first track's.
+    // Every track using a file names its notes alike (drumNameConflicts), so
+    // any of them would write it the same way.
+    const notes::DrumMap* drumMapOfFile (const Project& project, std::string_view file);
+
+    // A file used on several tracks must mean the same notes on each (SPEC §5.2):
+    // each of its notes has the same name in every track's drum map, or none.
+    // Says where tracks a and b disagree on these notes, e.g. "note 36 (C2) is
+    // 'kick' on trk-a but has no name on trk-b (its 'kick' is note 35)"; empty
+    // when they agree.
+    std::string drumNameConflicts (const notes::Clip& content, const Track& a, const Track& b);
+
     // Why `id` isn't a clip, for a tool's error message: "there's no clip 'clp-x';
     // the clips are 'clp-a', 'clp-b'", or a hint when it's a track or device ID.
     std::string unknownClipMessage (const Project& project, std::string_view id, std::string_view toolName);
 
-    // As written in project.json: "midi", "hocket:synth".
+    // As written in project.json: "midi", "drums", "hocket:synth", "hocket:drum-sampler".
     const char* trackTypeName (TrackType type);
     const char* deviceTypeName (DeviceType type);
 }

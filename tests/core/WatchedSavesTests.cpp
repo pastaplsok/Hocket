@@ -43,6 +43,27 @@ TEST_CASE ("a save goes in as the person's write_clip, with no warning when noth
     CHECK_FALSE (saves.save ("clips/bass.notes", "@length 2bars\n\n1.1 C2 1/4 v100\n").warning);
 }
 
+TEST_CASE ("a save of a drum clip is read with its track's drum map")
+{
+    project::Track drums { "trk-drums", "Drums", project::TrackType::drums, {}, { { "clp-beat", "clips/beat.notes", 0 } } };
+    drums.drumMap = notes::standardDrumMap();
+
+    project::Project project;
+    project.notesFiles["clips/beat.notes"] = *notes::parse ("@length 1bar\n\n1.1 kick 1/16 v100\n", {}, &drums.drumMap).clip;
+    project.tracks.push_back (std::move (drums));
+
+    CommandBus bus (std::move (project));
+    WatchedSaves saves (bus, lee);
+
+    REQUIRE (bus.execute (WriteClip { "clp-beat", "1.1 snare 1/16 v100\n" }, claude).ok);
+
+    // A save of the file as Claude left it, with a note name for the snare: nothing changes, and nothing was replaced.
+    const auto saved = saves.save ("clips/beat.notes", "@length 1bar\n\n1.1 D2 1/16 v100\n");
+    CHECK (saved.result.ok);
+    CHECK (saved.result.message.find ("already has exactly these notes") != std::string::npos);
+    CHECK_FALSE (saved.warning);
+}
+
 TEST_CASE ("a save that replaces another author's change says so, and how to get it back")
 {
     CommandBus bus (makeProject());

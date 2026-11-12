@@ -105,6 +105,22 @@ namespace
         return randomInt (rng, 0, 2) == 0 ? 0.0 : randomInt (rng, -960, 60) / 10.0;
     }
 
+    // Some of the standard names, and perhaps a piece or two of its own.
+    notes::DrumMap randomDrumMap (Rng& rng)
+    {
+        notes::DrumMap map;
+
+        for (const auto& [note, name] : notes::standardDrumMap().byNote())
+            if (randomInt (rng, 0, 1) == 0)
+                map.add (name, note);
+
+        for (int extra = randomInt (rng, 0, 2); extra > 0; --extra)
+            if (const auto name = "perc-" + randomWord (rng); ! notes::drumNameProblem (name))
+                map.add (name, randomInt (rng, 0, 127)); // refused if the note or name is taken
+
+        return map;
+    }
+
     Project randomProject (Rng& rng)
     {
         Project project;
@@ -113,6 +129,11 @@ namespace
         project.meter = randomMeter (rng);
         std::set<std::string> ids;
         int fileNumber = 0;
+
+        // Every drums track gets this map, and files are only linked between
+        // tracks of one type, so a file's tracks always name its notes alike.
+        const auto drumMap = randomDrumMap (rng);
+        std::map<std::string, TrackType> fileTypes;
 
         const auto uniqueId = [&] (const std::string& prefix)
         {
@@ -126,13 +147,22 @@ namespace
             Track track;
             track.id = uniqueId ("trk-");
             track.name = randomName (rng);
+            track.type = randomInt (rng, 0, 2) == 0 ? TrackType::drums : TrackType::midi;
             track.volume = randomVolume (rng);
             track.pan = randomInt (rng, 0, 2) == 0 ? 0 : randomInt (rng, -100, 100);
             track.mute = randomInt (rng, 0, 3) == 0;
             track.solo = randomInt (rng, 0, 3) == 0;
 
+            if (track.type == TrackType::drums)
+                track.drumMap = drumMap;
+
             if (randomInt (rng, 0, 4) > 0)
-                track.devices.push_back ({ uniqueId ("dev-"), DeviceType::synth });
+            {
+                if (track.type == TrackType::drums)
+                    track.devices.push_back ({ uniqueId ("dev-"), DeviceType::drumSampler, "kit-" + randomWord (rng) });
+                else
+                    track.devices.push_back ({ uniqueId ("dev-"), DeviceType::synth });
+            }
 
             notes::Ticks nextFree = 0;
 
@@ -142,17 +172,30 @@ namespace
                 clip.id = uniqueId ("clp-");
                 clip.start = nextFree + 240 * randomInt (rng, 0, 32);
 
+                std::vector<std::string> linkable;
+
+                for (const auto& [file, type] : fileTypes)
+                    if (type == track.type)
+                        linkable.push_back (file);
+
                 // Sometimes linked to an earlier clip: it uses that one's file.
-                if (! project.notesFiles.empty() && randomInt (rng, 0, 2) == 0)
+                if (! linkable.empty() && randomInt (rng, 0, 2) == 0)
                 {
-                    auto file = project.notesFiles.begin();
-                    std::advance (file, randomInt (rng, 0, static_cast<int> (project.notesFiles.size()) - 1));
-                    clip.file = file->first;
+                    clip.file = linkable[static_cast<std::size_t> (randomInt (rng, 0, static_cast<int> (linkable.size()) - 1))];
                 }
                 else
                 {
                     clip.file = "clips/c" + std::to_string (++fileNumber) + ".notes";
-                    project.notesFiles[clip.file] = randomNotes (rng, project.meter);
+                    auto content = randomNotes (rng, project.meter);
+
+                    // A note the map names is written by its name, so it's read back with the map's spelling.
+                    if (track.type == TrackType::drums)
+                        for (auto& note : content.notes)
+                            if (drumMap.nameOf (note.pitch) != nullptr)
+                                note.spelling = notes::namedSpelling (note.pitch);
+
+                    project.notesFiles[clip.file] = std::move (content);
+                    fileTypes[clip.file] = track.type;
                 }
 
                 nextFree = clip.start + project.notesFiles.at (clip.file).lengthInBars * project.meter.ticksPerBar();

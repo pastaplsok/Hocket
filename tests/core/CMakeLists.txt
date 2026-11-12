@@ -2,6 +2,7 @@ add_executable(hocket_core_tests
     ClipFileWatcherTests.cpp
     CommandBusPropertyTests.cpp
     CommandBusTests.cpp
+    DrumMapTests.cpp
     JsonTextTests.cpp
     NotesSyntaxTests.cpp
     NotesFormatTests.cpp
@@ -17,7 +18,9 @@ target_link_libraries(hocket_core_tests PRIVATE hocket_core hocket_platform doct
 target_include_directories(hocket_core_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
 # Tests load the example projects from the source tree, as checked out.
-target_compile_definitions(hocket_core_tests PRIVATE HOCKET_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples")
+target_compile_definitions(hocket_core_tests PRIVATE
+    HOCKET_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+    HOCKET_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures")
 
 hocket_enable_warnings(hocket_core_tests)
 

@@ -372,7 +372,7 @@ TEST_CASE ("errors in project.json point at the value, say what's wrong, and sho
         }
       ],
       "clips": [])", "ID 'dev-bass-synth' is already used on line 17" },
-        { R"("midi")", R"("audio")", R"("audio")", R"(track 'trk-bass': "audio" tracks aren't supported yet; so far there are only "midi" tracks)" },
+        { R"("midi")", R"("audio")", R"("audio")", R"(track 'trk-bass': "audio" tracks aren't supported yet; so far there are "midi" and "drums" tracks)" },
         { R"("0dB")", R"("+12dB")", R"("+12dB")", R"(track 'trk-bass': "volume": '+12dB' is out of range: volume goes from -96dB to +6dB, or -infdB)" },
         { R"("0dB")", R"("-6")", R"("-6")", R"(track 'trk-bass': "volume": '-6' isn't a valid volume: it has no unit; volume is written in dB)" },
         { R"("0dB")", "-6", "-6", R"(track 'trk-bass': "volume" should be a string, e.g. "0dB")" },
@@ -384,7 +384,8 @@ TEST_CASE ("errors in project.json point at the value, say what's wrong, and sho
       "id": "trk-bass")", R"(track 'trk-bass': missing "pan"; add e.g. "pan": "C")" },
         { R"("volume": "0dB",)", R"("volume": "0dB", "loudness": "0dB",)", R"("loudness")", R"(track 'trk-bass': unknown key "loudness"; the keys are "id", "name", "type", "volume", "pan", "mute", "solo", "devices", "clips")" },
         { R"("Bass \"low\" — main")", "42", "42", R"(track 'trk-bass': "name" should be a string, e.g. "Bass")" },
-        { R"("hocket:synth")", R"("vst3:serum")", R"("vst3:serum")", R"(device 'dev-bass-synth': "vst3:serum" isn't available; so far there's only "hocket:synth", Hocket's synth)" },
+        { R"("hocket:synth")", R"("vst3:serum")", R"("vst3:serum")", R"(device 'dev-bass-synth': "vst3:serum" isn't available; so far there are "hocket:synth", )"
+                                                                     R"(Hocket's synth, and "hocket:drum-sampler", which plays a drum kit)" },
         { R"("hocket:synth")", R"("tracktion:4osc")", R"("tracktion:4osc")", R"(device 'dev-bass-synth': "tracktion:4osc" is now written "hocket:synth")" },
         { R"("clips/bass-verse.notes")", R"("clips/Bass Verse.notes")", R"("clips/Bass Verse.notes")", "'clips/Bass Verse.notes' isn't a valid clip file: clip files are 'clips/<name>.notes'" },
         { R"("clips/bass-verse.notes")", R"("../secret.notes")", R"("../secret.notes")", "isn't a valid clip file" },
@@ -471,6 +472,300 @@ TEST_CASE ("project.json errors come first, in file order, then the clip files'"
     CHECK (result.errors[1].file == "project.json");
     CHECK (contains (result.errors[1].message, "'lead' isn't a valid track ID"));
     CHECK (result.errors[2].file == "clips/bass-verse.notes");
+}
+
+//==============================================================================
+namespace
+{
+    // Two drums tracks sharing a file, whose maps name its notes alike, and a bass track.
+    const std::string drumProject = R"({
+  "format": "hocket-project",
+  "formatVersion": 0,
+  "tempo": 120,
+  "timeSignature": "4/4",
+  "tracks": [
+    {
+      "id": "trk-drums",
+      "name": "Drums",
+      "type": "drums",
+      "volume": "0dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
+      "devices": [
+        {
+          "id": "dev-drums-kit",
+          "type": "hocket:drum-sampler",
+          "kit": "acoustic"
+        }
+      ],
+      "drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "hat-closed": 42,
+        "crash": 49
+      },
+      "clips": [
+        {
+          "id": "clp-beat",
+          "file": "clips/beat.notes",
+          "start": "1.1"
+        }
+      ]
+    },
+    {
+      "id": "trk-perc",
+      "name": "Percussion",
+      "type": "drums",
+      "volume": "0dB",
+      "pan": "R30",
+      "mute": false,
+      "solo": false,
+      "devices": [],
+      "drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "cowbell": 56
+      },
+      "clips": [
+        {
+          "id": "clp-perc",
+          "file": "clips/beat.notes",
+          "start": "2.1"
+        }
+      ]
+    },
+    {
+      "id": "trk-bass",
+      "name": "Bass",
+      "type": "midi",
+      "volume": "0dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
+      "devices": [
+        {
+          "id": "dev-bass-synth",
+          "type": "hocket:synth"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clp-bass",
+          "file": "clips/bass.notes",
+          "start": "1.1"
+        }
+      ]
+    }
+  ]
+}
+)";
+
+    const Files drumFiles {
+        { "project.json", drumProject },
+        { "clips/beat.notes", "@length 1bar\n\n1.1      kick  1/16  v110\n1.2      snare 1/16  v100\n1.3      kick  1/16  v110\n"
+                              "1.4      snare 1/16  v100\n1.4.3    A#5   1/16  v60\n" },
+        { "clips/bass.notes", "@length 1bar\n\n1.1      C2    1/4   v100\n" },
+    };
+}
+
+TEST_CASE ("a drum project round-trips byte for byte, and reads without any kit present")
+{
+    CHECK (write (parseOrFail (drumFiles)) == drumFiles);
+
+    const auto project = parseOrFail (drumFiles);
+    REQUIRE (project.tracks.size() == 3);
+
+    const auto& drums = project.tracks[0];
+    CHECK (drums.type == TrackType::drums);
+    REQUIRE (drums.devices.size() == 1);
+    CHECK (drums.devices[0].type == DeviceType::drumSampler);
+    CHECK (drums.devices[0].kit == "acoustic");
+    CHECK (drums.drumMap.size() == 4);
+    CHECK (drums.drumMap.noteOf ("hat-closed") == 42);
+    CHECK (drumMapOf (drums) == &drums.drumMap);
+
+    // The bass track has no map, and its synth no kit.
+    CHECK (drumMapOf (project.tracks[2]) == nullptr);
+    CHECK (project.tracks[2].devices[0].kit.empty());
+
+    const auto& beat = notesOf (project, drums.clips[0]);
+    REQUIRE (beat.notes.size() == 5);
+    CHECK (beat.notes[0].pitch == 36);
+    CHECK (beat.notes[1].pitch == 38);
+    CHECK (beat.notes[4].pitch == 82);
+
+    CHECK (tracksUsing (project, "clips/beat.notes") == std::vector<const Track*> { &project.tracks[0], &project.tracks[1] });
+    CHECK (drumMapOfFile (project, "clips/beat.notes") == &drums.drumMap);
+    CHECK (drumMapOfFile (project, "clips/bass.notes") == nullptr);
+}
+
+TEST_CASE ("a drum map is written by note, and drum clips name every note their map names")
+{
+    auto files = drumFiles;
+    files["project.json"] = replaced (drumProject, "\"kick\": 36,\n        \"snare\": 38,\n        \"hat-closed\": 42,\n        \"crash\": 49",
+                                      "\"crash\": 49, \"hat-closed\": 42, \"kick\": 36, \"snare\": 38");
+    files["clips/beat.notes"] = "1.4.3 A#5 1/16 v60\n1.1 C2 1/16 v110\n1.2 snare 1/16 v100\n1.3 kick 1/16 v110\n1.4 D2 1/16 v100\n";
+
+    CHECK (write (parseOrFail (files)) == drumFiles);
+}
+
+TEST_CASE ("a file used on several tracks must mean the same notes on each")
+{
+    struct Case
+    {
+        std::string_view from; // edit made to the drum project
+        std::string_view to;
+        std::string_view message;
+    };
+
+    const Case cases[] = {
+        // The two maps put a name the file uses on different notes.
+        { "\"snare\": 38,\n        \"cowbell\"", "\"snare\": 40,\n        \"cowbell\"",
+          "track 'trk-perc', clip 'clp-perc': clips/beat.notes is also used on track 'trk-drums', but the two tracks' drum maps don't name "
+          "its notes alike: note 38 (D2) is 'snare' on trk-drums but has no name on trk-perc (its 'snare' is note 40). A file used on several "
+          "tracks must mean the same notes on each, so make the maps agree on these notes, or give this clip a file of its own" },
+
+        // The maps give a note in the file different names.
+        { "\"kick\": 36,\n        \"snare\": 38,\n        \"cowbell\"", "\"bd\": 36,\n        \"snare\": 38,\n        \"cowbell\"",
+          "note 36 (C2) is 'kick' on trk-drums but 'bd' on trk-perc" },
+
+        // A note the file writes as a note name, which only one map names.
+        { "\"cowbell\": 56", "\"cowbell\": 82", "note 82 (A#5) is 'cowbell' on trk-perc but has no name on trk-drums" },
+
+        // A track with no drum map at all.
+        { "\"clips/bass.notes\"", "\"clips/beat.notes\"", "track 'trk-bass', clip 'clp-bass': clips/beat.notes is also used on track "
+                                                          "'trk-drums', but the two tracks' drum maps don't name its notes alike: note 36 (C2) "
+                                                          "is 'kick' on trk-drums but trk-bass is a \"midi\" track, with no drum map; note 38 (D2)" },
+    };
+
+    for (const auto& c : cases)
+    {
+        CAPTURE (c.to);
+        auto files = drumFiles;
+        files["project.json"] = replaced (drumProject, c.from, c.to);
+
+        const auto result = parseFiles (files);
+        const auto error = errorMatching (result, c.message);
+        CHECK (error.file == "project.json");
+        CHECK (result.errors.size() == 1);
+    }
+
+    // Maps that differ only on notes the file doesn't use are fine: hat-closed, crash and cowbell here.
+    CHECK (parseFiles (drumFiles).project);
+}
+
+TEST_CASE ("errors in drum maps, drum samplers and drums tracks point at the value and say how to fix it")
+{
+    struct Case
+    {
+        std::string_view from; // edit made to the drum project
+        std::string_view to;
+        std::string_view at;   // where the error should point, in the edited text
+        std::string_view message;
+    };
+
+    const Case drumCases[] = {
+        { R"("kick": 36,
+        "snare": 38,
+        "hat-closed")", R"("Kick": 36,
+        "snare": 38,
+        "hat-closed")", R"("Kick")", "track 'trk-drums': \"drumMap\": 'Kick' isn't a valid drum name: drum names are lowercase letters and digits" },
+        { R"("crash": 49)", R"("c2": 49)", R"("c2")", "\"drumMap\": 'c2' can't be a drum name: on a note line, it reads as the note name C2" },
+        { R"("crash": 49)", R"("v1": 49)", R"("v1")", "'v1' can't be a drum name: on a note line, 'v' with a number is a velocity" },
+        { R"("crash": 49)", R"("crash": "C#3")", R"("C#3")", "\"drumMap\": \"crash\" should be a MIDI note number from 0 to 127, e.g. 36, "
+                                                             "not a note name: drum maps use General MIDI's numbers, and 'C#3' is 49" },
+        { R"("crash": 49)", R"("crash": 128)", "128", "\"crash\" should be a MIDI note number from 0 to 127, e.g. 36" },
+        { R"("crash": 49)", R"("crash": 49.5)", "49.5", "\"crash\" should be a MIDI note number from 0 to 127" },
+        { R"("crash": 49)", R"("crash": 42)", R"(42
+      },
+      "clips": [
+        {
+          "id": "clp-beat")", "\"drumMap\": \"crash\" and \"hat-closed\" are both note 42, but a note has one name in a drum map" },
+        { R"("crash": 49)", R"("crash": 49, "kick": 35)", R"("kick": 35)", "\"drumMap\": \"kick\" appears twice; a name stands for one note" },
+        { R"("drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "hat-closed")", R"("drumMap": [ 36 ], "x": {
+        "kick": 36,
+        "snare": 38,
+        "hat-closed")", "[ 36 ]", "track 'trk-drums': \"drumMap\" should be an object of drum names and the MIDI notes they play, "
+                                  "e.g. { \"kick\": 36, \"snare\": 38, \"hat-closed\": 42 }" },
+        { R"("devices": [],
+      "drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "cowbell": 56
+      },)", R"("devices": [],)", R"({
+      "id": "trk-perc")", "track 'trk-perc': missing \"drumMap\"; add e.g. \"drumMap\": { \"kick\": 36, \"snare\": 38, \"hat-closed\": 42 }" },
+        { R"("type": "drums",
+      "volume": "0dB",
+      "pan": "R30")", R"("type": "midi",
+      "volume": "0dB",
+      "pan": "R30")", R"("drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "cowbell")", "track 'trk-perc': only \"drums\" tracks have a \"drumMap\"; other tracks' clips use note names. "
+                     "Make the track \"type\": \"drums\", or remove its drum map" },
+        { R"("type": "hocket:synth")", R"("type": "hocket:drum-sampler", "kit": "acoustic")", R"("hocket:drum-sampler", "kit")",
+          "device 'dev-bass-synth': a \"hocket:drum-sampler\" goes on a \"drums\" track, whose drum map names the kit's pieces; this is "
+          "a \"midi\" track. Make it \"type\": \"drums\" with a \"drumMap\", or use \"hocket:synth\"" },
+        { R"("kit": "acoustic")", R"("kit": "Acoustic Kit")", R"("Acoustic Kit")", "device 'dev-drums-kit': 'Acoustic Kit' isn't a valid kit name: "
+                                                                                   "kit names are lowercase letters and digits in words joined by single hyphens" },
+        { R"("kit": "acoustic")", R"("kit": 1)", R"(1
+        })", "device 'dev-drums-kit': \"kit\" should be a string, e.g. \"acoustic\"" },
+        { R"(,
+          "kit": "acoustic")", "", R"({
+          "id": "dev-drums-kit")", "device 'dev-drums-kit': missing \"kit\"; add e.g. \"kit\": \"acoustic\"" },
+        { R"("type": "hocket:synth")", R"("type": "hocket:synth", "kit": "warm")", R"("kit": "warm")",
+          "device 'dev-bass-synth': only a \"hocket:drum-sampler\" has a \"kit\"" },
+    };
+
+    for (const auto& c : drumCases)
+    {
+        CAPTURE (c.to);
+        auto files = drumFiles;
+        files["project.json"] = replaced (drumProject, c.from, c.to);
+
+        const auto error = errorMatching (parseFiles (files), c.message);
+        const auto expected = positionOf (files["project.json"], c.at);
+        CHECK (error.file == "project.json");
+        CHECK (error.line == expected.line);
+        CHECK (error.column == expected.column);
+    }
+}
+
+TEST_CASE ("a broken drum map stops its track's clips being read, rather than piling up errors in them")
+{
+    auto files = drumFiles;
+    files["project.json"] = replaced (drumProject, R"("kick": 36,
+        "snare": 38,
+        "hat-closed")", R"("kick": "36",
+        "snare": 38,
+        "hat-closed")");
+
+    // trk-drums's map is broken; trk-perc, which reads the file instead, has kick.
+    const auto result = parseFiles (files);
+    REQUIRE (result.errors.size() == 1);
+    CHECK (contains (result.errors[0].message, "\"kick\" should be a MIDI note number"));
+}
+
+TEST_CASE ("the drum project fixture loads from disk with no kits installed, and is in canonical form")
+{
+    const auto folder = hocket::pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project");
+    const auto result = load (folder);
+
+    for (const auto& error : result.errors)
+        MESSAGE (formatDiagnostic (error));
+
+    REQUIRE (result.project);
+    CHECK (result.project->tracks.front().type == TrackType::drums);
+
+    for (const auto& [path, contents] : write (*result.project))
+    {
+        CAPTURE (path);
+        CHECK (readFile (folder / hocket::pathFromUtf8 (path)) == contents);
+    }
 }
 
 TEST_CASE ("diagnostics are formatted with as much location as they have")

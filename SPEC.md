@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.8** — 2026-11-12
+> Status: **Draft v0.9** — 2026-11-12
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -197,8 +197,35 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
   - **`volume`** is in dB, from `"-96dB"` to `"+6dB"` in steps of 0.1 dB (finer values are rounded), or `"-infdB"` for silence. `"0dB"` leaves the signal as it is. The writer drops trailing zeros and puts `+` on boosts: `"-6.5dB"`, `"0dB"`, `"+3dB"`. The top is Tracktion's fader's.
   - **`pan`** is `"C"`, `"L1"` to `"L100"`, or `"R1"` to `"R100"`. **It's a balance control:** at C both channels pass unchanged. Panning towards one side leaves that side's channel unchanged and lowers the other linearly in gain, to silence at L100 or R100: at L50 the right channel is at half gain (−6 dB). So `"0dB"` and `"C"` together leave a track exactly as its instrument made it. Pan never moves one channel's content to the other side: at L100, anything only in the right channel is silent. (Tracktion's own pan laws either boost the near side or lower the centre, so the sync layer gets this one out of its linear law with a matching volume, in Milestone 1's step 6.)
   - **`mute` and `solo`** are `true` or `false`. While any track is soloed, only soloed tracks are heard; a muted track is silent even when soloed.
-- **Devices:** none, or one instrument: `"hocket:synth"` (§8.1). Effects come in Milestone 5.
-- **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
+- **Track types:** `"midi"`, whose clips use note names, or `"drums"`, whose clips use the names in its `drumMap` (§5.2):
+  ```json
+  {
+    "id": "trk-drums",
+    "name": "Drums",
+    "type": "drums",
+    "volume": "0dB",
+    "pan": "C",
+    "mute": false,
+    "solo": false,
+    "devices": [
+      {
+        "id": "dev-drums-kit",
+        "type": "hocket:drum-sampler",
+        "kit": "acoustic"
+      }
+    ],
+    "drumMap": {
+      "kick": 36,
+      "snare": 38,
+      "hat-closed": 42
+    },
+    "clips": []
+  }
+  ```
+  - `drumMap` is required on a drums track and an error on any other. It maps names to MIDI note numbers, 0 to 127. Numbers, not note names, since drum charts disagree about octave names (Hocket's kick is C2, many charts' C1), while General MIDI's numbers are the same everywhere.
+  - One note per name, and one name per note, so the writer knows which name to write. A map may be empty.
+- **Devices:** none, or one instrument: `"hocket:synth"` (§8.1), or `"hocket:drum-sampler"` with its `kit` (§8.4), on drums tracks only. A kit's name is lowercase and hyphenated, like a clip file's. A project reads and validates without its kit present, since the names are in the drum map. Effects come in Milestone 5.
+- **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. A drums track's `drumMap` comes between `devices` and `clips`, sorted by note, and a drum sampler's `kit` after its `type`. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
 
 ### 4.5 Saving
 **Saving is explicit, with an automatic recovery copy.**
@@ -227,7 +254,7 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 | Field | Format | Notes |
 |---|---|---|
 | Position | `bar.beat[.sixteenth][+ticks]` | 1-based, relative to the clip start. Beats are the time signature's, and the sixteenth counts within the beat (§4.4). `+ticks` allows micro-timing (960 ticks per quarter note). |
-| Pitch | Note name + octave (`C2`, `F#4`, `Bb3`) | Uppercase letter, optional `#` or `b`, octave. `C4` = MIDI 60 (middle C); range `C-1` to `G9`. No key-signature inference — the written name is the pitch, and its spelling (`Eb2` vs `D#2`) is kept. Lowercase names are drum-map names (§5.2). |
+| Pitch | Note name + octave (`C2`, `F#4`, `Bb3`) | Uppercase letter, optional `#` or `b`, octave. `C4` = MIDI 60 (middle C); range `C-1` to `G9`. No key-signature inference — the written name is the pitch, and its spelling (`Eb2` vs `D#2`) is kept. On a drums track, lowercase names are its drum map's (§5.2). |
 | Length | Fraction of a whole note (`1/8`, `1/16`, `3/8`), triplets (`1/8t`), or ticks (`250tk`) | |
 | Velocity | `v1`–`v127` | Required on every note line. |
 | Controllers | `ccN`, `pb`, `at` (channel aftertouch) | Values or shapes, same shape syntax as automation. Per-note (polyphonic) aftertouch: TBD. |
@@ -248,20 +275,23 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 - **Ghost notes:** just low velocity (e.g. `v25`). No special syntax.
 
 ### 5.2 Drum maps
-A drum track has a **drum map** in `project.json` that maps names to MIDI notes. Clips on that track use the names:
+A drums track (`"type": "drums"`) has a **drum map** in `project.json` that maps names to MIDI note numbers (§4.4). Clips on that track use the names, in canonical form like this:
 ```
-1.1    kick       1/16  v110
-1.2    snare      1/16  v100
-1.2.3  snare      1/16  v28      # ghost note
-1.1    hat-closed 1/16  v80
+1.1      kick  1/16  v110
+1.1      hat-closed  1/16  v80
+1.2      snare 1/16  v100
+1.2.3    snare 1/16  v28  # ghost note
 ```
 - **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples; assigning a kit to a track seeds the track's map with the kit's names. From then on the map is the project's own.
 - **Standard names:** one list of piece names on the General MIDI percussion notes (below). A drum track with no kit gets this list as its map. Bundled kits (§8.4) use these names on these notes, and may add extra pieces on other notes.
-- **Naming rules:** lowercase, hyphenated, unique within the map. Not `pb`, `at`, or `cc` and a number, which are controllers.
+- **Naming rules:** lowercase letters and digits in words joined by single hyphens, starting with a letter, at most 32 characters. One note per name and one name per note.
+  - A name can't read as anything else on a note line: not a note name in lowercase (`c2`, `eb3`), a controller (`pb`, `at`, or `cc` and a number), a velocity (`v` and a number), or a MIDI channel (`ch` and a number).
 - **Descriptive names beat numbers** where a kit allows it: `crash-left` / `crash-right`, `crash-18`, `china`, `splash`. The standard list numbers General MIDI's duplicates (`crash` / `crash2`) because General MIDI doesn't say what they are.
 - **Articulations are their own entries:** `hat-closed`, `hat-open`, `hat-pedal`, `ride`, `ride-bell`, `snare-rim`, `sidestick`.
-- **Fallback:** a note with no map entry is written as its note name (`A#5`), so nothing is ever lost or unreadable.
-- **A file linked into several tracks** (§4.4) must mean the same notes on each. It's an error when the tracks' maps disagree on a name the file uses, or when one track's map lacks it; the message names the piece, the tracks, and the notes. This may later be relaxed, so that each track reads the file with its own map.
+- **Writing:** a note the map names is always written by its name, however it was written: `D2` becomes `snare`, as `Cb4` becomes `B3` (§5.4). Its spelling isn't kept: if the map stops naming it, a black key is written sharp.
+- **Fallback:** a note with no map entry is written as its note name (`A#5`), so nothing is ever lost or unreadable. `write_clip`'s result lists such notes on a drums track, since they only sound if the kit has a piece there.
+- A drum name on a track with no drum map is an error that says so, and so is a name the map doesn't have, with the map's names.
+- **A file linked into several tracks** (§4.4) must mean the same notes on each, and be written the same way for each: every note in the file has the same name in each track's map, or no name in any. A track with no drum map names nothing. It's an error otherwise, and the message names the notes, the names, and the tracks. This may later be relaxed, so that each track reads the file with its own map.
 - Choke groups (e.g. closed hat cutting off open hat) belong to the instrument / drum map, not the notation.
 
 **The standard names**, on General MIDI's notes. Note names are Hocket's, where C4 is 60, so the kick is C2; many drum charts call it C1, counting middle C as C3.
@@ -327,7 +357,7 @@ Milestone 0's headless host has an opt-in exception for development, `--play --w
 ### 6.2 The API speaks the text format
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.
 - `read_clip` returns the stored text in canonical form, verbatim, in a content block of its own; the clip's details (ID, track, file, position, length) come in the block before it. A model can edit the text and send it straight back.
-- `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date.
+- `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date. On a drums track, it also lists the notes the drum map doesn't name (§5.2).
 
 ### 6.3 Transport
 - The DAW exposes a **localhost WebSocket API**, on 127.0.0.1 only. (Chosen over Windows named pipes: easier to debug and not platform-specific.)
@@ -431,7 +461,7 @@ Raw data remains available on explicit request (e.g. for a script).
 **Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
 - Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
 - Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
-- So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4.
+- So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4, and `hocket:drum-sampler`, with a kit (§8.4).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
 
 ### 8.2 VST3 hosting requirements (Phase 2)
@@ -448,7 +478,7 @@ Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova,
 Hocket comes with a few drum kits in different styles: acoustic, electronic (808-style), and one suited to breakbeat and jungle.
 - **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
-- **A kit is part of Hocket, like a preset.** A project names its kit, and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
+- **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
 - **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track seeds the track's drum map from it.
 
 ---

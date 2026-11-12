@@ -7,7 +7,7 @@ namespace
     std::optional<std::string> canonicalText (const project::Project& project, std::string_view file)
     {
         if (const auto found = project.notesFiles.find (file); found != project.notesFiles.end())
-            return notes::write (found->second, project.meter);
+            return notes::write (found->second, project.meter, project::drumMapOfFile (project, file));
 
         return {};
     }
@@ -17,7 +17,7 @@ WatchedSaves::WatchedSaves (CommandBus& commandBus, Author personAtTheDaw)
     : bus (commandBus), person (std::move (personAtTheDaw))
 {
     for (const auto& [file, content] : bus.project().notesFiles)
-        matchedFile[file] = notes::write (content, bus.project().meter);
+        matchedFile[file] = notes::write (content, bus.project().meter, project::drumMapOfFile (bus.project(), file));
 }
 
 WatchedSaves::Outcome WatchedSaves::save (const std::string& file, const std::string& text)

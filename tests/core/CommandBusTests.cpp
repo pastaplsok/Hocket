@@ -104,6 +104,81 @@ TEST_CASE ("write_clip on a linked clip changes its file's notes, and so every c
     CHECK (bus.execute (WriteClip { "clp-a", twoNotes }, claude).message == "#2 wrote clip clp-a (2 notes), and its linked clip clp-a2");
 }
 
+namespace
+{
+    // trk-a has the standard names; trk-b the same but no clap. Both use
+    // clips/beat.notes; clp-b2 on trk-b has a file of its own.
+    project::Project makeDrumProject()
+    {
+        project::Project project;
+        project::Track a { "trk-a", "Drums", project::TrackType::drums, {}, {} };
+        project::Track b { "trk-b", "More drums", project::TrackType::drums, {}, {} };
+        a.drumMap = notes::standardDrumMap();
+
+        for (const auto& [note, name] : a.drumMap.byNote())
+            if (name != "clap")
+                b.drumMap.add (name, note);
+
+        project.notesFiles["clips/beat.notes"] = *notes::parse ("@length 1bar\n\n1.1 kick 1/16 v100\n", {}, &a.drumMap).clip;
+        project.notesFiles["clips/b2.notes"] = parsed ("@length 1bar\n");
+        a.clips.push_back ({ "clp-a", "clips/beat.notes", 0 });
+        b.clips.push_back ({ "clp-b", "clips/beat.notes", 0 });
+        b.clips.push_back ({ "clp-b2", "clips/b2.notes", 2 * bar });
+        project.tracks.push_back (std::move (a));
+        project.tracks.push_back (std::move (b));
+        return project;
+    }
+}
+
+TEST_CASE ("write_clip on a drums track reads the track's drum names, and compares notes however they're named")
+{
+    CommandBus bus (makeDrumProject());
+
+    const auto result = bus.execute (WriteClip { "clp-a", "1.1 [kick hat-closed] 1/16 v100\n1.2 snare 1/16 v100\n" }, claude);
+    CHECK (result.message == "#1 wrote clip clp-a (3 notes), and its linked clip clp-b");
+
+    std::vector<int> pitches;
+
+    for (const auto& note : contentOf (bus, "clp-b").notes)
+        pitches.push_back (note.pitch);
+
+    CHECK (pitches == std::vector<int> { 36, 42, 38 });
+
+    // The same notes as note names: nothing changes.
+    const auto same = bus.execute (WriteClip { "clp-a", "@length 1bar\n1.1 [C2 F#2] 1/16 v100\n1.2 D2 1/16 v100\n" }, claude);
+    CHECK (same.ok);
+    CHECK (contains (same.message, "already has exactly these notes"));
+    CHECK (bus.history().size() == 1);
+
+    // A drum name on a track with no drum map.
+    CommandBus melodic (makeProject());
+    const auto noMap = melodic.execute (WriteClip { "clp-a", "1.1 kick 1/16 v100\n" }, claude);
+    CHECK_FALSE (noMap.ok);
+    CHECK (contains (noMap.message, "clips/a.notes:1:5: 'kick' looks like a drum name, but this clip's track has no drum map"));
+}
+
+TEST_CASE ("write_clip refuses notes that a file's tracks would name differently")
+{
+    CommandBus bus (makeDrumProject());
+
+    // trk-b has no clap, so clips/beat.notes would mean different notes on its two tracks.
+    for (const auto* clipId : { "clp-a", "clp-b" })
+    {
+        CAPTURE (clipId);
+        const auto clap = bus.execute (WriteClip { clipId, "1.1 kick 1/16 v100\n1.2 D#2 1/16 v100\n" }, claude);
+        CHECK_FALSE (clap.ok);
+        CHECK (contains (clap.message, "write_clip: clips/beat.notes is used on tracks "));
+        CHECK (contains (clap.message, "and their drum maps don't name these notes alike: note 39 (D#2) is 'clap' on trk-a but has no name "
+                                       "on trk-b. A file used on several tracks must mean the same notes on each, so nothing was changed. "
+                                       "Leave those notes out, or make the maps agree"));
+    }
+
+    CHECK (bus.history().empty());
+
+    // A clip whose file no other track uses can have it.
+    CHECK (bus.execute (WriteClip { "clp-b2", "1.1 D#2 1/16 v100\n" }, claude).ok);
+}
+
 TEST_CASE ("a longer @length must fit every clip linked to the file")
 {
     // clp-a (1.1, 2 bars) and clp-b (5.1) on the bass; clp-a2 shares clp-a's

@@ -447,6 +447,54 @@ TEST_CASE ("the overview and read_clip show linked clips, mix settings, and what
                      "#1 wrote clip clp-lead (1 note), and its linked clips clp-bass, clp-bass-again"));
 }
 
+TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips use its names")
+{
+    project::Track drums { "trk-drums", "Drums", project::TrackType::drums, { { "dev-drums-kit", project::DeviceType::drumSampler, "acoustic" } },
+                           { { "clp-beat", "clips/beat.notes", 0 } } };
+    drums.drumMap.add ("kick", 36);
+    drums.drumMap.add ("snare", 38);
+    drums.drumMap.add ("hat-closed", 42);
+
+    project::Project project;
+    project.notesFiles["clips/beat.notes"] = *notes::parse ("@length 1bar\n\n1.1 [C2 F#2] 1/16 v100\n1.2 D2 1/16 v100\n").clip;
+    project.tracks.push_back (std::move (drums));
+
+    commands::CommandBus bus (std::move (project));
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    CHECK (contains (connection.text ("get_project_overview"),
+                     "- trk-drums \"Drums\" (drums; volume 0dB, pan C), devices: dev-drums-kit (hocket:drum-sampler, kit \"acoustic\")\n"
+                     "  - drum map: kick=36, snare=38, hat-closed=42\n"
+                     "  - clip clp-beat: 1.1 to 2.1 (@length 1bar), 3 notes, file clips/beat.notes\n"));
+
+    const auto read = connection.call ("read_clip", { { "clip_id", "clp-beat" } });
+    CHECK (contains (read.at ("content")[0].at ("text").get<std::string>(),
+                     "Its notes are named by trk-drums's drum map, which get_project_overview lists; notes the map doesn't name are written as note names.\n"));
+    CHECK (read.at ("content")[1].at ("text") == "@length 1bar\n\n1.1      [kick hat-closed]  1/16  v100\n1.2      snare 1/16  v100\n");
+
+    // Notes the map doesn't name are listed, since the kit may have nothing there.
+    const auto written = connection.call ("write_clip", { { "clip_id", "clp-beat" },
+                                                          { "notes", "@length 1bar\n\n1.1      kick  1/16  v100\n1.2      Bb5   1/16  v90\n"
+                                                                     "1.3      Bb5   1/16  v90\n1.4      C7    1/16  v90\n" } });
+    CHECK (written.at ("isError") == false);
+    CHECK (written.at ("content")[0].at ("text")
+           == "#1 wrote clip clp-beat (4 notes)\n"
+              "Stored exactly as you sent it.\n"
+              "These notes have no name in trk-drums's drum map, so they're written as note names: Bb5 (note 82, 2 notes), C7 (note 96). "
+              "They only sound if the kit has a piece there.");
+
+    // A note name the map names is stored as the name.
+    const auto renamed = connection.call ("write_clip", { { "clip_id", "clp-beat" }, { "notes", "@length 1bar\n\n1.1      D2    1/16  v100\n" } });
+    CHECK (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "Stored in canonical form, which differs from what you sent"));
+    CHECK_FALSE (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "no name in"));
+    CHECK (connection.call ("read_clip", { { "clip_id", "clp-beat" } }).at ("content")[1].at ("text") == "@length 1bar\n\n1.1      snare 1/16  v100\n");
+}
+
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")
 {
     Fixture fixture;

@@ -1,7 +1,9 @@
 #include "core/project/Project.h"
+#include "core/notes/NotesSyntax.h"
 
 #include <algorithm>
 #include <cassert>
+#include <set>
 
 namespace hocket::project
 {
@@ -49,6 +51,84 @@ std::vector<const Clip*> clipsUsing (const Project& project, std::string_view fi
     return clips;
 }
 
+std::vector<const Track*> tracksUsing (const Project& project, std::string_view file)
+{
+    std::vector<const Track*> tracks;
+
+    for (const auto& track : project.tracks)
+        if (std::ranges::any_of (track.clips, [file] (const Clip& clip) { return clip.file == file; }))
+            tracks.push_back (&track);
+
+    return tracks;
+}
+
+const notes::DrumMap* drumMapOf (const Track& track)
+{
+    return track.type == TrackType::drums ? &track.drumMap : nullptr;
+}
+
+const notes::DrumMap* drumMapOfFile (const Project& project, std::string_view file)
+{
+    for (const auto& track : project.tracks)
+        for (const auto& clip : track.clips)
+            if (clip.file == file)
+                return drumMapOf (track);
+
+    return nullptr;
+}
+
+std::string drumNameConflicts (const notes::Clip& content, const Track& a, const Track& b)
+{
+    static const notes::DrumMap noMap;
+    const auto& mapA = drumMapOf (a) != nullptr ? *drumMapOf (a) : noMap;
+    const auto& mapB = drumMapOf (b) != nullptr ? *drumMapOf (b) : noMap;
+
+    std::set<int> pitches;
+
+    for (const auto& note : content.notes)
+        pitches.insert (note.pitch);
+
+    std::string conflicts;
+
+    for (const auto pitch : pitches)
+    {
+        const auto* nameA = mapA.nameOf (pitch);
+        const auto* nameB = mapB.nameOf (pitch);
+
+        if (nameA == nullptr && nameB == nullptr)
+            continue;
+
+        if (nameA != nullptr && nameB != nullptr && *nameA == *nameB)
+            continue;
+
+        auto conflict = "note " + std::to_string (pitch) + " (" + notes::formatPitch (pitch, notes::namedSpelling (pitch)) + ") is ";
+
+        if (nameA != nullptr && nameB != nullptr)
+        {
+            conflict += singleQuoted (*nameA) + " on " + a.id + " but " + singleQuoted (*nameB) + " on " + b.id;
+        }
+        else
+        {
+            const auto& named = nameA != nullptr ? a : b;
+            const auto& unnamed = nameA != nullptr ? b : a;
+            const auto& name = nameA != nullptr ? *nameA : *nameB;
+
+            conflict += singleQuoted (name) + " on " + named.id + " but ";
+
+            if (drumMapOf (unnamed) == nullptr)
+                conflict += unnamed.id + " is a \"" + trackTypeName (unnamed.type) + "\" track, with no drum map";
+            else if (const auto elsewhere = unnamed.drumMap.noteOf (name))
+                conflict += "has no name on " + unnamed.id + " (its " + singleQuoted (name) + " is note " + std::to_string (*elsewhere) + ")";
+            else
+                conflict += "has no name on " + unnamed.id;
+        }
+
+        conflicts += (conflicts.empty() ? "" : "; ") + conflict;
+    }
+
+    return conflicts;
+}
+
 const Clip* findClip (const Project& project, std::string_view id, const Track** track)
 {
     for (const auto& candidateTrack : project.tracks)
@@ -94,6 +174,7 @@ const char* trackTypeName (TrackType type)
     switch (type)
     {
         case TrackType::midi: return "midi";
+        case TrackType::drums: return "drums";
     }
 
     return "midi";
@@ -104,6 +185,7 @@ const char* deviceTypeName (DeviceType type)
     switch (type)
     {
         case DeviceType::synth: return "hocket:synth";
+        case DeviceType::drumSampler: return "hocket:drum-sampler";
     }
 
     return "hocket:synth";

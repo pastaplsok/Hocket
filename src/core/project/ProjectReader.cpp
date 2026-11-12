@@ -1,4 +1,5 @@
 #include "core/Paths.h"
+#include "core/Suggestions.h"
 #include "core/project/JsonText.h"
 #include "core/project/Project.h"
 #include "core/notes/NotesSyntax.h"
@@ -47,9 +48,43 @@ namespace
         { "clips", "[]" },
     };
 
+    constexpr KeySpec drumTrackKeys[] = {
+        { "id", R"("trk-drums")" },
+        { "name", R"("Drums")" },
+        { "type", R"("drums")" },
+        { "volume", R"("0dB")" },
+        { "pan", R"("C")" },
+        { "mute", "false" },
+        { "solo", "false" },
+        { "devices", R"([{ "id": "dev-drums-kit", "type": "hocket:drum-sampler", "kit": "acoustic" }])" },
+        { "drumMap", R"({ "kick": 36, "snare": 38, "hat-closed": 42 })" },
+        { "clips", "[]" },
+    };
+
     constexpr KeySpec deviceKeys[] = {
         { "id", R"("dev-bass-synth")" },
         { "type", R"("hocket:synth")" },
+    };
+
+    constexpr KeySpec drumSamplerKeys[] = {
+        { "id", R"("dev-drums-kit")" },
+        { "type", R"("hocket:drum-sampler")" },
+        { "kit", R"("acoustic")" },
+    };
+
+    // Keys that belong on another kind of object, and what to say about them.
+    struct MisplacedKey
+    {
+        std::string_view name;
+        std::string_view message;
+    };
+
+    constexpr MisplacedKey misplacedTrackKeys[] = {
+        { "drumMap", "only \"drums\" tracks have a \"drumMap\"; other tracks' clips use note names. Make the track \"type\": \"drums\", or remove its drum map" },
+    };
+
+    constexpr MisplacedKey misplacedDeviceKeys[] = {
+        { "kit", "only a \"hocket:drum-sampler\" has a \"kit\"" },
     };
 
     constexpr KeySpec clipKeys[] = {
@@ -85,29 +120,6 @@ namespace
             text += (text.size() > 2 ? ", " : "") + jsonQuoted (key.name) + ": " + std::string (key.example);
 
         return text + " }";
-    }
-
-    std::size_t editDistance (std::string_view a, std::string_view b)
-    {
-        std::vector<std::size_t> row (b.size() + 1);
-
-        for (std::size_t j = 0; j <= b.size(); ++j)
-            row[j] = j;
-
-        for (std::size_t i = 1; i <= a.size(); ++i)
-        {
-            auto diagonal = row[0];
-            row[0] = i;
-
-            for (std::size_t j = 1; j <= b.size(); ++j)
-            {
-                const auto above = row[j];
-                row[j] = std::min ({ row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] == b[j - 1] ? 0 : 1) });
-                diagonal = above;
-            }
-        }
-
-        return row[b.size()];
     }
 
     // "bass", "bass-verse-2": lowercase letters and digits, in words joined by single hyphens.
@@ -204,8 +216,17 @@ namespace
         const FileReader& readFile;
         Project project;
         std::vector<Diagnostic> errors;
-        std::map<std::string, int> idLines;     // ID -> line it was first used on
-        std::map<std::string, bool> filesRead; // clip file -> whether it exists and parsed; each is read once
+        // A clip file, read once, by the first clip that uses it.
+        struct FileRead
+        {
+            bool ok = false;                          // it exists and parsed
+            Track reader;                             // the ID, type and drum map of the track it was read for
+            std::set<std::string> otherTracksChecked; // tracks found to name its notes alike, or reported
+        };
+
+        std::map<std::string, int> idLines;        // ID -> line it was first used on
+        std::map<std::string, FileRead> filesRead; // by clip file
+        bool drumMapFailed = false;                // the current track's; its clip files aren't read then
 
         LoadResult finish()
         {
@@ -291,7 +312,8 @@ namespace
         }
 
         // Duplicate, unknown and missing keys. Every key is required (SPEC §4.4).
-        void checkKeys (const Json& object, const std::string& where, std::span<const KeySpec> keys)
+        void checkKeys (const Json& object, const std::string& where, std::span<const KeySpec> keys,
+                        std::span<const MisplacedKey> misplaced = {})
         {
             std::set<std::string> seen;
 
@@ -305,6 +327,12 @@ namespace
 
                 if (! exampleFor (keys, key).empty())
                     continue;
+
+                if (const auto found = std::ranges::find (misplaced, key, &MisplacedKey::name); found != misplaced.end())
+                {
+                    errorAtOffset (offset, where + ": " + std::string (found->message));
+                    continue;
+                }
 
                 std::string message = where + ": unknown key " + jsonQuoted (key);
 
@@ -450,24 +478,35 @@ namespace
             Track track;
             const auto id = readId (value, "track", "trk-", "trk-bass", fallback, trackKeys);
             const auto where = id ? "track " + singleQuoted (*id) : fallback;
-            checkKeys (value, where, trackKeys);
 
             if (id)
                 track.id = *id;
 
-            if (const auto name = readString (value, "name", where, trackKeys))
-                track.name = *name;
+            // The type says which keys the track has.
+            if (const auto type = readString (value, "type", where, trackKeys); type && *type == "drums")
+                track.type = TrackType::drums;
+            else if (type && *type != "midi")
+                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type) + " tracks aren't supported yet; so far there are \"midi\" and \"drums\" tracks");
 
-            if (const auto type = readString (value, "type", where, trackKeys); type && *type != "midi")
-                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type) + " tracks aren't supported yet; so far there are only \"midi\" tracks");
+            const auto keys = track.type == TrackType::drums ? std::span<const KeySpec> (drumTrackKeys) : std::span<const KeySpec> (trackKeys);
+            checkKeys (value, where, keys, misplacedTrackKeys);
+
+            if (const auto name = readString (value, "name", where, keys))
+                track.name = *name;
 
             readMix (value, where, track);
 
-            if (const auto* devices = readArray (value, "devices", where, trackKeys))
+            // Before the clips, which are read with it.
+            drumMapFailed = false;
+
+            if (track.type == TrackType::drums)
+                readDrumMap (value, where, track);
+
+            if (const auto* devices = readArray (value, "devices", where, keys))
             {
                 if (devices->size() > 1)
                     errorAt (*devices, where + ": a track has at most one device for now, its instrument (effects come in Milestone 5), e.g. \"devices\": "
-                                           + std::string (exampleFor (trackKeys, "devices")));
+                                           + std::string (exampleFor (keys, "devices")));
 
                 for (std::size_t i = 0; i < devices->size(); ++i)
                     readDevice ((*devices)[i], i, where, track);
@@ -475,7 +514,7 @@ namespace
 
             std::vector<PlacedClip> placed;
 
-            if (const auto* clips = readArray (value, "clips", where, trackKeys))
+            if (const auto* clips = readArray (value, "clips", where, keys))
                 for (std::size_t i = 0; i < clips->size(); ++i)
                     readClip ((*clips)[i], i, where, track, placed);
 
@@ -525,6 +564,73 @@ namespace
             return value->get<bool>();
         }
 
+        // A drums track's names for its notes (SPEC §5.2): { "kick": 36, ... }.
+        void readDrumMap (const Json& object, const std::string& where, Track& track)
+        {
+            const auto* map = member (object, "drumMap");
+            const auto example = std::string (exampleFor (drumTrackKeys, "drumMap"));
+
+            if (map == nullptr)
+            {
+                drumMapFailed = true; // reported by checkKeys
+                return;
+            }
+
+            if (! map->is_object())
+            {
+                errorAt (*map, where + ": \"drumMap\" should be an object of drum names and the MIDI notes they play, e.g. " + example);
+                drumMapFailed = true;
+                return;
+            }
+
+            const auto prefix = where + ": \"drumMap\": ";
+            std::set<std::string> seen;
+
+            for (const auto& [name, offset] : keysOfObject (text, map->start_pos()))
+            {
+                const auto errorHere = [&] (std::size_t at, std::string message)
+                {
+                    errorAtOffset (at, prefix + std::move (message));
+                    drumMapFailed = true;
+                };
+
+                if (! seen.insert (name).second)
+                {
+                    errorHere (offset, jsonQuoted (name) + " appears twice; a name stands for one note, so keep only one");
+                    continue;
+                }
+
+                if (const auto problem = notes::drumNameProblem (name))
+                {
+                    errorHere (offset, *problem);
+                    continue;
+                }
+
+                const auto& note = map->at (name);
+
+                if (! note.is_number_integer() || note.get<std::int64_t>() < 0 || note.get<std::int64_t>() > 127)
+                {
+                    auto message = jsonQuoted (name) + " should be a MIDI note number from 0 to 127, e.g. 36";
+
+                    // "kick": "C2"
+                    if (note.is_string())
+                        if (const auto pitch = notes::parsePitch (note.get<std::string>()); pitch.value)
+                            message += ", not a note name: drum maps use General MIDI's numbers, and "
+                                     + singleQuoted (note.get<std::string>()) + " is " + std::to_string (pitch.value->pitch);
+
+                    errorHere (offsetOf (note), std::move (message));
+                    continue;
+                }
+
+                const auto number = static_cast<int> (note.get<std::int64_t>());
+
+                if (! track.drumMap.add (name, number))
+                    errorHere (offsetOf (note), jsonQuoted (name) + " and " + jsonQuoted (*track.drumMap.nameOf (number)) + " are both note "
+                                                    + std::to_string (number) + ", but a note has one name in a drum map, so that clips "
+                                                      "are written one way; remove one, or give it another note");
+            }
+        }
+
         void readDevice (const Json& value, std::size_t index, const std::string& trackWhere, Track& track)
         {
             const auto fallback = trackWhere + ", devices[" + std::to_string (index) + "]";
@@ -535,15 +641,41 @@ namespace
             Device device;
             const auto id = readId (value, "device", "dev-", "dev-bass-synth", fallback, deviceKeys);
             const auto where = id ? trackWhere + ", device " + singleQuoted (*id) : fallback;
-            checkKeys (value, where, deviceKeys);
 
             if (id)
                 device.id = *id;
 
-            if (const auto type = readString (value, "type", where, deviceKeys); type && *type != "hocket:synth")
+            // The type says which keys the device has.
+            const auto type = readString (value, "type", where, deviceKeys);
+
+            if (type == "hocket:drum-sampler")
+                device.type = DeviceType::drumSampler;
+            else if (type && *type != "hocket:synth")
                 errorAt (value.at ("type"), where + ": " + jsonQuoted (*type)
                                                 + (*type == "tracktion:4osc" ? std::string (" is now written \"hocket:synth\": Hocket's synth, which 4OSC plays for now")
-                                                                             : std::string (" isn't available; so far there's only \"hocket:synth\", Hocket's synth")));
+                                                                             : std::string (" isn't available; so far there are \"hocket:synth\", Hocket's synth, "
+                                                                                            "and \"hocket:drum-sampler\", which plays a drum kit")));
+
+            const auto keys = device.type == DeviceType::drumSampler ? std::span<const KeySpec> (drumSamplerKeys) : std::span<const KeySpec> (deviceKeys);
+            checkKeys (value, where, keys, misplacedDeviceKeys);
+
+            if (device.type == DeviceType::drumSampler)
+            {
+                if (track.type != TrackType::drums)
+                    errorAt (value.at ("type"), where + ": a \"hocket:drum-sampler\" goes on a \"drums\" track, whose drum map names the kit's pieces; "
+                                                        "this is a \"" + std::string (trackTypeName (track.type)) + "\" track. Make it \"type\": \"drums\" "
+                                                        "with a \"drumMap\", or use \"hocket:synth\"");
+
+                // Kits are folders, assets/kits/<name> (SPEC §8.4).
+                if (const auto kit = readString (value, "kit", where, keys))
+                {
+                    if (kit->size() <= maxIdLength && isHyphenatedName (*kit))
+                        device.kit = *kit;
+                    else
+                        errorAt (value.at ("kit"), where + ": " + singleQuoted (*kit) + " isn't a valid kit name: kit names are lowercase letters "
+                                                                                         "and digits in words joined by single hyphens, e.g. \"acoustic\"");
+                }
+            }
 
             track.devices.push_back (std::move (device));
         }
@@ -583,7 +715,7 @@ namespace
 
             const auto file = readString (value, "file", where, clipKeys);
 
-            if (! file || ! readClipFile (value.at ("file"), *file, where, clip))
+            if (! file || ! readClipFile (value.at ("file"), *file, where, track, clip))
                 ok = false;
 
             if (ok)
@@ -608,9 +740,11 @@ namespace
             track.clips.push_back (std::move (clip));
         }
 
-        // Reads the clip's file into project.notesFiles, unless an earlier clip
-        // already did: clips that name the same file are linked (SPEC §4.4).
-        bool readClipFile (const Json& value, const std::string& file, const std::string& where, Clip& clip)
+        // Reads the clip's file into project.notesFiles, with the track's drum
+        // map, unless an earlier clip already did: clips that name the same file
+        // are linked (SPEC §4.4). A file used on several tracks must mean the
+        // same notes on each (SPEC §5.2).
+        bool readClipFile (const Json& value, const std::string& file, const std::string& where, const Track& track, Clip& clip)
         {
             if (! isValidClipFile (file))
             {
@@ -621,11 +755,15 @@ namespace
 
             clip.file = file;
 
+            // Its names would be read wrongly; the drum map's errors say what to fix.
+            if (drumMapFailed)
+                return false;
+
             // Its errors were reported for the first clip that used it.
             if (const auto read = filesRead.find (file); read != filesRead.end())
-                return read->second;
+                return read->second.ok && namesAlike (read->second, file, value, where, track);
 
-            auto& ok = filesRead[file];
+            auto& read = filesRead[file];
             const auto contents = readFile (file);
 
             if (! contents)
@@ -635,7 +773,7 @@ namespace
                 return false;
             }
 
-            auto parsed = notes::parse (*contents, project.meter);
+            auto parsed = notes::parse (*contents, project.meter, drumMapOf (track));
 
             for (auto& error : parsed.errors)
                 errors.push_back ({ file, error.line, error.column, std::move (error.message) });
@@ -644,8 +782,29 @@ namespace
                 return false;
 
             project.notesFiles.emplace (file, std::move (*parsed.clip));
-            ok = true;
+            read.ok = true;
+            read.reader.id = track.id;
+            read.reader.type = track.type;
+            read.reader.drumMap = track.drumMap;
             return true;
+        }
+
+        // Whether a track that uses an already read file names its notes as
+        // the track it was read for does. Each other track is checked once.
+        bool namesAlike (FileRead& read, const std::string& file, const Json& value, const std::string& where, const Track& track)
+        {
+            if (track.id == read.reader.id || ! read.otherTracksChecked.insert (track.id).second)
+                return true;
+
+            const auto conflicts = drumNameConflicts (project.notesFiles.at (file), read.reader, track);
+
+            if (conflicts.empty())
+                return true;
+
+            errorAt (value, where + ": " + file + " is also used on track " + singleQuoted (read.reader.id) + ", but the two tracks' "
+                                    "drum maps don't name its notes alike: " + conflicts + ". A file used on several tracks must mean the "
+                                    "same notes on each, so make the maps agree on these notes, or give this clip a file of its own");
+            return false;
         }
 
         void checkOverlaps (std::vector<PlacedClip>& placed, const std::string& trackWhere)

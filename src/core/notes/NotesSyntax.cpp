@@ -1,5 +1,6 @@
 #include "core/notes/NotesSyntax.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <numeric>
 
@@ -38,6 +39,11 @@ namespace
         }
 
         return value;
+    }
+
+    bool isDigits (std::string_view text)
+    {
+        return ! text.empty() && std::ranges::all_of (text, [] (char c) { return c >= '0' && c <= '9'; });
     }
 
     std::string quoted (std::string_view text)
@@ -268,6 +274,32 @@ bool isBlackKey (int pitch)
         case 1: case 3: case 6: case 8: case 10: return true;
         default: return false;
     }
+}
+
+Accidental namedSpelling (int pitch)
+{
+    return isBlackKey (pitch) ? Accidental::sharp : Accidental::natural;
+}
+
+bool looksLikeController (std::string_view text)
+{
+    return text == "pb" || text == "at" || (text.starts_with ("cc") && isDigits (text.substr (2)));
+}
+
+bool looksLikeLowercaseNoteName (std::string_view text)
+{
+    if (text.empty() || text[0] < 'a' || text[0] > 'g')
+        return false;
+
+    auto rest = text.substr (1);
+
+    if (rest.starts_with ('#') || rest.starts_with ('b'))
+        rest.remove_prefix (1);
+
+    if (rest.starts_with ('-'))
+        rest.remove_prefix (1);
+
+    return isDigits (rest);
 }
 
 //==============================================================================

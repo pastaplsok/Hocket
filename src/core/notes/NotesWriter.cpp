@@ -139,10 +139,20 @@ namespace
         return lines;
     }
 
-    std::string formatPitchField (const Line& line)
+    // By its drum name where the map has one (SPEC §5.2), otherwise its note name.
+    std::string pitchName (const Note& note, const DrumMap* drumMap)
+    {
+        if (drumMap != nullptr)
+            if (const auto* name = drumMap->nameOf (note.pitch))
+                return *name;
+
+        return formatPitch (note.pitch, note.spelling);
+    }
+
+    std::string formatPitchField (const Line& line, const DrumMap* drumMap)
     {
         if (line.notes.size() == 1)
-            return formatPitch (line.notes.front()->pitch, line.notes.front()->spelling);
+            return pitchName (*line.notes.front(), drumMap);
 
         std::string field = "[";
 
@@ -151,14 +161,14 @@ namespace
             if (field.size() > 1)
                 field += ' ';
 
-            field += formatPitch (note->pitch, note->spelling);
+            field += pitchName (*note, drumMap);
         }
 
         return field + "]";
     }
 }
 
-std::string write (const Clip& clip, Meter meter)
+std::string write (const Clip& clip, Meter meter, const DrumMap* drumMap)
 {
     assert (clip.lengthInBars >= 1);
 
@@ -184,7 +194,7 @@ std::string write (const Clip& clip, Meter meter)
 
         appendCommentLines (out, line.comments.leading);
         appendField (out, formatPosition (line.start, meter), positionWidth);
-        appendField (out, formatPitchField (line), pitchWidth);
+        appendField (out, formatPitchField (line, drumMap), pitchWidth);
         appendField (out, formatLength (line.length), lengthWidth);
         out += formatVelocity (line.velocity);
         appendTrailingComment (out, line.comments.trailing);

@@ -25,8 +25,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 |---|---|---|
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); two checks wait for the Magni (Loose ends) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
-| 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Next |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | Not started |
+| 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | Next |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
 | 6 | Sync: mix settings, tempo, time signature, seek and loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
@@ -82,24 +82,29 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Parser messages no longer say "Milestone 0": they say when the feature comes (`@swing`/`@ch` Milestone 3, controllers Milestone 6).
 - Not yet played: volume, pan, mute and solo reach the Edit in step 6. Until then `--play` says so when a project has any.
 
-**3. Drum tracks in the format** (SPEC §5.2)
-- Lee's decisions (2026-11-12), now in SPEC §5.2 and §8.4:
-  - **The map lives on the track** in `project.json` (name to note), so a project reads and validates without any kit present. A kit's manifest maps notes to samples, and seeds the track's map when the kit is assigned.
-  - **One list of standard names** on the General MIDI notes, in SPEC §5.2 (kick 36, snare 38, hat-closed 42, …). A drum track with no kit gets it; bundled kits use those names on those notes, and may add extra pieces on other notes. Notes with no map entry fall back to note names. The names in the list are mine: rename any before step 3 builds on them.
-  - **A file linked into several tracks:** an error when the tracks' maps disagree on a name the file uses, or one track's map lacks it. The message names the piece, the tracks and the notes. SPEC says it may later be relaxed to each track reading the file with its own map.
-- To build:
-  - The map in `project.json`, read, validated and written canonically; drum names in `.notes`, read and written through the track's map, with note names as the fallback.
-  - `hocket:drum-sampler`, with the name of a kit: `{"id", "type": "hocket:drum-sampler", "kit": "<name>"}`. The model only checks the name against the kits it's given; step 7 says where kits come from.
-  - The linked-file check, with its message.
-  - The same tests as step 2, plus drum names round-tripping through `write_clip`, and `--check` of a drum project with no kits installed.
-- To decide with Lee at the start of step 3 (my proposals in brackets):
-  - **How a drum track is marked:** its own track type, or a `"midi"` track that has a map. [`"type": "drums"`, with a required `"drumMap"`: keys stay required for each type, and a melodic track can't half-have a map.]
-  - **How notes are written in the map:** note names (`"kick": "C2"`) or numbers (`"kick": 36`). [Numbers. Drum charts disagree about octave names: Hocket's kick is C2 (C4 = 60), but many charts call it C1. General MIDI's numbers are what everyone, models included, knows for drums.]
-  - **One name per note in a map, as well as one note per name.** Otherwise the writer can't tell which name to write. [Yes; this also means a kit's extra pieces can't reuse a standard note, which SPEC already says.]
-  - **Canonical text for a linked file:** the rule covers names the file uses, but not a note the file writes as a note name. If one track's map names that note (`snare` on 38) and another's doesn't, the two tracks' canonical texts differ (`snare` against `D2`). [Widen the rule to every note in the file: all the tracks' maps give it the same name, or none does.]
-  - **Names that look like note names:** the parser takes a lowercase `c2` or `eb3` for a mistyped note name. [Map names may not have that form.]
-  - On a drum track, a note named in the map is always written by its name: `D2` becomes `snare`, as `Cb4` becomes `B3`. Drum names on a track with no map are an error that says so.
-  - Canonical order of the map in `project.json`: by note.
+**3. Drum tracks in the format** — done, with tests (SPEC v0.9, §4.4 and §5.2)
+- Lee's decisions (2026-11-12):
+  - The map lives on the track in `project.json`, so a project reads and validates without any kit present. One list of standard names on General MIDI's notes (SPEC §5.2), kept as written.
+  - A drums track is `"type": "drums"`, with a required `"drumMap"` of names to MIDI note numbers (`"kick": 36`). One note per name and one name per note.
+  - A note the map names is always written by its name (`D2` becomes `snare`). A drum name on a track with no map is an error that says so.
+  - A file linked into several tracks: every note in it has the same name in each track's map, or none does.
+  - Map names can't look like a lowercase note name (`c2`), a controller, `v` and a number (a velocity), or `ch` and a number (a MIDI channel).
+  - On a drums track, `write_clip`'s result lists the notes the map doesn't name, and says they only sound if the kit has a piece there.
+- Picked here, within those:
+  - Names are lowercase letters and digits in words joined by single hyphens, starting with a letter (so the parser can tell a name from a position or a number), at most 32 characters.
+  - In `project.json`, `drumMap` comes between `devices` and `clips`, by note; a drum sampler's `kit` after its `type`. Kit names are lowercase and hyphenated, like clip files, since a kit is a folder (SPEC §8.4).
+  - `hocket:drum-sampler` goes on drums tracks only; `hocket:synth` on either type. A map may be empty.
+  - A named note's spelling isn't kept: the model spells it sharp on a black key, so the parsed clip is the same however it was written.
+  - A track with no drum map names nothing, so a file shared between a `"midi"` track and a drums track is fine only while the map names none of its notes.
+- Done:
+  - `notes::DrumMap` (`core/notes/DrumMap.h`): the names both ways, `drumNameProblem` for the naming rules, `nearestNames` for "did you mean", and `standardDrumMap()`, SPEC's table. `core/Suggestions.h` has `editDistance`, moved out of the project reader.
+  - `notes::parse` and `notes::write` take the track's map. Errors for drum names: an unknown one gets "did you mean" and, in the first such error only, the map's names; `Kick` is told to be lowercase; a number like `36` is told its name and note name (on any track).
+  - `project.json`: drums tracks and their maps, `hocket:drum-sampler` and its `kit`, each with their own required keys, and errors for a `drumMap` or `kit` where it doesn't belong. A broken map stops its track's clip files being read, rather than piling up errors in them.
+  - The linked-file check in the reader and in `write_clip`, naming the notes, the names and the tracks (`project::drumNameConflicts`). Files are written with their first track's map (`drumMapOfFile`).
+  - The overview shows a drums track's kit and map (`kick=36, snare=38`); `read_clip` says where the names come from; `write_clip`'s description has drum names. The fingerprint changed, so `hocket-mcp` was reinstalled.
+  - `EditSync` gives a drum sampler no plugin, so a drums track is silent until step 7, and `--play` says so.
+  - `tests/fixtures/drum-project`: the standard map, a kit that doesn't exist, linked clips, a note the map doesn't name. It loads in canonical form, and `--check` passes on it in a non-ASCII folder.
+- Left for later: what a missing kit does (step 7); drum-map commands (step 4); `hocket-stress` on a drum clip (Loose ends).
 
 **4. Commands for the song's structure** (the bus)
 - Tracks: add, remove, rename, reorder, and set the instrument (`hocket:synth`, or `hocket:drum-sampler` with a kit). Clips: add one (with a new file, or linked to an existing one), move it (in time, or to another track), remove it, and make a linked clip unique. Also: tempo, time signature, a track's mix settings, and its drum map.
@@ -108,6 +113,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Gesture coalescing (SPEC §3.1), with the first continuous settings, volume and pan: a client marks where a gesture starts and ends, and its changes become one entry. Built and tested here; the GUI uses it in Milestone 2.
 - `Change` grows from `NotesChanged` (a clip file's notes) to what the sync, and later the GUI, need to know.
 - To decide: what assigning a kit does to a drum map that's been edited (renamed pieces, added ones): replace it with the kit's names, or keep the edits where the kit has the same notes.
+- Drum maps (step 3): an edit to a map, or a track's type, can't leave a file's tracks naming its notes differently (`project::drumNameConflicts`); refuse it, naming the file. A map edit never changes notes, only how they're written, so a renamed piece rewrites every clip using it. A drum sampler only goes on a drums track, and a new drums track with no kit gets `notes::standardDrumMap()`.
 - To decide: what a time-signature change keeps. Clip starts and notes are stored in ticks, and `@length` in bars, so a change from 4/4 to 6/8 either keeps clips at the same `bar.beat` (moving them in time) or at the same time (which can leave them off the bar lines). Clips' `@length` changes with the bar either way.
 - Tests: validation messages written for an LLM reader; undo and redo of each command; property tests on random command sequences (undoing everything gives the original back, and redoing everything gives the same project again).
 
@@ -130,6 +136,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Not Tracktion's `SamplerPlugin`, which locks and allocates on the audio thread (Known upstream issues).
 - Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (notes, files and levels, and names for any pieces beyond the standard ones), and installed next to the programs. A project names its kit; nothing is copied into the project. A test checks that every bundled kit uses the standard names on the standard notes (SPEC §5.2).
 - Tests use generated samples, not a real kit: hits land where the clip says, at the right level; a drum clip rewritten 20 times a second plays with no glitch, on the real-time harness with `MidiRecorder`.
+- To decide: what loading a project whose kit isn't installed does. [My proposal: it loads, as SPEC §4.4 says, `--play` and the overview say the kit is missing, and the track is silent.]
+- Then: `EditSync` creates the sampler (it creates nothing for one now), `--play`'s "is silent" note goes, and `write_clip`'s note about unnamed notes can say whether the kit has a piece on each.
 
 **8. The first bundled drum kit** (SPEC §8.4)
 - One kit now, in the style Lee picks. All three (acoustic, electronic/808-style, breakbeat/jungle) are in by Milestone 4.
@@ -146,27 +154,28 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Tests on a non-ASCII folder: atomic writes; save, load and save again byte-identical; recovery; outside changes.
 
 **10. MCP tools for all of it** (SPEC §6.4)
-- Tools for steps 4 and 9: tracks, clip placement, tempo and time signature, transport with seek and loop, and `save`. Also `patch_clip`, `history`'s author filter, and a `get_project_overview` that shows mix settings, links, drum maps and kits.
+- Tools for steps 4 and 9: tracks, clip placement, tempo and time signature, transport with seek and loop, and `save`. Also `patch_clip` and `history`'s author filter. The overview already shows mix settings, links, drum maps and kits.
 - The set is designed at the start of the step, small and expressive as SPEC §6.4 asks, and written into §6.4.
 - Descriptions, results and errors are written for an LLM reader. The fingerprint changes, so `hocket-mcp` must be installed again (CLAUDE.md).
 - API tests for each tool; the bridge's and stress client's tests updated.
 
 **11. Demo song, acceptance run, SPEC updates**
 - The acceptance check itself: starting from `--new`, Claude builds a song with drums while Lee listens. It's saved as `examples/m1-demo`.
-- `hocket-stress` and `Run-Acceptance.ps1` get a structural mode: clips moved and tracks muted during playback, silently, on clips left empty.
+- `hocket-stress` and `Run-Acceptance.ps1` get a structural mode: clips moved and tracks muted during playback, silently, on clips left empty. `hocket-stress` also needs to rewrite drum clips (Loose ends).
 - SPEC gets what Milestone 1 taught. A fresh-clone run.
 
 ## What exists
 - `src/core` (`hocket_core`, no JUCE):
-  - `notes/`: the `.notes` model, parser and canonical writer. A clip is at most 999 bars (`maxLengthInBars`). `Meter` is the time signature (numerator 1–32, denominator 2/4/8/16; ticks per beat, bar and sixteenths per beat), with `parseMeter`.
-  - `project/`: the `project.json` model, reader, writer, and lookups like `findClip`, `notesOf`, `clipsUsing` and `songEnd`. Each clip file's notes are kept once in `Project::notesFiles`, so linked clips share them. Tracks have volume, pan, mute and solo; a song ends by 1000.1 (`maxSongLengthInBars`). `ClipFileWatcher` for `--watch` watches each file once, and keeps trying a settled file it can't read yet, for up to 2 s.
+  - `notes/`: the `.notes` model, parser and canonical writer. A clip is at most 999 bars (`maxLengthInBars`). `Meter` is the time signature (numerator 1–32, denominator 2/4/8/16; ticks per beat, bar and sixteenths per beat), with `parseMeter`. `parse` and `write` take a drums track's `DrumMap` (names both ways, `drumNameProblem`, `nearestNames`, `standardDrumMap()`).
+  - `project/`: the `project.json` model, reader, writer, and lookups like `findClip`, `notesOf`, `clipsUsing`, `tracksUsing` and `songEnd`. Each clip file's notes are kept once in `Project::notesFiles`, so linked clips share them. Tracks are `midi` or `drums`, with volume, pan, mute and solo; a drums track has a `drumMap` (`drumMapOf`, and `drumMapOfFile` for a file's), and a drum sampler a `kit`. `drumNameConflicts` says where a linked file's tracks would name its notes differently. A song ends by 1000.1 (`maxSongLengthInBars`). `ClipFileWatcher` for `--watch` watches each file once, and keeps trying a settled file it can't read yet, for up to 2 s.
+  - `Suggestions`: `editDistance`, for "did you mean".
   - `units/`: values with units (`units::parse`/`format` for any `Quantity`; `units::volume()`), and pan (`parsePan`/`formatPan`).
   - `commands/CommandBus`: the only way to change a `project::Project`. Authors are `Author { name, session, label }`, compared by name + session. A write is a no-op when the clip's canonical text wouldn't change. Edits and change notices (`NotesChanged`) are per clip file, so a write reaches every linked clip. `interruptTransaction`, `openTransaction`, `changesTo` (the entries that changed a clip file); it also routes transport commands to the engine, and `isPlaying()` asks it.
   - `commands/WatchedSaves`: `--watch`'s saves as the person's `write_clip` to the file's first clip, with a warning when one replaces a change made some other way since the file and its notes last matched.
   - `Paths`: UTF-8 ⇄ path (`utf8FromPath` never throws: an unpaired UTF-16 surrogate becomes U+FFFD), `readTextFile`.
 - `src/platform` (`hocket_platform`): `Platform.h` with `Platform_windows.cpp` / `Platform_posix.cpp`: the command line as UTF-8 (`utf8Arguments`, used by both programs), binary stdin/stdout, secure random bytes, process ID and program name, "is this program still running", `%LOCALAPPDATA%`, `FileLock` (one holder at a time; on Windows nothing else can even read the file), and the TCP port probe. The POSIX file has never been compiled.
 - `src/engine` (`hocket_engine`):
-  - `EditSync` builds a Tracktion `Edit` from the bus's project in any time signature (a 4OSC for each `hocket:synth`), rewrites every Tracktion clip using a file on each `NotesChanged`, and is the bus's `Transport` (play loops the whole song). Mix settings don't reach it yet (step 6). Its clips don't use Tracktion's proxy sequences, so they play through `LoopingMidiNode`, which ends the notes a rewrite takes away (Gotchas). `stoppedByItself()` tells a stop Tracktion made from one a transport command asked for.
+  - `EditSync` builds a Tracktion `Edit` from the bus's project in any time signature (a 4OSC for each `hocket:synth`, nothing yet for a `hocket:drum-sampler`), rewrites every Tracktion clip using a file on each `NotesChanged`, and is the bus's `Transport` (play loops the whole song). Mix settings don't reach it yet (step 6). Its clips don't use Tracktion's proxy sequences, so they play through `LoopingMidiNode`, which ends the notes a rewrite takes away (Gotchas). `stoppedByItself()` tells a stop Tracktion made from one a transport command asked for.
   - `PlaybackDevice.h`:
     - `openDevice (DeviceChoice)`, from `--driver`, `--device`, `--sample-rate` and `--buffer-size`. It refuses a rate or size the device doesn't offer before changing anything, and catches a driver that carries on as it was. Errors suggest a name when exactly one contains the text given.
     - `listDevices` for `--list-devices`. Only the driver or device named has its rates and sizes listed, since that loads the driver. `formatNumbers` writes evenly spaced runs as ranges.
@@ -175,7 +184,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - `Handler`: JSON-RPC in, reply out; `hello` with the token and the build check (error -32002 for another build); per-client state; interrupts on disconnect and in `checkIdle()`. It never throws: anything thrown while handling a request is answered with -32603.
   - `Protocol`: what both ends share: `protocolVersion` (bump it for changes to `hello` or the formats), `defaultIdleTimeout` (10 minutes), `hocketVersion()`, `buildFingerprint()` (FNV-1a of the protocol version and `toolDefinitions()`), and `makeSessionId()` for clients.
   - `Client`: a blocking IXWebSocket client, one request at a time; a late response to a timed-out request is dropped. Used by hocket-mcp and hocket-stress.
-  - `Tools`: the 9 Milestone 0 tools, their definitions and argument checks. The overview and `read_clip` show mix settings, linked clips, and what a beat is outside x/4.
+  - `Tools`: the 9 Milestone 0 tools, their definitions and argument checks. The overview and `read_clip` show mix settings, linked clips, drum maps and kits, and what a beat is outside x/4. On a drums track, `write_clip` lists the notes the map doesn't name.
   - `TextChanges`: write_clip's "stored differently" summary.
   - `Server`: IXWebSocket glue; posts every message to the message thread.
   - `TokenFile`: `api.json` read/write, `makeToken`, `runningInstance`, `instanceLockFile` (`api.lock`, next to it).
@@ -195,9 +204,9 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - The checks: the tests (with the engine stress test's numbers); `--play` loops; the MCP path as Claude Code runs it; `hocket-stress`; a clean Ctrl+C (exit code 0, the `stopped` line, the token file removed) with the driver's xrun count, and the late callbacks as a note.
   - What it makes of a run's end is `Get-StopResults` in `AcceptanceChecks.ps1`, tested by `tests/acceptance`.
   - `-Driver`/`-Device` go to `--play`. `-FreshClone` (with `-CloneFrom`) also clones and builds with CLAUDE.md's commands. `Send-CtrlC.ps1` stops `--play` the way Ctrl+C does.
-- Tests (`ctest`, 11 tests, 40 to 60 s, most of it the stress tests running in real time):
-  - `tests/core` (`hocket_core_tests`): 105 cases. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
-  - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 36 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
+- Tests (`ctest`, 13 tests, 40 to 60 s, most of it the stress tests running in real time; 48 s on 2026-11-12):
+  - `tests/core` (`hocket_core_tests`): 124 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
+  - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 37 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
     - Edit structure (6/8, linked clips, a track with no device); offline renders (notes start where `.notes` says, in five time signatures; `write_clip` and undo move them); a stop no command asked for.
     - `PlaybackDevice` against a fake JUCE device type that a test can unplug, and whose rates, sizes and stubbornness a test picks; it never opens a real device. Choosing rates and sizes, suggestions, `listDevices`, `formatNumbers`.
     - Live playback through Tracktion's hosted audio device: looping, a mid-loop rewrite heard by the next pass, a sounding note swapped for another (the old one ends, the new one waits for the next pass), a held note not retriggered by a rewrite, plus a control showing that check catches a retrigger.
@@ -205,11 +214,12 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
       - 200 comment-only rewrites at 20/s to a held note. Checked: no block over its 5.8 ms budget (Release only), and no gap, retrigger or click against the first, untouched pass. A dropped block, a whole block of silence, fails it too. A control damages a copy to show each check can fail.
       - 21 rewrites that move a note, with no block over budget, and the last rewrite is what plays.
       - `hocket-stress --vary`'s rewrites of the demo line (200, every other one an octave up), then an empty clip: silence afterwards, and no note left on in the MIDI reaching 4OSC. `MidiRecorder`, a test plugin put ahead of 4OSC, records that MIDI without allocating.
-  - `tests/api` (`hocket_api_tests`): 52 cases. The handler driven directly (hello, the token and the build check, every tool, argument errors, interrupts on disconnect and idle with a fake clock, notifications included, internal errors), the fingerprint, `TextChanges`, the token file, the instance lock and other platform functions, and end-to-end tests: an IXWebSocket client talking to the server on 127.0.0.1 (ports from 46300), with the test thread as the message thread.
+  - `tests/api` (`hocket_api_tests`): 53 cases. The handler driven directly (hello, the token and the build check, every tool, argument errors, interrupts on disconnect and idle with a fake clock, notifications included, internal errors), the fingerprint, `TextChanges`, the token file, the instance lock and other platform functions, and end-to-end tests: an IXWebSocket client talking to the server on 127.0.0.1 (ports from 46300), with the test thread as the message thread.
   - `tests/mcp` (`hocket_mcp_tests`): 10 cases. The bridge against a real `Server` and `Handler` on a thread of their own (`FakeHocket`, ports from 46320, token file in a non-ASCII temp folder). Covers: tools listed without Hocket; not running (no file, a stale file, nothing listening); write, undo and history as the client's own author; names and labels; a restart (same session, note once); another build; a timeout with a late response dropped; protocol errors.
   - `hocket_mcp_stdio` (CTest, `tests/mcp/StdioTest.cmake`): runs `hocket-mcp.exe` on piped stdin with a byte order mark, a blank line and a CRLF line. Checks one LF-terminated JSON reply per request and nothing else on stdout, and that the non-ASCII `--token-file` and `--label` arrive intact.
   - `tests/stress` (`hocket_stress_tests`): 5 cases. The rewrites' text (steady and varied); a run against `FakeHocket` (ports from 46340): paced, all applied, the clip put back, the history; errors before starting; the summary. `hocket_stress_not_running` (CTest) runs the program with a non-ASCII `--token-file` that doesn't exist.
-  - `tests/app`: CTest end-to-end runs of `hocket-headless` on a non-ASCII folder.
+  - `tests/app`: CTest end-to-end runs of `hocket-headless` on a non-ASCII folder, the demo's and the drum fixture's.
+  - `tests/fixtures/drum-project`: a drums track with the standard map and a kit that doesn't exist, linked clips, and a bass track.
   - `tests/acceptance` (`acceptance_checks`, CTest, Windows PowerShell): `Get-StopResults` on made-up `--play` logs and exit codes: clean stops, xruns, a crash before and after the `stopped` line, a `--play` that stopped early or ignored Ctrl+C, a token file left behind.
   - `tests/common`: `TemporaryFolder.h` (non-ASCII temp folders) and `FakeHocket.h` (a bus, handler and API server on a thread of their own, plus a token file: a running Hocket, as far as a client can tell).
 - `examples/m0-demo`: 120 BPM, 4/4, one track `trk-bass` with a 4OSC `dev-bass-synth`, one 2-bar clip `clp-bass` at 1.1.
@@ -218,7 +228,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - IXWebSocket's threads only post to the message thread; the bus, handler, the server's connection map and `EditSync` are only used there; `Client`'s shared state is behind its mutex; the Ctrl+C flag is atomic.
 
 ## Set up on Lee's laptop
-`hocket-mcp.exe` is installed in `%LOCALAPPDATA%\Hocket\bin` and registered in Claude Code as `hocket` at user scope (API build `c4f35c9e10c86405`). Every Claude Code session gets the tools; they say "Hocket isn't running" until `--play` runs. After a change to the tools or the API, run CLAUDE.md's install command again and restart Claude Code sessions.
+`hocket-mcp.exe` is installed in `%LOCALAPPDATA%\Hocket\bin` and registered in Claude Code as `hocket` at user scope (API build `763b8f444d8d3b0e`). Every Claude Code session gets the tools; they say "Hocket isn't running" until `--play` runs. After a change to the tools or the API, run CLAUDE.md's install command again and restart Claude Code sessions.
 
 **To do when Lee sets up Claude Desktop** (not started; don't drop this):
 1. Register the installed `hocket-mcp.exe` in Claude Desktop's config. It should be `%APPDATA%\Claude\claude_desktop_config.json`, under `"mcpServers": { "hocket": { "command": "<path to hocket-mcp.exe>" } }`; check against Claude Desktop's own docs. Then restart Claude Desktop.
@@ -239,6 +249,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
 - **FL Studio ASIO wouldn't start with headphones on the Realtek (2026-11-12).** "Device didn't start correctly", with or without `--sample-rate`. Nothing else was using audio, FL Studio wasn't running, and Realtek ASIO opened fine straight after. Its output setting (`HKCU\Software\Image-Line\ASIO`, `outputEndPoint`) is blank, which seems to mean the Windows default output. Without `--sample-rate`, Hocket opens it the same way as in Milestone 0, when it worked on the Magni, so the setup is more likely than step 1's code.
   - **The check, at the Magni:** `--play <a silent project> --driver ASIO --device "FL Studio ASIO" --sample-rate 44100`. A silent project is a copy of `examples\m0-demo` with `clips\bass.notes` cut down to its `@length 2bars` line. If it opens, the problem was the headphones setup; if not, look at Hocket. Either way this puts the saved device back, which is Realtek ASIO at 44100 Hz until then.
+- **`hocket-stress` can't rewrite a drum clip yet (2026-11-12).** It parses `read_clip`'s text with no drum map, so a clip using drum names fails with "couldn't parse clip". The fix: pass the names through untouched, since the default rewrite only adds a comment, and have `--vary` move notes by name or give it the map. Step 11's structural mode is the time to do it.
 - **A per-track stereo width control** (added 2026-11-12; planned for Milestone 5, and needed by Milestone 7's stereo audio). It runs from 0% (mono) to 100% (unchanged), and applies before pan. Pan is a balance control that never moves one channel's content to the other side (SPEC §4.4). So width is how a stereo source, like a stereo recording, gets narrowed before it's panned. To decide then: its `project.json` key and how it's written, e.g. `"width": "100%"` through the units parser.
 - **No text selection while `--play` runs (2026-11-04).** Not being fixed: the GUI replaces `--play` for everyday use (decided 2026-11-06). The cause is the review's fix #10, which turns QuickEdit off, so that a selection can't pause console output and with it the message thread. Shift+drag should still select in Windows Terminal. If it's ever needed: write console output from a thread of its own, through a queue, and leave QuickEdit as the user had it.
 - **One unexplained stress-test failure:** on 2026-10-30, a Debug run of the two stress tests failed once, right after a full Debug `ctest`. My filter hid the error, so which check failed isn't known. It didn't happen again in 23 Debug runs since: 11 of the stress tests alone, and 12 of the whole engine suite. If it shows up again, keep the whole output.

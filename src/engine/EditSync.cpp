@@ -36,6 +36,10 @@ namespace
             // 4OSC stands in for Hocket's synth until Milestone 4 (SPEC §8.1).
             case project::DeviceType::synth:
                 return edit.getPluginCache().createNewPlugin (tracktion::FourOscPlugin::xmlTypeName, {});
+
+            // Hocket's drum sampler is Milestone 1's step 7; until then its track is silent.
+            case project::DeviceType::drumSampler:
+                return {};
         }
 
         return {};
@@ -91,8 +95,11 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
         track.setName (juceString (source.name));
 
         // Ahead of the volume/pan and meter plugins Tracktion puts on every track.
-        for (std::size_t d = 0; d < source.devices.size(); ++d)
-            track.pluginList.insertPlugin (createDevice (*tracktionEdit, source.devices[d]), static_cast<int> (d), nullptr);
+        int pluginIndex = 0;
+
+        for (const auto& device : source.devices)
+            if (auto plugin = createDevice (*tracktionEdit, device))
+                track.pluginList.insertPlugin (plugin, pluginIndex++, nullptr);
 
         for (const auto& clip : source.clips)
         {

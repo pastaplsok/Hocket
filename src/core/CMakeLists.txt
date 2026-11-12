@@ -3,10 +3,14 @@
 add_library(hocket_core STATIC
     Paths.cpp
     Paths.h
+    Suggestions.cpp
+    Suggestions.h
     commands/CommandBus.cpp
     commands/CommandBus.h
     commands/WatchedSaves.cpp
     commands/WatchedSaves.h
+    notes/DrumMap.cpp
+    notes/DrumMap.h
     notes/Notes.h
     notes/NotesParser.cpp
     notes/NotesSyntax.cpp

@@ -1,0 +1,112 @@
+{
+  "format": "hocket-project",
+  "formatVersion": 0,
+  "tempo": 174,
+  "timeSignature": "4/4",
+  "tracks": [
+    {
+      "id": "trk-drums",
+      "name": "Drums",
+      "type": "drums",
+      "volume": "0dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
+      "devices": [
+        {
+          "id": "dev-drums-kit",
+          "type": "hocket:drum-sampler",
+          "kit": "acoustic"
+        }
+      ],
+      "drumMap": {
+        "kick2": 35,
+        "kick": 36,
+        "sidestick": 37,
+        "snare": 38,
+        "clap": 39,
+        "snare2": 40,
+        "tom-floor-low": 41,
+        "hat-closed": 42,
+        "tom-floor-high": 43,
+        "hat-pedal": 44,
+        "tom-low": 45,
+        "hat-open": 46,
+        "tom-mid-low": 47,
+        "tom-mid-high": 48,
+        "crash": 49,
+        "tom-high": 50,
+        "ride": 51,
+        "china": 52,
+        "ride-bell": 53,
+        "tambourine": 54,
+        "splash": 55,
+        "cowbell": 56,
+        "crash2": 57,
+        "vibraslap": 58,
+        "ride2": 59,
+        "bongo-high": 60,
+        "bongo-low": 61,
+        "conga-high-mute": 62,
+        "conga-high-open": 63,
+        "conga-low": 64,
+        "timbale-high": 65,
+        "timbale-low": 66,
+        "agogo-high": 67,
+        "agogo-low": 68,
+        "cabasa": 69,
+        "maracas": 70,
+        "whistle-short": 71,
+        "whistle-long": 72,
+        "guiro-short": 73,
+        "guiro-long": 74,
+        "claves": 75,
+        "woodblock-high": 76,
+        "woodblock-low": 77,
+        "cuica-mute": 78,
+        "cuica-open": 79,
+        "triangle-mute": 80,
+        "triangle-open": 81
+      },
+      "clips": [
+        {
+          "id": "clp-beat",
+          "file": "clips/beat.notes",
+          "start": "1.1"
+        },
+        {
+          "id": "clp-beat-2",
+          "file": "clips/beat.notes",
+          "start": "2.1"
+        },
+        {
+          "id": "clp-fill",
+          "file": "clips/fill.notes",
+          "start": "3.1"
+        }
+      ]
+    },
+    {
+      "id": "trk-bass",
+      "name": "Bass",
+      "type": "midi",
+      "volume": "-3dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
+      "devices": [
+        {
+          "id": "dev-bass-synth",
+          "type": "hocket:synth"
+        }
+      ],
+      "clips": [
+        {
+          "id": "clp-bass",
+          "file": "clips/bass.notes",
+          "start": "1.1"
+        }
+      ]
+    }
+  ]
+}

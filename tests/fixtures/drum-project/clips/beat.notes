@@ -1,0 +1,12 @@
+# two-step
+@length 1bar
+
+1.1      [kick hat-closed]  1/16  v110
+1.1.3    hat-closed  1/16  v70
+1.2      [snare hat-closed]  1/16  v100
+1.2.3    hat-closed  1/16  v70
+1.3.2    kick  1/16  v95
+1.3.3    hat-closed  1/16  v70
+1.4      [snare hat-closed]  1/16  v100
+1.4.3    snare 1/16  v28  # ghost
+1.4.4    hat-open  1/16  v80

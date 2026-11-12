@@ -60,33 +60,26 @@ namespace
         return ! text.empty() && std::ranges::all_of (text, [] (char c) { return c >= '0' && c <= '9'; });
     }
 
-    // "cc74", "pb", "at" (channel aftertouch): SPEC §5
-    bool looksLikeController (std::string_view text)
+    bool isLowercaseLetter (char c)
     {
-        return text == "pb" || text == "at" || (text.starts_with ("cc") && isDigits (text.substr (2)));
+        return c >= 'a' && c <= 'z';
     }
 
-    // e.g. "c2", "f#4", "bb3": a note name with a lowercase letter
-    bool looksLikeLowercaseNote (std::string_view text)
+    std::string lowercase (std::string_view text)
     {
-        if (text.empty() || text[0] < 'a' || text[0] > 'g')
-            return false;
+        std::string result (text);
 
-        auto rest = text.substr (1);
+        for (auto& c : result)
+            if (c >= 'A' && c <= 'Z')
+                c = static_cast<char> (c - 'A' + 'a');
 
-        if (rest.starts_with ('#') || rest.starts_with ('b'))
-            rest.remove_prefix (1);
-
-        if (rest.starts_with ('-'))
-            rest.remove_prefix (1);
-
-        return isDigits (rest);
+        return result;
     }
 
     class Parser
     {
     public:
-        explicit Parser (Meter meterToUse) : meter (meterToUse) {}
+        Parser (Meter meterToUse, const DrumMap* drumMapToUse) : meter (meterToUse), drumMap (drumMapToUse) {}
 
         ParseResult run (std::string_view text)
         {
@@ -141,6 +134,8 @@ namespace
         };
 
         Meter meter;
+        const DrumMap* drumMap;       // a drums track's; nullptr on other tracks
+        bool listedDrumNames = false; // whether an error has listed the drum map's names yet
         Clip clip;
         std::vector<Diagnostic> errors;
         std::vector<std::string> pendingComments; // full-line comments waiting for the next line
@@ -381,37 +376,115 @@ namespace
 
         bool parseOnePitch (const Field& field, int lineNumber, std::vector<std::pair<SpelledPitch, int>>& pitches)
         {
-            if (looksLikeController (field.text))
+            const auto text = field.text;
+
+            if (looksLikeController (text))
             {
                 error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb', 'at') aren't supported yet (they come in Milestone 6); only note lines like ")
                                                      + noteLineExample);
                 return false;
             }
 
-            if (looksLikeLowercaseNote (field.text))
+            if (looksLikeLowercaseNoteName (text))
             {
-                error (lineNumber, field.column, quoted (field.text) + " isn't a note name: note names start with an uppercase letter, e.g. 'C2'. "
-                                                                         "Lowercase names are drum-map names, which aren't supported yet");
+                error (lineNumber, field.column, quoted (text) + " isn't a note name: note names start with an uppercase letter, e.g. 'C2'");
                 return false;
             }
 
-            if (! field.text.empty() && field.text[0] >= 'a' && field.text[0] <= 'z')
+            // Any other lowercase word is a drum name (SPEC §5.2).
+            if (isLowercaseLetter (text.front()))
             {
-                error (lineNumber, field.column, quoted (field.text) + " looks like a drum-map name; drum maps aren't supported yet, "
-                                                                         "so use a note name such as 'C1'");
-                return false;
+                const auto note = drumMap != nullptr ? drumMap->noteOf (text) : std::nullopt;
+
+                if (! note)
+                {
+                    error (lineNumber, field.column, unknownDrumName (text));
+                    return false;
+                }
+
+                pitches.push_back ({ { *note, namedSpelling (*note) }, field.column });
+                return true;
             }
 
-            const auto pitch = parsePitch (field.text);
+            auto pitch = parsePitch (text);
 
             if (! pitch.value)
             {
-                error (lineNumber, field.column, pitch.error);
+                error (lineNumber, field.column, notAPitch (text, pitch.error));
                 return false;
             }
 
+            // The writer writes this note's name, so its spelling can't be kept.
+            if (drumMap != nullptr && drumMap->nameOf (pitch.value->pitch) != nullptr)
+                pitch.value->spelling = namedSpelling (pitch.value->pitch);
+
             pitches.push_back ({ *pitch.value, field.column });
             return true;
+        }
+
+        std::string unknownDrumName (std::string_view name)
+        {
+            if (drumMap == nullptr)
+                return quoted (name) + " looks like a drum name, but this clip's track has no drum map, so write a note name such as 'C2'. "
+                                       "Drum names work on \"drums\" tracks, whose drum map names their notes";
+
+            if (drumMap->empty())
+                return quoted (name) + " isn't in this track's drum map, which is empty, so write a note name such as 'C2'";
+
+            auto message = quoted (name) + " isn't in this track's drum map";
+
+            if (const auto nearest = drumMap->nearestNames (name); ! nearest.empty())
+            {
+                message += " (did you mean ";
+
+                for (std::size_t i = 0; i < nearest.size(); ++i)
+                    message += (i == 0 ? "" : " or ") + quoted (nearest[i]);
+
+                message += "?)";
+            }
+
+            // The whole list only once: a map can have dozens of names.
+            if (std::exchange (listedDrumNames, true))
+                return message + "; the first error like this one lists its names";
+
+            std::string names;
+
+            for (const auto& [note, known] : drumMap->byNote())
+                names += (names.empty() ? "" : ", ") + known;
+
+            return message + ". Its names are " + names + ". A note the map doesn't name is written as a note name, e.g. 'A#5'";
+        }
+
+        // parsePitch's error, or a better one for two likely mistakes.
+        std::string notAPitch (std::string_view text, const std::string& pitchError) const
+        {
+            // "Kick" on a drums track
+            if (drumMap != nullptr)
+                if (const auto lower = lowercase (text); drumMap->noteOf (lower))
+                    return quoted (text) + " isn't a drum name: drum names are lowercase, so write " + quoted (lower);
+
+            // A MIDI note number, e.g. "36"
+            if (isDigits (text) && text.size() <= 3 && std::stoi (std::string (text)) <= 127)
+            {
+                const auto note = std::stoi (std::string (text));
+                const auto* name = drumMap != nullptr ? drumMap->nameOf (note) : nullptr;
+
+                return quoted (text) + " isn't a note name: clips write notes by name, not number. Note " + std::string (text) + " is "
+                     + (name != nullptr ? quoted (*name) + " in this track's drum map, or " : std::string())
+                     + quoted (formatPitch (note, Accidental::sharp)) + " (C4 is 60)";
+            }
+
+            return pitchError;
+        }
+
+        // How messages name a note: by its drum name, where it has one.
+        std::string pitchText (const Note& note) const
+        {
+            if (drumMap != nullptr)
+                if (const auto* name = drumMap->nameOf (note.pitch))
+                    return *name;
+
+            return formatPitch (note.pitch, note.spelling);
         }
 
         // Checks that need the whole file: the clip length and duplicate notes.
@@ -437,7 +510,7 @@ namespace
             {
                 const auto& note = clip.notes[i];
                 const auto& source = noteSources[i];
-                const auto name = formatPitch (note.pitch, note.spelling);
+                const auto name = pitchText (note);
                 const auto position = formatPosition (note.start, meter);
 
                 if (note.start >= maxLengthInBars * ticksPerBar)
@@ -461,9 +534,9 @@ namespace
     };
 }
 
-ParseResult parse (std::string_view text, Meter meter)
+ParseResult parse (std::string_view text, Meter meter, const DrumMap* drumMap)
 {
-    return Parser (meter).run (text);
+    return Parser (meter, drumMap).run (text);
 }
 
 std::string formatDiagnostic (const Diagnostic& diagnostic, std::string_view sourceName)

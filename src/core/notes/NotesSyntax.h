@@ -49,4 +49,10 @@ namespace hocket::notes
     std::string formatVelocity (int velocity);
 
     bool isBlackKey (int pitch);
+
+    // "cc74", "pb", "at" (channel aftertouch): a controller line's second field.
+    bool looksLikeController (std::string_view text);
+
+    // A note name written with a lowercase letter: "c2", "eb3", "f#4", "b-1".
+    bool looksLikeLowercaseNoteName (std::string_view text);
 }

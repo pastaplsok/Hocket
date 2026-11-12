@@ -103,12 +103,15 @@ Result CommandBus::runTransportCommand (const Command& command)
 
 Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits, std::string& description) const
 {
-    const auto* clip = project::findClip (currentProject, command.clipId);
+    const project::Track* clipTrack = nullptr;
+    const auto* clip = project::findClip (currentProject, command.clipId, &clipTrack);
 
     if (clip == nullptr)
         return { false, "write_clip: " + project::unknownClipMessage (currentProject, command.clipId, "write_clip") };
 
-    auto parsed = notes::parse (command.notes, currentProject.meter);
+    // A drums track's clips are read with its drum map (SPEC §5.2).
+    const auto* drumMap = project::drumMapOf (*clipTrack);
+    auto parsed = notes::parse (command.notes, currentProject.meter, drumMap);
 
     if (! parsed.clip)
     {
@@ -178,10 +181,23 @@ Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits,
                             + ", so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
     }
 
+    // A file used on several tracks must mean the same notes on each, so their
+    // drum maps must name the new notes alike (SPEC §5.2).
+    for (const auto* track : project::tracksUsing (currentProject, clip->file))
+    {
+        if (track == clipTrack)
+            continue;
+
+        if (const auto conflicts = project::drumNameConflicts (*parsed.clip, *clipTrack, *track); ! conflicts.empty())
+            return { false, "write_clip: " + clip->file + " is used on tracks " + clipTrack->id + " and " + track->id
+                                + ", and their drum maps don't name these notes alike: " + conflicts + ". A file used on several tracks "
+                                  "must mean the same notes on each, so nothing was changed. Leave those notes out, or make the maps agree" };
+    }
+
     // Compared in canonical form: the parser keeps notes and comments where the
     // text had them, so two texts that write out the same can parse differently,
     // e.g. a client sending back read_clip's text for a clip loaded from looser text.
-    if (notes::write (*parsed.clip, meter) == notes::write (project::notesOf (currentProject, *clip), meter))
+    if (notes::write (*parsed.clip, meter, drumMap) == notes::write (project::notesOf (currentProject, *clip), meter, drumMap))
         return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
 
     description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
