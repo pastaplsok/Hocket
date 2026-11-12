@@ -3,6 +3,7 @@ add_executable(hocket_core_tests
     ClipFileWatcherTests.cpp
     CommandBusPropertyTests.cpp
     CommandBusTests.cpp
+    CommandSequenceTests.cpp
     DrumMapTests.cpp
     GestureTests.cpp
     JsonTextTests.cpp

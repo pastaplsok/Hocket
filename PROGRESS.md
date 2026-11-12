@@ -26,8 +26,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 to 7 of 8 done |
-| 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | Done (2026-11-12) |
+| 5 | Sync: tracks and clips added, moved and removed during playback | Next |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
 | 8 | The first bundled drum kit | Not started |
@@ -153,7 +153,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
      - `SetInstrument { track, instrument }`: none, or one. Changing only a drum sampler's kit keeps its device and ID; another kind of device gets a new ID and the history says which it replaced. Setting a kit only names it until step 7.
      - `SetDrumMap { track, entries }` replaces a drums track's map whole, built with the reader's `buildDrumMap`, so every problem is listed at once. The history says what changed (`renamed snare2 to rim`, `moved clap from 39 to 41`, `added perc (82)`, `removed snare (38)`; after four, "and N more changes"), and the result names the clips now written differently. A file shared with another track must still mean the same notes on each.
   7. Gestures. Done (in `CommandBus`, tests in `GestureTests.cpp`): `SetTempo` and `SetMix` take a `gesture` ID. The bus remembers the one entry a gesture may still merge into; a merge keeps the entry's inverse (the value before the first step) and takes the latest step's edits and description, and the entry goes when the two match. Any other new entry, undo or redo ends it; inside a transaction, steps just join the transaction. Each step still announces its change, so the engine follows the drag. Edits gained `==` for this.
-  8. Random command sequences.
+  8. Random command sequences. Done (`CommandSequenceTests.cpp`): 200 seeds of 40 steps, every project command with valid and invalid arguments, plus undos and redos. A refused command changes nothing; after any other, every clip's file is in the project and nothing else is, and the project writes, reads back and writes the same. Undoing everything gives the original, and redoing everything the same end state. Each command kind is applied and refused at least 20 times; it runs in about a second.
+- No client sends these commands yet (step 10), and `EditSync` still only handles `NotesChanged` (steps 5 and 6).
 - Tests:
   - Each command: success, its history description, undo, redo, and every error message's wording.
   - In a transaction, and split by another author's edit.
@@ -218,7 +219,10 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - `project/Rules`: the rules a valid project keeps, shared by the reader and the bus (step 4).
   - `Suggestions`: `editDistance`, for "did you mean".
   - `units/`: values with units (`units::parse`/`format` for any `Quantity`; `units::volume()`), and pan (`parsePan`/`formatPan`).
-  - `commands/CommandBus`: the only way to change a `project::Project`. Authors are `Author { name, session, label }`, compared by name + session. A write is a no-op when the clip's canonical text wouldn't change. Edits and change notices (`NotesChanged`) are per clip file, so a write reaches every linked clip. `interruptTransaction`, `openTransaction`, `changesTo` (the entries that changed a clip file); it also routes transport commands to the engine, and `isPlaying()` asks it.
+  - `commands/CommandBus`: the only way to change a `project::Project`. Authors are `Author { name, session, label }`, compared by name + session. A command that changes nothing adds no entry. `interruptTransaction`, `openTransaction`, `changesTo` (the entries that changed a clip file's text: its notes, or how they're written); gestures merge into one entry (SPEC §3.1); it also routes transport commands to the engine, and `isPlaying()` asks it.
+  - `commands/Commands.h`: the commands. `WriteClip`; `SetTempo`, `SetTimeSignature`; `AddTrack`, `RemoveTrack`, `RenameTrack`, `MoveTrack` (by a neighbour's ID), `SetMix`, `SetInstrument`, `SetDrumMap`; `AddClip` (empty, text, linked, copy), `MoveClip`, `RemoveClip`, `MakeClipUnique`; `Play`, `Stop`. Values are written as project.json writes them.
+  - `commands/Planning.h`: each command validated against the project and planned into edits (`SongCommands.cpp`, `TrackCommands.cpp`, `ClipCommands.cpp`). Errors start with what was being done ("add a clip: ...").
+  - `commands/Edits.h`: ten edits with exact inverses, which history entries keep. `commands/Changes.h`: change notices by ID, delivered once a command's edits have all applied.
   - `commands/WatchedSaves`: `--watch`'s saves as the person's `write_clip` to the file's first clip, with a warning when one replaces a change made some other way since the file and its notes last matched.
   - `Paths`: UTF-8 ⇄ path (`utf8FromPath` never throws: an unpaired UTF-16 surrogate becomes U+FFFD), `readTextFile`.
 - `src/platform` (`hocket_platform`): `Platform.h` with `Platform_windows.cpp` / `Platform_posix.cpp`: the command line as UTF-8 (`utf8Arguments`, used by both programs), binary stdin/stdout, secure random bytes, process ID and program name, "is this program still running", `%LOCALAPPDATA%`, `FileLock` (one holder at a time; on Windows nothing else can even read the file), and the TCP port probe. The POSIX file has never been compiled.
@@ -253,7 +257,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - What it makes of a run's end is `Get-StopResults` in `AcceptanceChecks.ps1`, tested by `tests/acceptance`.
   - `-Driver`/`-Device` go to `--play`. `-FreshClone` (with `-CloneFrom`) also clones and builds with CLAUDE.md's commands. `Send-CtrlC.ps1` stops `--play` the way Ctrl+C does.
 - Tests (`ctest`, 13 tests, 40 to 60 s, most of it the stress tests running in real time; 48 s on 2026-11-12):
-  - `tests/core` (`hocket_core_tests`): 167 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
+  - `tests/core` (`hocket_core_tests`): 168 cases, drum maps and drum clips among them, with property tests through the standard map. It links `hocket_platform` for `FileLock`, which holds a clip file the way an editor might.
   - `tests/engine` (`hocket_engine_tests`, own main, one shared Tracktion `Engine`): 37 cases, about 40 s (the whole `ctest` took 46 s on 2026-11-12). It took 53 s once, on 2026-11-06, with the laptop busy (47% CPU load, 2.4 GB of memory free): the time went to the live tests, about 3.7 s each instead of 0.5 s.
     - Edit structure (6/8, linked clips, a track with no device); offline renders (notes start where `.notes` says, in five time signatures; `write_clip` and undo move them); a stop no command asked for.
     - `PlaybackDevice` against a fake JUCE device type that a test can unplug, and whose rates, sizes and stubbornness a test picks; it never opens a real device. Choosing rates and sizes, suggestions, `listDevices`, `formatNumbers`.
@@ -319,8 +323,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Replies time out after 30 s, and `hello` uses the same limit. `render_section` and the analysis tools (Milestone 8) need longer, or progress notifications.
   - Supported MCP versions are 2024-11-05 to 2025-11-25; a client asking for a newer one is offered 2025-11-25. Claude Code 2.1.314 asks for 2025-11-25, but its MCP log calls that `"protocolEra": "legacy"`, so a newer era exists. Check what it changes before a future Claude Code stops accepting the old one.
   - A refused connection to a port on 127.0.0.1 takes about 2 s on Windows. It only happens when the token file names a running Hocket that isn't listening.
-- **Command bus:** continuous-gesture coalescing (SPEC §3.1) comes with volume and pan, the first continuous settings (Milestone 1's step 4). SPEC §6.4 has no MCP `redo`; if one is added, it gets the same author check as `undo`, applied to whoever did the undo.
-- **Sync coverage:** `EditSync` handles `NotesChanged` only, and asserts that clips are never added or removed (Milestone 1's steps 5 and 6). Each new command that changes the project needs its sync code and a render or live test, and each new kind of change to the Edit a stress test (SPEC §3.3).
+- **Command bus:** a merged gesture's history entry takes its latest step's description, which names only what that step changed: a drag of volume and pan together whose last step moved only the volume says only "volume". SPEC §6.4 has no MCP `redo`; if one is added, it gets the same author check as `undo`, applied to whoever did the undo.
+- **Sync coverage:** `EditSync` handles `NotesChanged` only, and asserts that clips are never added or removed; step 4's other change notices are ignored until steps 5 and 6. Each new command that changes the project needs its sync code and a render or live test, and each new kind of change to the Edit a stress test (SPEC §3.3).
 - **Tracktion's undo** can't be fully off: JUCE keeps at least one step even at 0 levels, and some Tracktion setters (tempo, clip position) record into it. `EditSync` clears it after every sync; nothing ever undoes in the Edit.
 - **Render speed.** An offline render of a few seconds takes about 1.6 s (Release), and each live test about 0.5 s: most of the engine tests' time outside the stress tests. The cost looks like 4OSC building its wavetables each time it initialises ("Generating waves" in the Debug log). Hocket's synth replaces 4OSC in Milestone 4, before `render_section` and the analysis tools need speed (Milestone 8).
 - **Debug engine tests:** no JUCE assertions fire and JUCE's leak detector is silent, but the MSVC CRT reports two to four 16-byte blocks at exit, even when no test case runs. Not chased.
