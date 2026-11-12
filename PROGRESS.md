@@ -26,9 +26,9 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); two checks wait for the Magni (Loose ends) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | Next |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | Next; planned with Lee (2026-11-12) |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
-| 6 | Sync: mix settings, tempo, time signature, seek and loop region | Not started |
+| 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
 | 8 | The first bundled drum kit | Not started |
 | 9 | Saving, the recovery copy, and changes made outside Hocket | Not started |
@@ -106,19 +106,44 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - `tests/fixtures/drum-project`: the standard map, a kit that doesn't exist, linked clips, a note the map doesn't name. It loads in canonical form, and `--check` passes on it in a non-ASCII folder.
 - Left for later: a missing kit (step 7, decided); drum-map commands (step 4); `hocket-stress` on a drum clip (Loose ends).
 
-**4. Commands for the song's structure** (the bus)
-- Tracks: add, remove, rename, reorder, and set the instrument (`hocket:synth`, or `hocket:drum-sampler` with a kit). Clips: add one (with a new file, or linked to an existing one), move it (in time, or to another track), remove it, and make a linked clip unique. Also: tempo, time signature, a track's mix settings, and its drum map.
-- Transport: seek, loop region, loop on and off. Not history entries (SPEC §3.1).
-- Every edit has an inverse, so undo, redo, rollback and the split of another author's transaction work as they do for `write_clip`. History descriptions say what changed ("added track trk-drums", "moved clp-bass-2 to 9.1").
-- Gesture coalescing (SPEC §3.1), with the first continuous settings, volume and pan: a client marks where a gesture starts and ends, and its changes become one entry. Built and tested here; the GUI uses it in Milestone 2.
-- `Change` grows from `NotesChanged` (a clip file's notes) to what the sync, and later the GUI, need to know.
-- To decide: what assigning a kit does to a drum map that's been edited (renamed pieces, added ones): replace it with the kit's names, or keep the edits where the kit has the same notes.
-- Drum maps (step 3): an edit to a map, or a track's type, can't leave a file's tracks naming its notes differently (`project::drumNameConflicts`); refuse it, naming the file. A map edit never changes notes, only how they're written, so a renamed piece rewrites every clip using it. A drum sampler only goes on a drums track, and a new drums track with no kit gets `notes::standardDrumMap()`.
-- To decide: what a time-signature change keeps. Clip starts and notes are stored in ticks, and `@length` in bars, so a change from 4/4 to 6/8 either keeps clips at the same `bar.beat` (moving them in time) or at the same time (which can leave them off the bar lines). Clips' `@length` changes with the bar either way.
-- Tests: validation messages written for an LLM reader; undo and redo of each command; property tests on random command sequences (undoing everything gives the original back, and redoing everything gives the same project again).
+**4. Commands for the song's structure** (the bus) — planned with Lee on 2026-11-12; in SPEC §3.1, §4.1, §4.4, §5.2, §6.2 and §8.4
+- Lee's decisions (2026-11-12):
+  - **A time-signature change** keeps every clip and note at the same time. It's refused if any clip wouldn't then be a whole number of the new bars (`@length` is in bars), and the message lists those clips and lengths that would work. 4/4 to 2/4 or 8/8 always works; 4/4 to 3/4 works on an empty song, or when the clips happen to fit. When a change goes through and leaves clips starting off a bar line, the result lists them. The 999-bar limit applies in the new bars.
+  - **Kit assignment** (built in step 7, when kits have manifests): see step 7. In step 4, setting a kit only sets its name.
+  - **A track's type stays as created** in v1. Moving its clips to a new track of the other type does the same job.
+  - **Transport** (seek, loop region, loop on and off) moves to step 6, with its engine side. Step 4 is only project edits.
+  - **Commit after each part** of the build order below, updating PROGRESS.md as each part lands.
+- Commands, each validated with errors written for an LLM reader, undoable, and usable in transactions (split by another author's edit) just as `write_clip` is:
+  - **Song:** set the tempo (20–999); set the time signature.
+  - **Tracks:** add (type midi or drums, name, position, instrument); remove, with its clips; rename; move to a position; set the instrument (none, `hocket:synth`, or `hocket:drum-sampler` with a kit name, on drums tracks only); set the mix (any of volume, pan, mute, solo); set the drum map, replacing it whole.
+  - **Clips:** add one, which is empty with a length, from `.notes` text, linked to an existing clip, or a copy of one (the GUI's duplicate); move one to a new start, and optionally another track; remove one; make a linked clip unique, giving it its own copy of the file.
+  - **Resizing a clip is `write_clip` with a new `@length`.** No separate command. It changes every clip linked to the file, a longer `@length` must fit each of them (already checked), and a note can't start at or after the new end, so a shorter one must leave those notes out of the text. Milestone 2's drag: Loose ends.
+- How they behave (proposed by Claude, approved):
+  - **IDs:** a command may give the new track's or clip's ID; otherwise Hocket makes one from the name (`trk-drums`, then `trk-drums-2`), and the result says which. Device IDs come from the track's (`dev-drums-kit`, `dev-bass-synth`); mind the 64-character limit. A new clip's file is named after its ID (`clp-verse-2` → `clips/verse-2.notes`) unless the command names one, and so is a copy's or a clip made unique.
+  - **A new drums track** gets `notes::standardDrumMap()`.
+  - **Removing:** a file no clip uses any more leaves `notesFiles` (the invariant in `Project.h`), and undo brings it back. What saving does with it on disk is step 9's question.
+  - **The same rules as `project.json`:** IDs, clip file names, no overlaps on a track, the 999-bar song, drum names and kit names, the linked-file naming rule (moving a clip to another track, a map edit). The checks move out of `ProjectReader.cpp` into shared functions, so the reader and the bus can't drift apart. A map edit never changes notes, only how they're written, so renaming a piece rewrites every clip using it.
+  - **History descriptions** say what changed: `added track trk-drums "Drums"`, `removed track trk-x and its 3 clips`, `moved clp-bass-2 to 9.1 on trk-lead`, `set trk-bass's volume to -6dB`, `set the time signature to 6/8`, `changed trk-drums's drum map: renamed snare2 to rim`.
+  - **Gestures** (SPEC §3.1): a command can carry a gesture ID. Changes in a row with the same ID, from the same author, to the same setting merge into one entry, which undoes to the value before the first. A gesture that ends where it started leaves no entry. Undo, another author's edit or another setting ends the merge. No start or end calls, so nothing stays open if a client disconnects mid-drag. Volume, pan and tempo use it; the GUI in Milestone 2.
+  - **Change notices** grow from `NotesChanged` to name each track, clip and song setting that changed, for steps 5 and 6 to touch only that.
+  - No client can send these commands until step 10's tools, and steps 5 and 6 sync them, so `--play` can't fall out of step meanwhile. But `EditSync::notesChanged` asserts that every clip using a file is in the Edit: a `NotesChanged` for a clip a step 4 command added would trip it. Engine tests mustn't send structural commands to an `EditSync` before step 5.
+- Build order, committing each part:
+  1. The shared checks, out of the reader.
+  2. Edits with their inverses (`CommandBus::Edit` grows past `SetNotes`), and the change notices.
+  3. Song: tempo and time signature.
+  4. Tracks: add, remove, rename, move, mix.
+  5. Clips: add (each way), move, remove, make unique.
+  6. Drum maps and instruments.
+  7. Gestures.
+  8. Random command sequences.
+- Tests:
+  - Each command: success, its history description, undo, redo, and every error message's wording.
+  - In a transaction, and split by another author's edit.
+  - Random command sequences, invalid ones included, which must change nothing: after each command the project writes and reads back unchanged (`project::write`, then `parse`); undoing everything gives the original; redoing everything gives the same end state.
+  - Gestures: merging; another author or setting ending it; undo mid-gesture; a gesture back to its start leaving no entry.
 
 **5. Sync: tracks and clips**
-- `EditSync` brings the Edit in line with the model after each change, matching tracks, devices and clips by ID and touching only what changed. (It asserts today that clips are never added or removed.)
+- `EditSync` brings the Edit in line with the model after each change, matching tracks, devices and clips by ID and touching only what changed, using step 4's change notices. (It asserts today that clips are never added or removed: see step 4.)
 - Offline renders: tracks and clips added, moved, removed, linked, and undone.
 - Live tests: a change to one track doesn't stop or retrigger a held note on another, and a clip moved or removed ends its sounding notes.
 - A stress test for each kind of change: clips moved, added and removed, and tracks added and removed, 20 a second during playback. Each has Milestone 0's checks: no block over budget, no dropped block, gap, click, retriggered note or stuck note.
@@ -127,7 +152,8 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Volume and pan through Tracktion's volume plugin, smoothed so that a jump doesn't click; mute and solo (SPEC §4.4: a muted track stays silent when soloed). Then take out `--play`'s "doesn't apply ... yet" note.
 - The pan law is SPEC §4.4's balance law, which Tracktion doesn't have. Its linear law (`PanLawLinear`: left `g(1 − p)`, right `g(1 + p)`) gives it exactly: for a balance pan `b` to the right, use Tracktion pan `p = b / (2 − b)` and gain `g = volume / (1 + p)`, and the mirror image to the left. Set the law per plugin (`VolumeAndPanPlugin::panLaw`), not engine-wide. A render test checks both channels' gains at C, L50 and R100.
 - Tempo and time-signature changes during playback: the playhead keeps its place in bars, and held notes aren't retriggered.
-- Transport: seek, loop region, loop on and off.
+- Transport, moved here from step 4 (Lee, 2026-11-12): bus commands for seek, the loop region, and loop on and off; `commands::Transport` grows to match, and `EditSync` carries them out. Not history entries, and they don't split another author's transaction (SPEC §3.1).
+  - To decide: what play does with a loop region (today it loops the whole song), and whether the region is saved with the project or only lasts the session. SPEC §4.4 has no key for it.
 - Stress tests: volume and pan changed 20 a second with no click, mute toggled, tempo changed.
 
 **7. Hocket's drum sampler, and how kits work** (SPEC §8.1, §8.4)
@@ -137,7 +163,9 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (notes, files and levels, and names for any pieces beyond the standard ones), and installed next to the programs. A project names its kit; nothing is copied into the project. A test checks that every bundled kit uses the standard names on the standard notes (SPEC §5.2).
 - Tests use generated samples, not a real kit: hits land where the clip says, at the right level; a drum clip rewritten 20 times a second plays with no glitch, on the real-time harness with `MidiRecorder`.
 - A missing kit (Lee, 2026-11-12; SPEC §8.4): a project whose kit isn't installed still loads, `--play` and the overview say the kit is missing, and the track is silent.
-- Then: `EditSync` creates the sampler (it creates nothing for one now), `--play`'s "is silent" note goes, and `write_clip`'s note about unnamed notes can say whether the kit has a piece on each.
+- Assigning a kit (Lee, 2026-11-12; SPEC §5.2): every entry already in the track's map is kept, and the kit's names are added for notes and names the map doesn't use yet, so nothing renamed or added is lost. The result says which of the kit's pieces were added to the map, and which weren't and why (the note already has another name, or the name is on another note). A new drums track with a kit gets the standard map merged with the kit's names the same way.
+- What the kit can't play (Lee, 2026-11-12): a track's map will usually name more than its kit has (the standard map names 47 pieces). The overview and `write_clip`'s result should say which of the map's names, and which notes in the clip, the kit can't play. Here for `write_clip` and the overview as they are; step 10 keeps it in whatever tools replace them.
+- Then: `EditSync` creates the sampler (it creates nothing for one now), and `--play`'s "is silent" note goes. `write_clip`'s note about unnamed notes says, for each, whether the kit has a piece there.
 
 **8. The first bundled drum kit** (SPEC §8.4)
 - One kit now, in the style Lee picks. All three (acoustic, electronic/808-style, breakbeat/jungle) are in by Milestone 4.
@@ -155,6 +183,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 
 **10. MCP tools for all of it** (SPEC §6.4)
 - Tools for steps 4 and 9: tracks, clip placement, tempo and time signature, transport with seek and loop, and `save`. Also `patch_clip` and `history`'s author filter. The overview already shows mix settings, links, drum maps and kits.
+- Results carry what the commands say: the IDs Hocket made, clips a time-signature change left off a bar line, kit pieces added or not on assignment, and what a track's kit can't play (step 7). Resizing stays `write_clip` with a new `@length`; its description should say so.
 - The set is designed at the start of the step, small and expressive as SPEC §6.4 asks, and written into §6.4.
 - Descriptions, results and errors are written for an LLM reader. The fingerprint changes, so `hocket-mcp` must be installed again (CLAUDE.md).
 - API tests for each tool; the bridge's and stress client's tests updated.
@@ -249,6 +278,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Plenty of people only have ASIO4ALL, and if Hocket opens it with settings that don't work, picking better ones is Hocket's job.
 - **FL Studio ASIO wouldn't start with headphones on the Realtek (2026-11-12).** "Device didn't start correctly", with or without `--sample-rate`. Nothing else was using audio, FL Studio wasn't running, and Realtek ASIO opened fine straight after. Its output setting (`HKCU\Software\Image-Line\ASIO`, `outputEndPoint`) is blank, which seems to mean the Windows default output. Without `--sample-rate`, Hocket opens it the same way as in Milestone 0, when it worked on the Magni, so the setup is more likely than step 1's code.
   - **The check, at the Magni:** `--play <a silent project> --driver ASIO --device "FL Studio ASIO" --sample-rate 44100`. A silent project is a copy of `examples\m0-demo` with `clips\bass.notes` cut down to its `@length 2bars` line. If it opens, the problem was the headphones setup; if not, look at Hocket. Either way this puts the saved device back, which is Realtek ASIO at 44100 Hz until then.
+- **Milestone 2: dragging a clip shorter than its notes** (Lee asked for this to be noted, 2026-11-12). Resizing is `write_clip` with a new `@length` (step 4), and a note can't start at or after a clip's end (SPEC §5.4), so a drag that cuts into a clip's notes must either remove them or stop. To decide with Lee then. [Claude's proposal: the drag removes the notes that would start past the new end, in the same undo step, and the clip shows which while dragging; undo brings them back. On a linked clip it changes every clip using the file, so the drag should show that too. The alternative is a drag that stops at the bar holding the last note.] Notes that start before the new end but run past it are kept and cut off at playback.
 - **`hocket-stress` can't rewrite a drum clip yet (2026-11-12).** It parses `read_clip`'s text with no drum map, so a clip using drum names fails with "couldn't parse clip". The fix: pass the names through untouched, since the default rewrite only adds a comment, and have `--vary` move notes by name or give it the map. Step 11's structural mode is the time to do it.
 - **A per-track stereo width control** (added 2026-11-12; planned for Milestone 5, and needed by Milestone 7's stereo audio). It runs from 0% (mono) to 100% (unchanged), and applies before pan. Pan is a balance control that never moves one channel's content to the other side (SPEC §4.4). So width is how a stereo source, like a stereo recording, gets narrowed before it's panned. To decide then: its `project.json` key and how it's written, e.g. `"width": "100%"` through the units parser.
 - **No text selection while `--play` runs (2026-11-04).** Not being fixed: the GUI replaces `--play` for everyday use (decided 2026-11-06). The cause is the review's fix #10, which turns QuickEdit off, so that a selection can't pause console output and with it the message thread. Shift+drag should still select in Windows Terminal. If it's ever needed: write console output from a thread of its own, through a queue, and leave QuickEdit as the user had it.
@@ -294,6 +324,9 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 
 ## Gotchas picked up so far
 - **Line endings.** This machine has `core.autocrlf=true`. `.gitattributes` keeps `*.notes`, `*.auto` and `project.json` LF; add any new byte-compared fixture type there. In the Bash tool, `grep $'\r'` reports every line; count CRs with `tr -cd '\r' < file | wc -c`.
+  - Checked-out sources are CRLF, but files the Write tool creates are LF, so `git add` warns "LF will be replaced by CRLF". That's harmless: the repository stores LF either way. A script that edits a source file should keep its line endings (read with `newline=''` in Python).
+- **Building from the tools.** `cmake` isn't on PATH in the PowerShell tool. Prepend `C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin` to `$env:PATH` in the same command, then use CLAUDE.md's presets. Filter a build's output with `Select-String -Pattern "error|warning C"`: no output means a clean build.
+- **Test fixtures** live in `tests/fixtures/` (`HOCKET_FIXTURES_DIR` in the core tests); `examples/` is for projects meant to be played (`HOCKET_EXAMPLES_DIR`).
 - **Don't name a helper `quoted`.** Argument-dependent lookup finds `std::quoted` instead (error C2676). The code uses `singleQuoted` / `doubleQuoted`.
 - **nlohmann/json** is built with implicit conversions off: write `get<T>()`.
 - **Property tests against the bus** must canonicalize their reference copy with `*notes::parse (text).clip`, because the bus stores the parsed clip (spellings filled in), not the text. The parsed clip isn't canonical, though: notes and comments stay where the text had them. To ask whether two clips are the same, compare `notes::write` of each, as the bus does for "changes nothing".
@@ -314,6 +347,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - **The device manager takes the nearest rate it can get.** Asked for a rate or buffer size the device doesn't offer, `AudioDeviceManager::setAudioDeviceSetup` opens at the nearest one it does offer without an error, and Tracktion then saves that for the next run. `openDevice` checks against the open device's lists first.
 - **Custom Tracktion devices:** Tracktion lets a program register plugin types of its own with `PluginManager::createBuiltInType<T>()` (`tracktion_PluginManager.h:75`; the DemoRunner's `DistortionEffectDemo.h` is an example). Hocket's devices use it (Milestone 1's step 7 onwards).
 - **Shell edits of C++ string literals.** In the Bash tool, `\\n` inside a heredoc can arrive as a real newline, and other backslashes in Python string literals get mangled too (Windows paths). Make code and doc edits with the Edit tool.
+  - A heredoc whose text contains `\"` fails outright, even with a quoted delimiter: bash reports "unexpected EOF while looking for matching". For a scripted edit, write the script to the scratchpad with the Write tool and run it from there.
 - **Windows port probes** (measured on this machine; used by `platform::isTcpPortFree`):
   - A socket with `SO_EXCLUSIVEADDRUSE` bound to 0.0.0.0 fails against any listener on the port: loopback with `SO_REUSEADDR` (like IXWebSocket), loopback plain, or wildcard. It succeeds when the port has only `TIME_WAIT` connections.
   - A plain bind to 127.0.0.1 misses wildcard listeners, and a plain bind to 0.0.0.0 misses loopback ones.
@@ -336,6 +370,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - `git push` still goes through Git Credential Manager (the system gitconfig's `credential.helper manager`).
   - A Claude Code session started before `gh` was installed won't find it on PATH; use `C:\Program Files\GitHub CLI\gh.exe`.
 - **Deleting and discarding is Lee's job.** Claude Code's auto-mode check has blocked Claude from deleting temp folders and from `git checkout --` on a changed file. Give Lee the command to run in their own window instead (e.g. `Get-ChildItem $env:TEMP -Directory -Filter 'hocket-*' | Remove-Item -Recurse -Force` for the acceptance runs' leftovers).
+  - It also blocked a commit and push that Lee hadn't asked for in that message (2026-11-12, a CLAUDE.md edit). CLAUDE.md now says when Claude may commit and push on its own; if the check still blocks one, say so and give Lee the commands, or ask.
 - **Long background runs can be killed under memory pressure.** Claude Code stops background commands when the system runs critically low on memory, even if they aren't the cause. Check free memory before a fresh-clone run or a long build, and ask Lee about memory-heavy apps first.
 - **Debugging Tracktion's playback**, as with the stuck notes and the dropped block (2026-11-04 to 06):
   - Record what reaches the synth: `MidiRecorder` (`tests/engine/StressTests.cpp`) is a test plugin put ahead of 4OSC. It shows the MIDI the synth really gets, in order. Logging each block's `context.editTime` there shows skipped blocks too: a jump of exactly one block means the plugins never ran for it.

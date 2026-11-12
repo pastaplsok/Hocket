@@ -74,7 +74,10 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request of any kind and is **10 minutes**, long enough to cover a model thinking between calls. Erring long costs little: an open transaction never makes anyone's single edits wait. The client's next tool result says what happened to its transaction, even after a reconnect.
 - A command that changes nothing (e.g. writing a clip's current text again) adds no history entry. Clips are compared in canonical form (§5.4): text that the writer would write out the same as the clip changes nothing, however its lines are laid out or ordered.
 - **Continuous gestures coalesce.** A knob drag or fader move is one undo step, not one step per value change.
-- **Transport actions** (play, stop, seek, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
+  - A command can carry a gesture ID. Changes in a row with the same ID, from the same author, to the same setting become one history entry, which undoes to the value before the first of them.
+  - A gesture that ends where it started leaves no entry. Undo, another author's edit, or a change to another setting ends the gesture.
+  - There's no start or end call, so a client that disconnects mid-gesture leaves nothing open.
+- **Transport actions** (play, stop, seek, the loop region, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
 
 ### 3.2 Real-time safety
 - The audio thread is never touched directly by any client.
@@ -130,6 +133,7 @@ my-song/
 5. **Stable IDs, never list positions.** Every track, clip, device, and send has an ID (`trk-bass`, `dev-pad-filter`). References are by ID.
    - **IDs are permanent:** assigned once and never changed, even when the display name changes. Names are free text and can change at any time.
    - **Format:** a type prefix (`trk-`, `clp-`, `dev-`), then lowercase letters and digits in hyphen-separated words, at most 64 characters in all, the prefix included. Unique across the whole project, so an ID always names exactly one thing.
+   - **New IDs:** a client adding a track or clip may choose its ID; otherwise Hocket makes one from the name (`trk-drums`, then `trk-drums-2`), and the result says which. A device's ID comes from its track's (`dev-drums-kit`).
 6. **Canonical formatting.** The DAW always writes files in a fixed order and style so diffs are minimal and meaningful.
 7. **Binary stays out of text.** Audio, recordings, and plugin state live in their own files, referenced by relative path.
 8. **Schema versioning.** `project.json` carries a format version; the DAW migrates older projects forward. Version 0 is the pre-release format: it may change without migrations until v1, which starts at version 1.
@@ -190,14 +194,17 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Order:** `tracks` is in display order, `devices` in signal-chain order.
 - **Tempo** is in quarter notes per minute, whatever the time signature: 20–999.
 - **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion counts beats the same way, with its default engine behaviour, so its BPM is quarter notes per minute too.)
-- **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name. A clip's length comes from its `.notes` file (`@length`), never from `project.json`. Clips on one track may not overlap. A song is at most 999 bars long: every clip ends by 1000.1, so a typo in a start can't make a loop thousands of bars long.
+  - **Changing it** keeps every clip and note at the same time. Since `@length` is in bars, the change is refused if any clip wouldn't then be a whole number of the new bars, or the song would pass 999 of them; the message lists those clips and lengths that would work. So 4/4 to 2/4 or 8/8 always works, and 4/4 to 3/4 works on an empty song or when the clips fit. When a change goes through and leaves clips starting off a bar line, the result lists them.
+- **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name; a new clip's file is named after its ID (`clp-verse-2` → `clips/verse-2.notes`) unless the client names one. A clip's length comes from its `.notes` file (`@length`), never from `project.json`, so resizing a clip is a `write_clip` with a new `@length`. Clips on one track may not overlap. A song is at most 999 bars long: every clip ends by 1000.1, so a typo in a start can't make a loop thousands of bars long.
 - **Linked clips:** several clips may name the same `.notes` file, pattern-style as in FL Studio. They share its notes and its `@length`, so editing one edits them all (`write_clip` says which others changed). Hocket reads each file once and writes it once. A file linked into drum tracks must mean the same notes on each (§5.2).
+  - A linked clip can be made unique: it gets its own copy of the file.
+  - When no clip uses a file any more, its notes leave the project, and undo brings them back.
 - **Mix:** each track's `volume`, `pan`, `mute` and `solo`, always written.
   - **Values with units** are a number and then the unit: an optional sign, digits, and an optional decimal point with digits after it. The writer puts no space between number and unit; the reader accepts one. Units are case-sensitive (`dB`, not `db`). Device parameters use the same syntax from Milestone 4 (`"2.4kHz"`, `"12ms"`).
   - **`volume`** is in dB, from `"-96dB"` to `"+6dB"` in steps of 0.1 dB (finer values are rounded), or `"-infdB"` for silence. `"0dB"` leaves the signal as it is. The writer drops trailing zeros and puts `+` on boosts: `"-6.5dB"`, `"0dB"`, `"+3dB"`. The top is Tracktion's fader's.
   - **`pan`** is `"C"`, `"L1"` to `"L100"`, or `"R1"` to `"R100"`. **It's a balance control:** at C both channels pass unchanged. Panning towards one side leaves that side's channel unchanged and lowers the other linearly in gain, to silence at L100 or R100: at L50 the right channel is at half gain (−6 dB). So `"0dB"` and `"C"` together leave a track exactly as its instrument made it. Pan never moves one channel's content to the other side: at L100, anything only in the right channel is silent. (Tracktion's own pan laws either boost the near side or lower the centre, so the sync layer gets this one out of its linear law with a matching volume, in Milestone 1's step 6.)
   - **`mute` and `solo`** are `true` or `false`. While any track is soloed, only soloed tracks are heard; a muted track is silent even when soloed.
-- **Track types:** `"midi"`, whose clips use note names, or `"drums"`, whose clips use the names in its `drumMap` (§5.2):
+- **Track types:** `"midi"`, whose clips use note names, or `"drums"`, whose clips use the names in its `drumMap` (§5.2). A track's type is set when it's added and doesn't change in v1; moving its clips to a new track of the other type does the same job. A drums track:
   ```json
   {
     "id": "trk-drums",
@@ -282,7 +289,9 @@ A drums track (`"type": "drums"`) has a **drum map** in `project.json` that maps
 1.2      snare 1/16  v100
 1.2.3    snare 1/16  v28  # ghost note
 ```
-- **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples; assigning a kit to a track seeds the track's map with the kit's names. From then on the map is the project's own.
+- **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples. The map is the project's own: a kit only adds to it, when it's assigned.
+- **Assigning a kit** keeps every entry already in the track's map, and adds the kit's names for notes and names the map doesn't use yet, so nothing renamed or added is lost. The result says which of the kit's pieces were added, and which weren't and why (the note already has another name, or the name is on another note).
+- **What the kit can't play:** a map usually names more than its kit has (the standard list names 47 pieces). The overview and `write_clip`'s result say which of the map's names, and which notes in a clip, the track's kit can't play.
 - **Standard names:** one list of piece names on the General MIDI percussion notes (below). A drum track with no kit gets this list as its map. Bundled kits (§8.4) use these names on these notes, and may add extra pieces on other notes.
 - **Naming rules:** lowercase letters and digits in words joined by single hyphens, starting with a letter, at most 32 characters. One note per name and one name per note.
   - A name can't read as anything else on a note line: not a note name in lowercase (`c2`, `eb3`), a controller (`pb`, `at`, or `cc` and a number), a velocity (`v` and a number), or a MIDI channel (`ch` and a number).
@@ -358,6 +367,7 @@ Milestone 0's headless host has an opt-in exception for development, `--play --w
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.
 - `read_clip` returns the stored text in canonical form, verbatim, in a content block of its own; the clip's details (ID, track, file, position, length) come in the block before it. A model can edit the text and send it straight back.
 - `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date. On a drums track, it also lists the notes the drum map doesn't name (§5.2).
+- Resizing a clip is a `write_clip` with a new `@length`. On a linked clip it resizes every clip using the file, and a longer `@length` must fit each of them. A note can't start at or after the clip's end (§5.4), so a shorter `@length` must leave out the notes past it.
 
 ### 6.3 Transport
 - The DAW exposes a **localhost WebSocket API**, on 127.0.0.1 only. (Chosen over Windows named pipes: easier to debug and not platform-specific.)
@@ -480,7 +490,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
 - **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
 - **A missing kit:** a project whose kit isn't installed still loads. Hocket says the kit is missing, and the track is silent.
-- **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track seeds the track's drum map from it.
+- **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track adds its names to the track's drum map, keeping what's there (§5.2).
 
 ---
 
