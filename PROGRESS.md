@@ -99,12 +99,12 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Done:
   - `notes::DrumMap` (`core/notes/DrumMap.h`): the names both ways, `drumNameProblem` for the naming rules, `nearestNames` for "did you mean", and `standardDrumMap()`, SPEC's table. `core/Suggestions.h` has `editDistance`, moved out of the project reader.
   - `notes::parse` and `notes::write` take the track's map. Errors for drum names: an unknown one gets "did you mean" and, in the first such error only, the map's names; `Kick` is told to be lowercase; a number like `36` is told its name and note name (on any track).
-  - `project.json`: drums tracks and their maps, `hocket:drum-sampler` and its `kit`, each with their own required keys, and errors for a `drumMap` or `kit` where it doesn't belong. A broken map stops its track's clip files being read, rather than piling up errors in them.
+  - `project.json`: drums tracks and their maps, `hocket:drum-sampler` and its `kit`, each with their own required keys, and errors for a `drumMap` or `kit` where it doesn't belong. A broken or missing map stops its track's clip files being read, rather than piling up errors in them, and an error says which clips weren't checked, so a short list isn't taken to mean they're fine.
   - The linked-file check in the reader and in `write_clip`, naming the notes, the names and the tracks (`project::drumNameConflicts`). Files are written with their first track's map (`drumMapOfFile`).
   - The overview shows a drums track's kit and map (`kick=36, snare=38`); `read_clip` says where the names come from; `write_clip`'s description has drum names. The fingerprint changed, so `hocket-mcp` was reinstalled.
   - `EditSync` gives a drum sampler no plugin, so a drums track is silent until step 7, and `--play` says so.
   - `tests/fixtures/drum-project`: the standard map, a kit that doesn't exist, linked clips, a note the map doesn't name. It loads in canonical form, and `--check` passes on it in a non-ASCII folder.
-- Left for later: what a missing kit does (step 7); drum-map commands (step 4); `hocket-stress` on a drum clip (Loose ends).
+- Left for later: a missing kit (step 7, decided); drum-map commands (step 4); `hocket-stress` on a drum clip (Loose ends).
 
 **4. Commands for the song's structure** (the bus)
 - Tracks: add, remove, rename, reorder, and set the instrument (`hocket:synth`, or `hocket:drum-sampler` with a kit). Clips: add one (with a new file, or linked to an existing one), move it (in time, or to another track), remove it, and make a linked clip unique. Also: tempo, time signature, a track's mix settings, and its drum map.
@@ -136,7 +136,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - Not Tracktion's `SamplerPlugin`, which locks and allocates on the audio thread (Known upstream issues).
 - Kits: in the repository under `assets/kits/<name>/`, each with a small manifest (notes, files and levels, and names for any pieces beyond the standard ones), and installed next to the programs. A project names its kit; nothing is copied into the project. A test checks that every bundled kit uses the standard names on the standard notes (SPEC §5.2).
 - Tests use generated samples, not a real kit: hits land where the clip says, at the right level; a drum clip rewritten 20 times a second plays with no glitch, on the real-time harness with `MidiRecorder`.
-- To decide: what loading a project whose kit isn't installed does. [My proposal: it loads, as SPEC §4.4 says, `--play` and the overview say the kit is missing, and the track is silent.]
+- A missing kit (Lee, 2026-11-12; SPEC §8.4): a project whose kit isn't installed still loads, `--play` and the overview say the kit is missing, and the track is silent.
 - Then: `EditSync` creates the sampler (it creates nothing for one now), `--play`'s "is silent" note goes, and `write_clip`'s note about unnamed notes can say whether the kit has a piece on each.
 
 **8. The first bundled drum kit** (SPEC §8.4)

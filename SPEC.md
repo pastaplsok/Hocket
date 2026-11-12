@@ -479,6 +479,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
 - **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
+- **A missing kit:** a project whose kit isn't installed still loads. Hocket says the kit is missing, and the track is silent.
 - **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track seeds the track's drum map from it.
 
 ---

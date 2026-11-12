@@ -735,7 +735,7 @@ TEST_CASE ("errors in drum maps, drum samplers and drums tracks point at the val
     }
 }
 
-TEST_CASE ("a broken drum map stops its track's clips being read, rather than piling up errors in them")
+TEST_CASE ("a broken drum map stops its track's clips being read, rather than piling up errors in them, and says so")
 {
     auto files = drumFiles;
     files["project.json"] = replaced (drumProject, R"("kick": 36,
@@ -744,10 +744,50 @@ TEST_CASE ("a broken drum map stops its track's clips being read, rather than pi
         "snare": 38,
         "hat-closed")");
 
-    // trk-drums's map is broken; trk-perc, which reads the file instead, has kick.
+    // trk-drums's map is broken, so its clip isn't checked; trk-perc, which reads the file instead, has kick.
     const auto result = parseFiles (files);
-    REQUIRE (result.errors.size() == 1);
+    REQUIRE (result.errors.size() == 2);
     CHECK (contains (result.errors[0].message, "\"kick\" should be a MIDI note number"));
+    CHECK (result.errors[1].message == "track 'trk-drums': its clip clp-beat wasn't checked: its .notes file is read with the drum map, "
+                                       "so fix the drum map first, and then it will be");
+    CHECK (result.errors[1].line == positionOf (files["project.json"], R"([
+        {
+          "id": "clp-beat")").line);
+
+    // Several clips, and a missing map.
+    files = drumFiles;
+    files["project.json"] = replaced (replaced (drumProject, R"("devices": [],
+      "drumMap": {
+        "kick": 36,
+        "snare": 38,
+        "cowbell": 56
+      },)", R"("devices": [],)"), R"("start": "2.1"
+        })", R"("start": "2.1"
+        },
+        {
+          "id": "clp-perc-2",
+          "file": "clips/perc.notes",
+          "start": "3.1"
+        })");
+
+    const auto missing = parseFiles (files);
+    REQUIRE (missing.errors.size() == 2);
+    CHECK (contains (missing.errors[0].message, "track 'trk-perc': missing \"drumMap\""));
+    CHECK (missing.errors[1].message == "track 'trk-perc': its clips (clp-perc, clp-perc-2) weren't checked: their .notes files are read "
+                                        "with the drum map, so fix the drum map first, and then they will be");
+
+    // A track with no clips has nothing to say about them.
+    files["project.json"] = replaced (drumProject, R"("crash": 49)", R"("crash": 490)");
+    files["project.json"] = replaced (files["project.json"], R"(
+        {
+          "id": "clp-beat",
+          "file": "clips/beat.notes",
+          "start": "1.1"
+        }
+      )", "");
+    const auto noClips = parseFiles (files);
+    REQUIRE (noClips.errors.size() == 1);
+    CHECK (contains (noClips.errors[0].message, "\"crash\" should be a MIDI note number"));
 }
 
 TEST_CASE ("the drum project fixture loads from disk with no kits installed, and is in canonical form")

@@ -515,8 +515,14 @@ namespace
             std::vector<PlacedClip> placed;
 
             if (const auto* clips = readArray (value, "clips", where, keys))
+            {
                 for (std::size_t i = 0; i < clips->size(); ++i)
                     readClip ((*clips)[i], i, where, track, placed);
+
+                // So that a short list of errors isn't taken to mean the clips are fine.
+                if (drumMapFailed && ! clips->empty())
+                    errorAt (*clips, where + ": " + uncheckedClipsMessage (track, clips->size()));
+            }
 
             checkOverlaps (placed, where);
             project.tracks.push_back (std::move (track));
@@ -562,6 +568,23 @@ namespace
             }
 
             return value->get<bool>();
+        }
+
+        // For a track whose drum map has errors, so its clip files weren't read.
+        static std::string uncheckedClipsMessage (const Track& track, std::size_t count)
+        {
+            std::string ids;
+
+            for (const auto& clip : track.clips)
+                if (! clip.id.empty())
+                    ids += (ids.empty() ? "" : ", ") + clip.id;
+
+            if (count == 1)
+                return "its clip " + (ids.empty() ? std::string() : ids + " ") + "wasn't checked: its .notes file is read with the drum map, "
+                                                                                 "so fix the drum map first, and then it will be";
+
+            return "its clips " + (ids.empty() ? std::string() : "(" + ids + ") ") + "weren't checked: their .notes files are read with "
+                                                                                      "the drum map, so fix the drum map first, and then they will be";
         }
 
         // A drums track's names for its notes (SPEC §5.2): { "kick": 36, ... }.
