@@ -9,6 +9,7 @@ add_executable(hocket_core_tests
     PathsTests.cpp
     ProjectPropertyTests.cpp
     ProjectTests.cpp
+    UnitsTests.cpp
     WatchedSavesTests.cpp)
 
 # hocket_platform: its FileLock holds a file the way an editor might.

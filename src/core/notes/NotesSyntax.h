@@ -26,9 +26,15 @@ namespace hocket::notes
         bool operator== (const SpelledPitch&) const = default;
     };
 
-    // bar.beat[.sixteenth][+ticks], 1-based, e.g. "1.1", "2.3.2", "1.1+30"
+    // bar.beat[.sixteenth][+ticks], 1-based, e.g. "1.1", "2.3.2", "1.1+30".
+    // Beats are the time signature's (eighths in 6/8); the third number counts
+    // sixteenths within the beat, and +ticks are 960 per quarter note.
     Parsed<Ticks> parsePosition (std::string_view text, Meter meter);
     std::string formatPosition (Ticks position, Meter meter);
+
+    // "4/4", "6/8": the top number 1 to Meter::maxNumerator, the bottom one 2, 4, 8 or 16.
+    // Written with Meter::text().
+    Parsed<Meter> parseMeter (std::string_view text);
 
     // Uppercase letter, optional # or b, octave: "C2", "F#4", "Bb3", "C-1"
     Parsed<SpelledPitch> parsePitch (std::string_view text);

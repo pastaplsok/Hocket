@@ -74,7 +74,7 @@ namespace
     }
 
     // A valid clip: notes inside the clip, no two at the same position and pitch.
-    Clip randomClip (Rng& rng)
+    Clip randomClip (Rng& rng, Meter meter)
     {
         Clip clip;
         clip.lengthInBars = randomInt (rng, 1, 8);
@@ -82,7 +82,7 @@ namespace
         clip.lengthComments.trailing = oneIn (rng, 4) ? std::optional (randomCommentText (rng)) : std::nullopt;
         clip.footer = randomCommentLines (rng);
 
-        const Ticks clipEnd = clip.lengthInBars * Meter {}.ticksPerBar();
+        const Ticks clipEnd = clip.lengthInBars * meter.ticksPerBar();
         std::set<std::pair<Ticks, int>> used;
         const auto noteCount = randomInt (rng, 0, 40);
 
@@ -137,20 +137,25 @@ namespace
 
 TEST_CASE ("random clips survive write, parse, write unchanged")
 {
+    // Positions depend on the time signature: a bar, a beat, and sixteenths per beat.
+    static constexpr Meter meters[] = { {}, { 3, 4 }, { 6, 8 }, { 7, 8 }, { 12, 8 }, { 5, 16 }, { 3, 2 }, { 1, 4 }, { 32, 16 } };
+
     for (std::uint32_t seed = 1; seed <= 500; ++seed)
     {
         CAPTURE (seed);
+        const auto meter = meters[seed % std::size (meters)];
+        CAPTURE (meter.text());
         Rng rng { seed };
-        const auto clip = randomClip (rng);
+        const auto clip = randomClip (rng, meter);
 
-        const auto text = write (clip);
-        const auto reparsed = parse (text);
+        const auto text = write (clip, meter);
+        const auto reparsed = parse (text, meter);
 
         if (! reparsed.errors.empty())
             FAIL (formatDiagnostic (reparsed.errors.front(), "written") << "\n" << text);
 
         REQUIRE (reparsed.clip);
-        CHECK (write (*reparsed.clip) == text);
+        CHECK (write (*reparsed.clip, meter) == text);
         CHECK (musicOf (*reparsed.clip) == musicOf (clip));
         CHECK (reparsed.clip->lengthInBars == clip.lengthInBars);
         CHECK (reparsed.clip->header == clip.header);

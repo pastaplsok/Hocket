@@ -1,6 +1,7 @@
 #include "api/Tools.h"
 #include "api/TextChanges.h"
 #include "core/notes/NotesSyntax.h"
+#include "core/units/Units.h"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +37,18 @@ namespace
     std::string lengthText (int bars)
     {
         return std::to_string (bars) + (bars == 1 ? "bar" : "bars");
+    }
+
+    // " (linked with clp-b, clp-c)" for a clip whose file other clips use too; empty otherwise.
+    std::string linkedText (const project::Project& project, const project::Clip& clip)
+    {
+        std::string others;
+
+        for (const auto* other : project::clipsUsing (project, clip.file))
+            if (other != &clip)
+                others += (others.empty() ? "" : ", ") + other->id;
+
+        return others.empty() ? std::string() : " (linked with " + others + ")";
     }
 
     std::string tempoText (double tempo)
@@ -156,7 +169,12 @@ namespace
                             : *playing  ? std::string ("It's playing, on a loop.")
                                         : std::string ("It's stopped; transport play loops it.");
 
-        auto text = "Tempo " + tempoText (project.tempo) + " BPM, " + std::to_string (meter.beatsPerBar) + "/4. The song is "
+        // In 6/8, a beat (and so a position's second number) is an eighth note, but BPM still counts quarter notes.
+        const auto beats = meter.denominator == 4 ? std::string()
+                         : " (a beat is " + std::string (meter.denominator == 2 ? "a half" : meter.denominator == 8 ? "an eighth" : "a sixteenth")
+                               + " note; BPM counts quarter notes)";
+
+        auto text = "Tempo " + tempoText (project.tempo) + " BPM, " + meter.text() + beats + ". The song is "
                   + countText (static_cast<std::size_t> (end / meter.ticksPerBar()), "bar") + " long, from " + position (0) + " to "
                   + position (end) + ". " + playback + "\n\nTracks, in display order:\n";
 
@@ -165,7 +183,9 @@ namespace
 
         for (const auto& track : project.tracks)
         {
-            text += "- " + track.id + " " + doubleQuoted (track.name) + " (" + project::trackTypeName (track.type) + "), devices: ";
+            text += "- " + track.id + " " + doubleQuoted (track.name) + " (" + project::trackTypeName (track.type) + "; volume "
+                  + units::format (track.volume, units::volume()) + ", pan " + units::formatPan (track.pan) + (track.mute ? ", muted" : "")
+                  + (track.solo ? ", soloed" : "") + "), devices: ";
 
             for (std::size_t i = 0; i < track.devices.size(); ++i)
                 text += (i > 0 ? ", " : "") + track.devices[i].id + " (" + project::deviceTypeName (track.devices[i].type) + ")";
@@ -184,9 +204,12 @@ namespace
             std::ranges::stable_sort (clips, {}, &project::Clip::start);
 
             for (const auto* clip : clips)
-                text += "  - clip " + clip->id + ": " + position (clip->start) + " to " + position (project::clipEnd (*clip, meter))
-                      + " (@length " + lengthText (clip->content.lengthInBars) + "), " + countText (clip->content.notes.size(), "note")
-                      + ", file " + clip->file + "\n";
+            {
+                const auto& content = project::notesOf (project, *clip);
+                text += "  - clip " + clip->id + ": " + position (clip->start) + " to " + position (project::clipEnd (project, *clip))
+                      + " (@length " + lengthText (content.lengthInBars) + "), " + countText (content.notes.size(), "note")
+                      + ", file " + clip->file + linkedText (project, *clip) + "\n";
+            }
         }
 
         const auto history = call.bus.history();
@@ -221,15 +244,19 @@ namespace
         if (clip == nullptr)
             return failure ("read_clip: " + project::unknownClipMessage (project, clipId, "read_clip"));
 
-        const auto details = "clip " + clip->id + " on track " + track->id + " " + doubleQuoted (track->name) + "\n"
-                           + "file: " + clip->file + "\n"
-                           + "from " + notes::formatPosition (clip->start, project.meter) + " to "
-                           + notes::formatPosition (project::clipEnd (*clip, project.meter), project.meter)
-                           + " (@length " + lengthText (clip->content.lengthInBars) + "), " + countText (clip->content.notes.size(), "note") + "\n"
-                           + "The next block is the clip's .notes text, exactly as stored. To change the clip, "
-                             "edit that text and send all of it to write_clip.";
+        const auto& content = project::notesOf (project, *clip);
+        const auto linked = linkedText (project, *clip);
 
-        return { { details, notes::write (clip->content, project.meter) }, false };
+        const auto details = "clip " + clip->id + " on track " + track->id + " " + doubleQuoted (track->name) + "\n"
+                           + "file: " + clip->file + linked + "\n"
+                           + "from " + notes::formatPosition (clip->start, project.meter) + " to "
+                           + notes::formatPosition (project::clipEnd (project, *clip), project.meter)
+                           + " (@length " + lengthText (content.lengthInBars) + "), " + countText (content.notes.size(), "note") + "\n"
+                           + "The next block is the clip's .notes text, exactly as stored. To change the clip, "
+                             "edit that text and send all of it to write_clip"
+                           + (linked.empty() ? std::string (".") : std::string ("; its linked clips change with it, since they share the file."));
+
+        return { { details, notes::write (content, project.meter) }, false };
     }
 
     ToolResult writeClip (const Call& call)
@@ -246,7 +273,7 @@ namespace
             return failure (result.message);
 
         const auto& project = call.bus.project();
-        const auto stored = notes::write (project::findClip (project, clipId)->content, project.meter);
+        const auto stored = notes::write (project::notesOf (project, *project::findClip (project, clipId)), project.meter);
         const auto changes = describeChanges (sent, stored);
 
         return success (result.message + "\n"
@@ -377,13 +404,15 @@ namespace
                "\n"
                ".notes format: an @length line (\"@length 2bars\"), then one note per line: position, pitch, length, "
                "velocity, separated by spaces, e.g. \"1.3.3 Eb2 1/8 v95\".\n"
-               "- position: bar.beat[.sixteenth][+ticks], 1-based and relative to the clip start. 1.1 is the first beat; "
-               "2.3.3 is bar 2, beat 3, third sixteenth; +ticks adds 1/960ths of a beat.\n"
+               "- position: bar.beat[.sixteenth][+ticks], 1-based and relative to the clip start. A beat is the time "
+               "signature's: a quarter note in 4/4, an eighth in 6/8 (get_project_overview gives the signature). 1.1 is "
+               "the first beat; 2.3.2 is bar 2, beat 3, second sixteenth of that beat; +ticks adds ticks, 960 per quarter note.\n"
                "- pitch: note name and octave, e.g. C2, F#4, Bb3 (C4 is middle C). A chord is [C3 E3 G3].\n"
                "- length: a fraction of a whole note (1/4, 1/8, 3/16), a triplet (1/8t), or ticks (250tk).\n"
                "- velocity: v1 to v127, required on every line.\n"
                "- # starts a comment, kept as written.\n"
-               "Only 4/4 for now, and a clip is at most 999 bars. Not supported yet: controller lines (cc, pb, at for "
+               "Clips linked to this one share its .notes file, so they change too; the result names them. A clip, and "
+               "the whole song, is at most 999 bars long. Not supported yet: controller lines (cc, pb, at for "
                "aftertouch), @swing, @ch.",
                R"({
                     "type": "object",

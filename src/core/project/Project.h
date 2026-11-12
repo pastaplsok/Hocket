@@ -23,25 +23,30 @@ namespace hocket::project
         midi
     };
 
+    // The longest a song can be (SPEC §4.4): every clip ends by the end of
+    // this bar, so a typo in a clip's start can't make a loop thousands of bars long.
+    inline constexpr int maxSongLengthInBars = 999;
+
     enum class DeviceType
     {
-        fourOsc // Tracktion's built-in 4OSC synth, Milestone 0's stand-in (SPEC §10.0)
+        synth // "hocket:synth": Hocket's synth, with Tracktion's 4OSC standing in until Milestone 4 (SPEC §8.1)
     };
 
     struct Device
     {
         std::string id;
-        DeviceType type = DeviceType::fourOsc;
+        DeviceType type = DeviceType::synth;
 
         bool operator== (const Device&) const = default;
     };
 
+    // A clip's notes are its file's: clips naming the same file are linked,
+    // and share them (SPEC §4.4). They're kept once, in Project::notesFiles.
     struct Clip
     {
         std::string id;
         std::string file;       // relative to the project folder, e.g. "clips/bass-verse.notes"
         notes::Ticks start = 0; // from the start of the song
-        notes::Clip content;    // the parsed .notes file
 
         bool operator== (const Clip&) const = default;
     };
@@ -51,17 +56,27 @@ namespace hocket::project
         std::string id;
         std::string name;
         TrackType type = TrackType::midi;
-        std::vector<Device> devices; // in signal-chain order
+        std::vector<Device> devices; // in signal-chain order; none, or one instrument
         std::vector<Clip> clips;
+
+        // The mix (SPEC §4.4). Written in units: units::volume(), units::formatPan().
+        double volume = 0.0; // dB, in steps of 0.1; 0 leaves the signal as it is, -infinity is silence
+        int pan = 0;         // -100 (L100) to 100 (R100); a balance control, so 0 (C) leaves the signal as it is
+        bool mute = false;
+        bool solo = false;
 
         bool operator== (const Track&) const = default;
     };
 
     struct Project
     {
-        double tempo = 120.0; // BPM
-        notes::Meter meter;   // 4/4 only in Milestone 0
+        double tempo = 120.0;      // quarter notes per minute, whatever the time signature
+        notes::Meter meter;        // one time signature for the whole song
         std::vector<Track> tracks; // in display order
+
+        // Each clip file's notes, by file ("clips/bass-verse.notes"). Every
+        // clip's file is here, and nothing else is.
+        std::map<std::string, notes::Clip, std::less<>> notesFiles;
 
         bool operator== (const Project&) const = default;
     };
@@ -93,14 +108,18 @@ namespace hocket::project
     LoadResult load (const std::filesystem::path& folder);
 
     // Every file of the project in canonical form, keyed by relative path:
-    // "project.json" and each clip's .notes file. The project must be valid.
+    // "project.json" and each clip file, once however many clips use it. The
+    // project must be valid.
     std::map<std::string, std::string> write (const Project& project);
 
     // "clips/bass.notes:6:10: message", "project.json: message", or just the message.
     std::string formatDiagnostic (const Diagnostic& diagnostic);
 
-    // Where a clip ends: its start plus its @length.
-    notes::Ticks clipEnd (const Clip& clip, notes::Meter meter);
+    // A clip's notes: its file's.
+    const notes::Clip& notesOf (const Project& project, const Clip& clip);
+
+    // Where a clip ends: its start plus its file's @length.
+    notes::Ticks clipEnd (const Project& project, const Clip& clip);
 
     // The end of the last clip, rounded up to a bar line; at least one bar. The
     // song plays from 1.1 to here.
@@ -109,11 +128,14 @@ namespace hocket::project
     // The clip with this ID, or nullptr. Sets *track to the clip's track if asked.
     const Clip* findClip (const Project& project, std::string_view id, const Track** track = nullptr);
 
+    // The clips whose notes are this file's, in track order, then clip order.
+    std::vector<const Clip*> clipsUsing (const Project& project, std::string_view file);
+
     // Why `id` isn't a clip, for a tool's error message: "there's no clip 'clp-x';
     // the clips are 'clp-a', 'clp-b'", or a hint when it's a track or device ID.
     std::string unknownClipMessage (const Project& project, std::string_view id, std::string_view toolName);
 
-    // As written in project.json: "midi", "tracktion:4osc".
+    // As written in project.json: "midi", "hocket:synth".
     const char* trackTypeName (TrackType type);
     const char* deviceTypeName (DeviceType type);
 }

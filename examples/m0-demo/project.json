@@ -8,10 +8,14 @@
       "id": "trk-bass",
       "name": "Bass",
       "type": "midi",
+      "volume": "0dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
       "devices": [
         {
           "id": "dev-bass-synth",
-          "type": "tracktion:4osc"
+          "type": "hocket:synth"
         }
       ],
       "clips": [

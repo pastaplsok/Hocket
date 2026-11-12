@@ -144,6 +144,89 @@ TEST_CASE ("an empty project loops one bar")
     CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (2.0));
 }
 
+TEST_CASE ("in 6/8, Tracktion's beats are eighths and its BPM counts quarter notes, as Hocket's do")
+{
+    // At 120 BPM, a 6/8 bar is six eighths of 0.25 s.
+    const notes::Meter sixEight { 6, 8 };
+    commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", sixEight.ticksPerBar(), "@length 2bars\n\n1.4 C2 1/8 v100\n2.6 G2 1/4 v90\n") }) },
+                                          120.0, sixEight));
+    engine::EditSync sync (testEngine(), bus);
+    auto& edit = sync.edit();
+
+    CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 6);
+    CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 8);
+    CHECK (edit.tempoSequence.getTempo (0)->getBpm() == 120.0);
+
+    auto& clip = clipNamed (edit, "clp-bass");
+    CHECK (clip.getPosition().getStart().inSeconds() == doctest::Approx (1.5));
+    CHECK (clip.getPosition().getLength().inSeconds() == doctest::Approx (3.0));
+
+    REQUIRE (clip.getSequence().getNumNotes() == 2);
+    const auto* first = clip.getSequence().getNotes()[0];
+    const auto* second = clip.getSequence().getNotes()[1];
+    CHECK (first->getStartBeat().inBeats() == doctest::Approx (3.0));   // 1.4: three eighths in
+    CHECK (first->getLengthBeats().inBeats() == doctest::Approx (1.0)); // an eighth
+    CHECK (second->getStartBeat().inBeats() == doctest::Approx (11.0)); // 2.6
+    CHECK (second->getLengthBeats().inBeats() == doctest::Approx (2.0)); // a quarter is two eighths
+
+    // The clip ends at 4.1, 4.5 s in.
+    CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (4.5));
+}
+
+TEST_CASE ("linked clips play their file's notes, and a write to one changes them all")
+{
+    const auto riff = makeClip ("clp-riff", 0, "@length 1bar\n\n1.1 C3 1/4 v100\n");
+
+    commands::CommandBus bus (makeProject ({
+        makeTrack ("trk-bass", "Bass", { riff, linkedClip ("clp-riff-again", 2 * bar, riff) }),
+        makeTrack ("trk-lead", "Lead", { linkedClip ("clp-riff-lead", bar, riff), makeClip ("clp-lead", 3 * bar, "@length 1bar\n") }),
+    }));
+    engine::EditSync sync (testEngine(), bus);
+    auto& edit = sync.edit();
+
+    for (const auto* name : { "clp-riff", "clp-riff-again", "clp-riff-lead" })
+    {
+        INFO (name);
+        REQUIRE (clipNamed (edit, name).getSequence().getNumNotes() == 1);
+        CHECK (clipNamed (edit, name).getSequence().getNotes()[0]->getNoteNumber() == 48);
+    }
+
+    REQUIRE (bus.execute (commands::WriteClip { "clp-riff-again", "@length 2bars\n\n1.1 E3 1/4 v100\n2.1 G3 1/4 v100\n" }, testing::claude).ok);
+
+    for (const auto* name : { "clp-riff", "clp-riff-again", "clp-riff-lead" })
+    {
+        INFO (name);
+        auto& clip = clipNamed (edit, name);
+        REQUIRE (clip.getSequence().getNumNotes() == 2);
+        CHECK (clip.getSequence().getNotes()[0]->getNoteNumber() == 52);
+        CHECK (clip.getPosition().getLength().inSeconds() == doctest::Approx (4.0));
+    }
+
+    CHECK (clipNamed (edit, "clp-lead").getSequence().getNumNotes() == 0);
+    CHECK (clipNamed (edit, "clp-riff-lead").getPosition().getStart().inSeconds() == doctest::Approx (2.0));
+
+    // The loop runs to the end of the last clip: clp-riff-again, now 3.1 to 5.1.
+    CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (8.0));
+
+    REQUIRE (bus.undo (testing::claude, commands::UndoScope::callersOwn).ok);
+
+    for (const auto* name : { "clp-riff", "clp-riff-again", "clp-riff-lead" })
+        CHECK (clipNamed (edit, name).getSequence().getNumNotes() == 1);
+}
+
+TEST_CASE ("a track with no device gets no instrument")
+{
+    auto project = makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, "@length 1bar\n\n1.1 C2 1/4 v100\n") }) });
+    project.tracks[0].devices.clear();
+    commands::CommandBus bus (std::move (project));
+    engine::EditSync sync (testEngine(), bus);
+
+    const auto tracks = tracktion::getAudioTracks (sync.edit());
+    REQUIRE (tracks.size() == 1);
+    CHECK (tracks[0]->pluginList.getPluginsOfType<tracktion::FourOscPlugin>().isEmpty());
+    CHECK (tracks[0]->getClips().size() == 1);
+}
+
 TEST_CASE ("play and stop go through the bus to the Edit's transport")
 {
     commands::CommandBus bus (twoTracks());

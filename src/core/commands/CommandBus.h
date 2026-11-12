@@ -18,7 +18,8 @@
 
 namespace hocket::commands
 {
-    // Replaces a clip's notes with new .notes text (SPEC §6.2).
+    // Replaces a clip's notes with new .notes text (SPEC §6.2). The notes are
+    // its file's, so clips linked to it change too.
     struct WriteClip
     {
         std::string clipId;
@@ -95,12 +96,13 @@ namespace hocket::commands
     };
 
     // What changed in the project, so the engine can update just that (SPEC §3.3).
-    struct ClipContentChanged
+    // A clip file's notes: every clip that uses the file changed.
+    struct NotesChanged
     {
-        std::string clipId;
+        std::string file;
     };
 
-    using Change = std::variant<ClipContentChanged>;
+    using Change = std::variant<NotesChanged>;
 
     // Whose changes an undo may take back. The GUI undoes anything; AI clients
     // undo only their own changes unless they pass force (SPEC §3.1).
@@ -137,8 +139,8 @@ namespace hocket::commands
         // Newest first. An open transaction's edits aren't listed until they're committed.
         std::vector<HistoryEntry> history() const;
 
-        // The entries in history() that changed this clip, newest first.
-        std::vector<HistoryEntry> changesTo (std::string_view clipId) const;
+        // The entries in history() that changed this clip file's notes, newest first.
+        std::vector<HistoryEntry> changesTo (std::string_view file) const;
 
         std::optional<OpenTransaction> openTransaction() const;
 
@@ -155,13 +157,13 @@ namespace hocket::commands
         std::optional<bool> isPlaying() const;
 
     private:
-        struct SetClipContent
+        struct SetNotes
         {
-            std::string clipId;
+            std::string file;
             notes::Clip content;
         };
 
-        using Edit = std::variant<SetClipContent>;
+        using Edit = std::variant<SetNotes>;
 
         struct Entry
         {

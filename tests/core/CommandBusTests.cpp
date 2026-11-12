@@ -9,36 +9,6 @@ namespace
 {
     constexpr notes::Ticks bar = 3840;
 
-    project::Clip makeClip (std::string id, std::string file, notes::Ticks start, std::string_view notesText)
-    {
-        auto parsed = notes::parse (notesText);
-        REQUIRE (parsed.clip);
-        return { std::move (id), std::move (file), start, std::move (*parsed.clip) };
-    }
-
-    // One track: clp-a is bars 1-2, clp-b starts at bar 5.
-    project::Project makeProject()
-    {
-        project::Track bass { "trk-bass", "Bass", project::TrackType::midi, { { "dev-bass-synth", project::DeviceType::fourOsc } }, {} };
-        bass.clips.push_back (makeClip ("clp-a", "clips/a.notes", 0, "@length 2bars\n\n1.1 C2 1/4 v100\n"));
-        bass.clips.push_back (makeClip ("clp-b", "clips/b.notes", 4 * bar, "@length 1bar\n\n1.1 G1 1/4 v100\n"));
-
-        project::Project project;
-        project.tracks.push_back (std::move (bass));
-        return project;
-    }
-
-    const notes::Clip& contentOf (const CommandBus& bus, std::string_view clipId)
-    {
-        for (const auto& track : bus.project().tracks)
-            for (const auto& clip : track.clips)
-                if (clip.id == clipId)
-                    return clip.content;
-
-        FAIL ("no clip " << clipId);
-        throw;
-    }
-
     notes::Clip parsed (std::string_view text)
     {
         auto result = notes::parse (text);
@@ -46,17 +16,43 @@ namespace
         return *result.clip;
     }
 
+    // Adds a clip to the track, and its file's notes to the project.
+    void addClip (project::Project& project, project::Track& track, std::string id, std::string file, notes::Ticks start,
+                  std::string_view notesText)
+    {
+        project.notesFiles[file] = parsed (notesText);
+        track.clips.push_back ({ std::move (id), std::move (file), start });
+    }
+
+    // One track: clp-a is bars 1-2, clp-b starts at bar 5.
+    project::Project makeProject()
+    {
+        project::Project project;
+        project::Track bass { "trk-bass", "Bass", project::TrackType::midi, { { "dev-bass-synth", project::DeviceType::synth } }, {} };
+        addClip (project, bass, "clp-a", "clips/a.notes", 0, "@length 2bars\n\n1.1 C2 1/4 v100\n");
+        addClip (project, bass, "clp-b", "clips/b.notes", 4 * bar, "@length 1bar\n\n1.1 G1 1/4 v100\n");
+        project.tracks.push_back (std::move (bass));
+        return project;
+    }
+
+    const notes::Clip& contentOf (const CommandBus& bus, std::string_view clipId)
+    {
+        const auto* clip = project::findClip (bus.project(), clipId);
+        REQUIRE (clip != nullptr);
+        return project::notesOf (bus.project(), *clip);
+    }
+
     bool contains (const std::string& text, std::string_view part)
     {
         return text.find (part) != std::string::npos;
     }
 
-    // Records every change the bus announces, as "clp-a" etc.
+    // Records every change the bus announces, as "clips/a.notes" etc.
     struct ChangeLog
     {
         explicit ChangeLog (CommandBus& bus)
         {
-            bus.addListener ([this] (const Change& change) { changes.push_back (std::get<ClipContentChanged> (change).clipId); });
+            bus.addListener ([this] (const Change& change) { changes.push_back (std::get<NotesChanged> (change).file); });
         }
 
         std::vector<std::string> changes;
@@ -81,7 +77,63 @@ TEST_CASE ("write_clip replaces the clip's notes, records who did it, and announ
     CHECK (result.message == "#1 wrote clip clp-a (2 notes)");
     CHECK (contentOf (bus, "clp-a") == parsed (twoNotes));
     CHECK (bus.history() == std::vector<HistoryEntry> { { 1, claude, "wrote clip clp-a (2 notes)" } });
-    CHECK (log.changes == std::vector<std::string> { "clp-a" });
+    CHECK (log.changes == std::vector<std::string> { "clips/a.notes" });
+}
+
+TEST_CASE ("write_clip on a linked clip changes its file's notes, and so every clip linked to it")
+{
+    // clp-a2 shares clp-a's file, on another track, from bar 3.
+    auto project = makeProject();
+    project::Track lead { "trk-lead", "Lead", project::TrackType::midi, {}, { { "clp-a2", "clips/a.notes", 2 * bar } } };
+    project.tracks.push_back (std::move (lead));
+    CommandBus bus (std::move (project));
+    ChangeLog log (bus);
+
+    const auto result = bus.execute (WriteClip { "clp-a2", twoNotes }, claude);
+    CHECK (result.message == "#1 wrote clip clp-a2 (2 notes), and its linked clip clp-a");
+    CHECK (contentOf (bus, "clp-a") == parsed (twoNotes));
+    CHECK (contentOf (bus, "clp-a2") == parsed (twoNotes));
+    CHECK (log.changes == std::vector<std::string> { "clips/a.notes" });
+    CHECK (bus.changesTo ("clips/a.notes").size() == 1);
+
+    REQUIRE (bus.undo (claude, UndoScope::callersOwn).ok);
+    CHECK (contentOf (bus, "clp-a") == parsed ("@length 2bars\n\n1.1 C2 1/4 v100\n"));
+    CHECK (contentOf (bus, "clp-a2") == contentOf (bus, "clp-a"));
+
+    // Writing the other clip names the first as linked.
+    CHECK (bus.execute (WriteClip { "clp-a", twoNotes }, claude).message == "#2 wrote clip clp-a (2 notes), and its linked clip clp-a2");
+}
+
+TEST_CASE ("a longer @length must fit every clip linked to the file")
+{
+    // clp-a (1.1, 2 bars) and clp-b (5.1) on the bass; clp-a2 shares clp-a's
+    // file on the lead at 3.1, with clp-c at 6.1 after it.
+    auto project = makeProject();
+    project::Track lead { "trk-lead", "Lead", project::TrackType::midi, {}, { { "clp-a2", "clips/a.notes", 2 * bar } } };
+    addClip (project, lead, "clp-c", "clips/c.notes", 5 * bar, "@length 1bar\n");
+    project.tracks.push_back (std::move (lead));
+    CommandBus bus (std::move (project));
+
+    // clp-a alone could have 4 bars, but clp-a2 then runs into clp-c.
+    const auto tooLong = bus.execute (WriteClip { "clp-a", "@length 4bars\n\n1.1 C2 1/4 v100\n" }, claude);
+    CHECK_FALSE (tooLong.ok);
+    CHECK (tooLong.message == "write_clip: with @length 4bars, clip 'clp-a2' (linked to 'clp-a': they share clips/a.notes) would run from 3.1 "
+                              "to 7.1, into clip 'clp-c' at 6.1. Clips on a track can't overlap, so make @length at most 3bars. Nothing was changed");
+
+    CHECK (bus.execute (WriteClip { "clp-a", "@length 3bars\n\n1.1 C2 1/4 v100\n" }, claude).ok);
+}
+
+TEST_CASE ("a longer @length can't take a clip past the end of the longest song")
+{
+    // Bar 990 to 1000, the last clip on its track.
+    auto project = makeProject();
+    addClip (project, project.tracks[0], "clp-late", "clips/late.notes", 989 * bar, "@length 10bars\n");
+    CommandBus bus (std::move (project));
+
+    const auto result = bus.execute (WriteClip { "clp-late", "@length 11bars\n" }, claude);
+    CHECK_FALSE (result.ok);
+    CHECK (result.message == "write_clip: with @length 11bars, clip 'clp-late' would run from 990.1 to 1001.1, past the end of bar 999. "
+                             "A song is at most 999 bars long, so make @length at most 10bars. Nothing was changed");
 }
 
 TEST_CASE ("an invalid write_clip changes nothing and lists every problem in the text")
@@ -156,7 +208,7 @@ TEST_CASE ("writing back the canonical text of a clip loaded from looser text ch
         INFO (name);
 
         auto project = makeProject();
-        project.tracks[0].clips[0].content = parsed (onDisk);
+        project.notesFiles["clips/a.notes"] = parsed (onDisk);
         CommandBus bus (std::move (project));
         ChangeLog log (bus);
 
@@ -170,7 +222,7 @@ TEST_CASE ("writing back the canonical text of a clip loaded from looser text ch
     }
 }
 
-TEST_CASE ("changesTo lists the entries that changed a clip, newest first")
+TEST_CASE ("changesTo lists the entries that changed a clip file, newest first")
 {
     CommandBus bus (makeProject());
 
@@ -178,16 +230,16 @@ TEST_CASE ("changesTo lists the entries that changed a clip, newest first")
     REQUIRE (bus.execute (WriteClip { "clp-b", "@length 1bar\n\n1.1 A1 1/4 v100\n" }, lee).ok);
     REQUIRE (bus.execute (WriteClip { "clp-a", threeNotes }, lee).ok);
 
-    const auto changes = bus.changesTo ("clp-a");
+    const auto changes = bus.changesTo ("clips/a.notes");
     REQUIRE (changes.size() == 2);
     CHECK (changes[0].id == 3);
     CHECK (changes[1].id == 1);
-    CHECK (bus.changesTo ("clp-b").size() == 1);
-    CHECK (bus.changesTo ("clp-nope").empty());
+    CHECK (bus.changesTo ("clips/b.notes").size() == 1);
+    CHECK (bus.changesTo ("clips/nope.notes").empty());
 
     // Undone entries aren't in the history.
     REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
-    CHECK (bus.changesTo ("clp-a").size() == 1);
+    CHECK (bus.changesTo ("clips/a.notes").size() == 1);
 }
 
 TEST_CASE ("commands need an author")
@@ -538,22 +590,22 @@ TEST_CASE ("undo and redo announce each clip they change")
 
     ChangeLog log (bus);
     bus.undo (lee, UndoScope::anyAuthor);
-    CHECK (log.changes == std::vector<std::string> { "clp-b", "clp-a" }); // inverses run newest first
+    CHECK (log.changes == std::vector<std::string> { "clips/b.notes", "clips/a.notes" }); // inverses run newest first
     bus.redo (lee);
-    CHECK (log.changes == std::vector<std::string> { "clp-b", "clp-a", "clp-a", "clp-b" });
+    CHECK (log.changes == std::vector<std::string> { "clips/b.notes", "clips/a.notes", "clips/a.notes", "clips/b.notes" });
 }
 
 TEST_CASE ("removed listeners hear nothing more")
 {
     CommandBus bus (makeProject());
     std::vector<std::string> heard;
-    const auto id = bus.addListener ([&heard] (const Change& change) { heard.push_back (std::get<ClipContentChanged> (change).clipId); });
+    const auto id = bus.addListener ([&heard] (const Change& change) { heard.push_back (std::get<NotesChanged> (change).file); });
 
     bus.execute (WriteClip { "clp-a", twoNotes }, claude);
     bus.removeListener (id);
     bus.execute (WriteClip { "clp-a", threeNotes }, claude);
 
-    CHECK (heard == std::vector<std::string> { "clp-a" });
+    CHECK (heard == std::vector<std::string> { "clips/a.notes" });
 }
 
 namespace

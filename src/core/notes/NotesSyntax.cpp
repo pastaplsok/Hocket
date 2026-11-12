@@ -7,9 +7,19 @@ namespace hocket::notes
 {
 namespace
 {
-    constexpr Ticks ticksPerWholeNote = 4 * ticksPerBeat;
-    constexpr Ticks ticksPerSixteenth = ticksPerBeat / 4;
     constexpr Ticks maxCanonicalDenominator = 64;
+
+    std::string noteName (int denominator)
+    {
+        switch (denominator)
+        {
+            case 2: return "a half note";
+            case 4: return "a quarter note";
+            case 8: return "an eighth note";
+            case 16: return "a sixteenth note";
+            default: return "a 1/" + std::to_string (denominator) + " note";
+        }
+    }
 
     // A run of 1-9 decimal digits; anything else (signs, spaces, overflow) is rejected.
     std::optional<std::int64_t> parseDigits (std::string_view text)
@@ -111,22 +121,25 @@ Parsed<Ticks> parsePosition (std::string_view text, Meter meter)
     if (bar < 1)
         return fail ("bars start at 1");
 
-    if (beat < 1 || beat > meter.beatsPerBar)
-        return fail ("beat " + std::to_string (beat) + " doesn't exist in " + std::to_string (meter.beatsPerBar)
-                     + "/4 (beats are 1-" + std::to_string (meter.beatsPerBar) + ")");
+    if (beat < 1 || beat > meter.numerator)
+        return fail ("beat " + std::to_string (beat) + " doesn't exist in " + meter.text() + " (beats are 1-" + std::to_string (meter.numerator) + ")");
 
-    if (sixteenth < 1 || sixteenth > 4)
-        return fail ("sixteenth " + std::to_string (sixteenth) + " doesn't exist (sixteenths are 1-4)");
+    // The third number counts sixteenths within the beat.
+    if (const auto sixteenths = meter.sixteenthsPerBeat(); sixteenth < 1 || sixteenth > sixteenths)
+        return fail ("sixteenth " + std::to_string (sixteenth) + " doesn't exist in " + meter.text() + ": a beat there is "
+                     + noteName (meter.denominator)
+                     + (sixteenths == 1 ? std::string (", so the third number can only be 1, or left out")
+                                        : ", so sixteenths are 1-" + std::to_string (sixteenths)));
 
-    return { (bar - 1) * meter.ticksPerBar() + (beat - 1) * ticksPerBeat + (sixteenth - 1) * ticksPerSixteenth + extraTicks, {} };
+    return { (bar - 1) * meter.ticksPerBar() + (beat - 1) * meter.ticksPerBeat() + (sixteenth - 1) * ticksPerSixteenth + extraTicks, {} };
 }
 
 std::string formatPosition (Ticks position, Meter meter)
 {
     const auto bar = position / meter.ticksPerBar() + 1;
     const auto inBar = position % meter.ticksPerBar();
-    const auto beat = inBar / ticksPerBeat + 1;
-    const auto inBeat = inBar % ticksPerBeat;
+    const auto beat = inBar / meter.ticksPerBeat() + 1;
+    const auto inBeat = inBar % meter.ticksPerBeat();
     const auto sixteenth = inBeat / ticksPerSixteenth + 1;
     const auto ticks = inBeat % ticksPerSixteenth;
 
@@ -139,6 +152,36 @@ std::string formatPosition (Ticks position, Meter meter)
         text += "+" + std::to_string (ticks);
 
     return text;
+}
+
+//==============================================================================
+Parsed<Meter> parseMeter (std::string_view text)
+{
+    const auto fail = [text] (const std::string& why)
+    {
+        return Parsed<Meter> { {}, quoted (text) + " isn't a time signature Hocket supports: " + why
+                                       + ". The top number is 1 to " + std::to_string (Meter::maxNumerator)
+                                       + " and the bottom one 2, 4, 8 or 16, e.g. '4/4', '3/4', '6/8', '7/8'" };
+    };
+
+    const auto slash = text.find ('/');
+
+    if (slash == std::string_view::npos)
+        return fail ("it needs a '/' between two numbers");
+
+    const auto numerator = parseDigits (text.substr (0, slash));
+    const auto denominator = parseDigits (text.substr (slash + 1));
+
+    if (! numerator || ! denominator)
+        return fail ("both sides of the '/' must be whole numbers");
+
+    if (*denominator != 2 && *denominator != 4 && *denominator != 8 && *denominator != 16)
+        return fail ("the bottom number is " + std::to_string (*denominator));
+
+    if (*numerator < 1 || *numerator > Meter::maxNumerator)
+        return fail ("the top number is " + std::to_string (*numerator));
+
+    return { Meter { static_cast<int> (*numerator), static_cast<int> (*denominator) }, {} };
 }
 
 //==============================================================================
@@ -234,7 +277,7 @@ Parsed<Ticks> parseLength (std::string_view text)
     {
         return Parsed<Ticks> { {}, quoted (text) + " isn't a valid length: " + why
                                        + ". Lengths are a fraction of a whole note ('1/4', '1/8', '3/16'), "
-                                         "a triplet ('1/8t'), or ticks ('250tk', 960 per beat)" };
+                                         "a triplet ('1/8t'), or ticks ('250tk', 960 per quarter note)" };
     };
 
     if (text.ends_with ("tk"))
@@ -274,7 +317,7 @@ Parsed<Ticks> parseLength (std::string_view text)
     const auto scaledDenominator = *denominator * (triplet ? 3 : 1);
 
     if (scaledNumerator % scaledDenominator != 0)
-        return fail ("it doesn't come out to a whole number of ticks (960 per beat)");
+        return fail ("it doesn't come out to a whole number of ticks (960 per quarter note)");
 
     return { scaledNumerator / scaledDenominator, {} };
 }

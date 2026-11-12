@@ -4,10 +4,10 @@ namespace hocket::commands
 {
 namespace
 {
-    std::optional<std::string> canonicalText (const project::Project& project, std::string_view clipId)
+    std::optional<std::string> canonicalText (const project::Project& project, std::string_view file)
     {
-        if (const auto* clip = project::findClip (project, clipId))
-            return notes::write (clip->content, project.meter);
+        if (const auto found = project.notesFiles.find (file); found != project.notesFiles.end())
+            return notes::write (found->second, project.meter);
 
         return {};
     }
@@ -16,36 +16,41 @@ namespace
 WatchedSaves::WatchedSaves (CommandBus& commandBus, Author personAtTheDaw)
     : bus (commandBus), person (std::move (personAtTheDaw))
 {
-    for (const auto& track : bus.project().tracks)
-        for (const auto& clip : track.clips)
-            matchedFile[clip.id] = notes::write (clip.content, bus.project().meter);
+    for (const auto& [file, content] : bus.project().notesFiles)
+        matchedFile[file] = notes::write (content, bus.project().meter);
 }
 
-WatchedSaves::Outcome WatchedSaves::save (const std::string& clipId, const std::string& text)
+WatchedSaves::Outcome WatchedSaves::save (const std::string& file, const std::string& text)
 {
-    const auto before = canonicalText (bus.project(), clipId);
-    auto result = bus.execute (WriteClip { clipId, text }, person);
+    // The write goes to the file's first clip; it changes every clip linked to it.
+    const auto clips = project::clipsUsing (bus.project(), file);
+
+    if (clips.empty())
+        return { { false, "no clip uses " + file + " any more, so the save wasn't played" }, {} };
+
+    const auto before = canonicalText (bus.project(), file);
+    auto result = bus.execute (WriteClip { clips.front()->id, text }, person);
 
     if (! result.ok || ! before)
         return { std::move (result), {} };
 
-    // Something other than the file changed the clip since they last matched.
-    const auto matched = matchedFile.find (clipId);
+    // Something other than the file changed its notes since they last matched.
+    const auto matched = matchedFile.find (file);
     const auto changedElsewhere = matched == matchedFile.end() || *before != matched->second;
-    const auto after = *canonicalText (bus.project(), clipId);
-    matchedFile[clipId] = after;
+    const auto after = *canonicalText (bus.project(), file);
+    matchedFile[file] = after;
 
     if (! changedElsewhere || after == *before)
         return { std::move (result), {} };
 
-    return { std::move (result), warningFor (clipId) };
+    return { std::move (result), warningFor (file) };
 }
 
-std::string WatchedSaves::warningFor (const std::string& clipId) const
+std::string WatchedSaves::warningFor (const std::string& file) const
 {
-    // The save is the newest change to the clip, unless it went into an open
+    // The save is the newest change to the file, unless it went into an open
     // transaction; what it replaced came before it.
-    const auto changes = bus.changesTo (clipId);
+    const auto changes = bus.changesTo (file);
     const auto saveEntry = ! changes.empty() && changes.front().author == person ? &changes.front() : nullptr;
     const HistoryEntry* replaced = nullptr;
 
@@ -53,7 +58,7 @@ std::string WatchedSaves::warningFor (const std::string& clipId) const
         if (changes[i].author != person)
             replaced = &changes[i];
 
-    auto warning = "warning: this save replaced changes made to clip " + clipId + " since the file was last loaded or saved";
+    auto warning = "warning: this save replaced changes made to " + file + " since it was last loaded or saved";
 
     if (replaced != nullptr)
         warning += " (the latest: #" + std::to_string (replaced->id) + " \"" + replaced->description + "\" by " + displayName (replaced->author) + ")";

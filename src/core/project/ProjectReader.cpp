@@ -2,6 +2,7 @@
 #include "core/project/JsonText.h"
 #include "core/project/Project.h"
 #include "core/notes/NotesSyntax.h"
+#include "core/units/Units.h"
 
 #include <nlohmann/json.hpp>
 
@@ -38,13 +39,17 @@ namespace
         { "id", R"("trk-bass")" },
         { "name", R"("Bass")" },
         { "type", R"("midi")" },
-        { "devices", R"([{ "id": "dev-bass-synth", "type": "tracktion:4osc" }])" },
+        { "volume", R"("0dB")" },
+        { "pan", R"("C")" },
+        { "mute", "false" },
+        { "solo", "false" },
+        { "devices", R"([{ "id": "dev-bass-synth", "type": "hocket:synth" }])" },
         { "clips", "[]" },
     };
 
     constexpr KeySpec deviceKeys[] = {
         { "id", R"("dev-bass-synth")" },
-        { "type", R"("tracktion:4osc")" },
+        { "type", R"("hocket:synth")" },
     };
 
     constexpr KeySpec clipKeys[] = {
@@ -146,7 +151,7 @@ namespace
         return {};
     }
 
-    // Milestone 0 clip files: "clips/<name>.notes" with a hyphenated name. The
+    // Clip files: "clips/<name>.notes" with a hyphenated name. The
     // narrow character set also keeps paths safe and case-insensitive file systems happy.
     bool isValidClipFile (std::string_view file)
     {
@@ -199,8 +204,8 @@ namespace
         const FileReader& readFile;
         Project project;
         std::vector<Diagnostic> errors;
-        std::map<std::string, int> idLines;           // ID -> line it was first used on
-        std::map<std::string, std::string> fileOwners; // clip file -> clip ID
+        std::map<std::string, int> idLines;     // ID -> line it was first used on
+        std::map<std::string, bool> filesRead; // clip file -> whether it exists and parsed; each is read once
 
         LoadResult finish()
         {
@@ -414,22 +419,20 @@ namespace
             if (const auto* tempo = member (root, "tempo"))
             {
                 if (! tempo->is_number())
-                    errorAt (*tempo, where + ": \"tempo\" should be a number of beats per minute, e.g. 120");
+                    errorAt (*tempo, where + ": \"tempo\" should be a number of quarter notes per minute (BPM), e.g. 120");
                 else if (const auto bpm = tempo->get<double>(); bpm < 20.0 || bpm > 999.0)
-                    errorAt (*tempo, where + ": \"tempo\" must be between 20 and 999 BPM, e.g. 120");
+                    errorAt (*tempo, where + ": \"tempo\" must be between 20 and 999 BPM (quarter notes per minute), e.g. 120");
                 else
                     project.tempo = bpm;
             }
 
-            if (const auto signature = readString (root, "timeSignature", where, projectKeys); signature && *signature != "4/4")
+            // Read before the tracks: clip starts are positions in it.
+            if (const auto signature = readString (root, "timeSignature", where, projectKeys))
             {
-                const auto slash = signature->find ('/');
-                const bool looksLikeOne = slash != std::string::npos && slash > 0 && slash + 1 < signature->size()
-                                       && std::ranges::all_of (*signature, [] (char c) { return (c >= '0' && c <= '9') || c == '/'; });
-
-                errorAt (root.at ("timeSignature"),
-                         where + ": " + (looksLikeOne ? "Milestone 0 supports only \"4/4\" time"
-                                                      : jsonQuoted (*signature) + " isn't a time signature; write it like \"4/4\""));
+                if (const auto meter = notes::parseMeter (*signature); meter.value)
+                    project.meter = *meter.value;
+                else
+                    errorAt (root.at ("timeSignature"), where + ": " + meter.error);
             }
 
             if (const auto* tracks = readArray (root, "tracks", where, projectKeys))
@@ -456,12 +459,14 @@ namespace
                 track.name = *name;
 
             if (const auto type = readString (value, "type", where, trackKeys); type && *type != "midi")
-                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type) + " tracks aren't supported yet; Milestone 0 has only \"midi\" tracks");
+                errorAt (value.at ("type"), where + ": " + jsonQuoted (*type) + " tracks aren't supported yet; so far there are only \"midi\" tracks");
+
+            readMix (value, where, track);
 
             if (const auto* devices = readArray (value, "devices", where, trackKeys))
             {
-                if (devices->size() != 1)
-                    errorAt (*devices, where + ": a track needs exactly one device in Milestone 0, e.g. \"devices\": "
+                if (devices->size() > 1)
+                    errorAt (*devices, where + ": a track has at most one device for now, its instrument (effects come in Milestone 5), e.g. \"devices\": "
                                            + std::string (exampleFor (trackKeys, "devices")));
 
                 for (std::size_t i = 0; i < devices->size(); ++i)
@@ -476,6 +481,48 @@ namespace
 
             checkOverlaps (placed, where);
             project.tracks.push_back (std::move (track));
+        }
+
+        // Volume, pan, mute and solo (SPEC §4.4).
+        void readMix (const Json& value, const std::string& where, Track& track)
+        {
+            if (const auto volume = readString (value, "volume", where, trackKeys))
+            {
+                if (const auto parsed = units::parse (*volume, units::volume()); parsed.value)
+                    track.volume = *parsed.value;
+                else
+                    errorAt (value.at ("volume"), where + ": \"volume\": " + parsed.error);
+            }
+
+            if (const auto pan = readString (value, "pan", where, trackKeys))
+            {
+                if (const auto parsed = units::parsePan (*pan); parsed.value)
+                    track.pan = *parsed.value;
+                else
+                    errorAt (value.at ("pan"), where + ": \"pan\": " + parsed.error);
+            }
+
+            if (const auto mute = readBool (value, "mute", where))
+                track.mute = *mute;
+
+            if (const auto solo = readBool (value, "solo", where))
+                track.solo = *solo;
+        }
+
+        std::optional<bool> readBool (const Json& object, std::string_view key, const std::string& where)
+        {
+            const auto* value = member (object, key);
+
+            if (value == nullptr)
+                return {}; // reported by checkKeys
+
+            if (! value->is_boolean())
+            {
+                errorAt (*value, where + ": " + jsonQuoted (key) + " should be true or false, without quotes");
+                return {};
+            }
+
+            return value->get<bool>();
         }
 
         void readDevice (const Json& value, std::size_t index, const std::string& trackWhere, Track& track)
@@ -493,9 +540,10 @@ namespace
             if (id)
                 device.id = *id;
 
-            if (const auto type = readString (value, "type", where, deviceKeys); type && *type != "tracktion:4osc")
+            if (const auto type = readString (value, "type", where, deviceKeys); type && *type != "hocket:synth")
                 errorAt (value.at ("type"), where + ": " + jsonQuoted (*type)
-                                                + " isn't available; Milestone 0 has only \"tracktion:4osc\", Tracktion's built-in synth");
+                                                + (*type == "tracktion:4osc" ? std::string (" is now written \"hocket:synth\": Hocket's synth, which 4OSC plays for now")
+                                                                             : std::string (" isn't available; so far there's only \"hocket:synth\", Hocket's synth")));
 
             track.devices.push_back (std::move (device));
         }
@@ -539,12 +587,29 @@ namespace
                 ok = false;
 
             if (ok)
-                placed.push_back ({ clip.id, clip.start, clip.start + clip.content.lengthInBars * project.meter.ticksPerBar(),
-                                    offsetOf (value.at ("start")) });
+            {
+                const auto end = clipEnd (project, clip);
+                const auto songLimit = maxSongLengthInBars * project.meter.ticksPerBar();
+                const auto& start = value.at ("start");
+
+                if (end > songLimit)
+                {
+                    errorAt (start, where + ": it runs from " + notes::formatPosition (clip.start, project.meter) + " to "
+                                        + notes::formatPosition (end, project.meter) + ", but a song is at most " + std::to_string (maxSongLengthInBars)
+                                        + " bars long, so every clip ends by " + notes::formatPosition (songLimit, project.meter)
+                                        + "; start it at " + notes::formatPosition (songLimit - (end - clip.start), project.meter) + " or earlier");
+                }
+                else
+                {
+                    placed.push_back ({ clip.id, clip.start, end, offsetOf (start) });
+                }
+            }
 
             track.clips.push_back (std::move (clip));
         }
 
+        // Reads the clip's file into project.notesFiles, unless an earlier clip
+        // already did: clips that name the same file are linked (SPEC §4.4).
         bool readClipFile (const Json& value, const std::string& file, const std::string& where, Clip& clip)
         {
             if (! isValidClipFile (file))
@@ -554,14 +619,13 @@ namespace
                 return false;
             }
 
-            if (const auto [owner, inserted] = fileOwners.try_emplace (file, clip.id); ! inserted)
-            {
-                errorAt (value, where + ": " + singleQuoted (file) + " is already used by "
-                                    + (owner->second.empty() ? std::string ("another clip") : "clip " + singleQuoted (owner->second))
-                                    + "; in Milestone 0 each clip needs its own file (linked clips that share one come in v1)");
-                return false;
-            }
+            clip.file = file;
 
+            // Its errors were reported for the first clip that used it.
+            if (const auto read = filesRead.find (file); read != filesRead.end())
+                return read->second;
+
+            auto& ok = filesRead[file];
             const auto contents = readFile (file);
 
             if (! contents)
@@ -579,8 +643,8 @@ namespace
             if (! parsed.clip)
                 return false;
 
-            clip.file = file;
-            clip.content = std::move (*parsed.clip);
+            project.notesFiles.emplace (file, std::move (*parsed.clip));
+            ok = true;
             return true;
         }
 

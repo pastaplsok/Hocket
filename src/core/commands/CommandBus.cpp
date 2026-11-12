@@ -29,13 +29,6 @@ namespace
     {
         return std::to_string (count) + " " + std::string (noun) + (count == 1 ? "" : "s");
     }
-
-    project::Clip& clipById (project::Project& project, std::string_view id)
-    {
-        auto* clip = const_cast<project::Clip*> (project::findClip (project, id));
-        assert (clip != nullptr); // edits are only made for clips that validation found
-        return *clip;
-    }
 }
 
 std::string displayName (const Author& author)
@@ -110,8 +103,7 @@ Result CommandBus::runTransportCommand (const Command& command)
 
 Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits, std::string& description) const
 {
-    const project::Track* track = nullptr;
-    const auto* clip = project::findClip (currentProject, command.clipId, &track);
+    const auto* clip = project::findClip (currentProject, command.clipId);
 
     if (clip == nullptr)
         return { false, "write_clip: " + project::unknownClipMessage (currentProject, command.clipId, "write_clip") };
@@ -129,44 +121,92 @@ Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits,
         return { false, message };
     }
 
-    // A longer @length mustn't run into the next clip on the track.
+    // A longer @length mustn't run any clip that uses the file into the next
+    // clip on its track, or past the end of the longest song. The tightest
+    // limit is the one reported, so the length it suggests fits every clip.
     const auto meter = currentProject.meter;
-    const auto newEnd = clip->start + parsed.clip->lengthInBars * meter.ticksPerBar();
-    const project::Clip* next = nullptr;
+    const auto newLength = parsed.clip->lengthInBars * meter.ticksPerBar();
+    const auto songLimit = project::maxSongLengthInBars * meter.ticksPerBar();
+    const project::Clip* tightest = nullptr;
+    const project::Clip* tightestNext = nullptr; // the clip after it, if that's what limits it
+    notes::Ticks tightestRoom = 0;
+    std::vector<std::string> linked;
 
-    for (const auto& other : track->clips)
-        if (&other != clip && other.start >= clip->start && (next == nullptr || other.start < next->start))
-            next = &other;
-
-    if (next != nullptr && next->start < newEnd)
+    for (const auto& track : currentProject.tracks)
     {
-        const auto maxBars = static_cast<int> ((next->start - clip->start) / meter.ticksPerBar());
+        for (const auto& user : track.clips)
+        {
+            if (user.file != clip->file)
+                continue;
 
-        return { false, "write_clip: with @length " + barsText (parsed.clip->lengthInBars) + ", clip " + singleQuoted (clip->id)
-                            + " would run from " + notes::formatPosition (clip->start, meter) + " to " + notes::formatPosition (newEnd, meter)
-                            + ", into clip " + singleQuoted (next->id) + " at " + notes::formatPosition (next->start, meter)
-                            + ". Clips on a track can't overlap, so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
+            if (&user != clip)
+                linked.push_back (user.id);
+
+            const project::Clip* next = nullptr;
+
+            for (const auto& other : track.clips)
+                if (&other != &user && other.start >= user.start && (next == nullptr || other.start < next->start))
+                    next = &other;
+
+            const auto room = next != nullptr && next->start < songLimit ? next->start - user.start : songLimit - user.start;
+
+            if (tightest == nullptr || room < tightestRoom)
+            {
+                tightest = &user;
+                tightestNext = next != nullptr && next->start < songLimit ? next : nullptr;
+                tightestRoom = room;
+            }
+        }
+    }
+
+    if (newLength > tightestRoom)
+    {
+        const auto newEnd = tightest->start + newLength;
+        const auto maxBars = static_cast<int> (tightestRoom / meter.ticksPerBar());
+        const auto who = tightest == clip ? "clip " + singleQuoted (clip->id)
+                                          : "clip " + singleQuoted (tightest->id) + " (linked to " + singleQuoted (clip->id) + ": they share "
+                                                + clip->file + ")";
+
+        const auto where = tightestNext != nullptr
+                             ? ", into clip " + singleQuoted (tightestNext->id) + " at " + notes::formatPosition (tightestNext->start, meter)
+                                   + ". Clips on a track can't overlap"
+                             : ", past the end of bar " + std::to_string (project::maxSongLengthInBars) + ". A song is at most "
+                                   + std::to_string (project::maxSongLengthInBars) + " bars long";
+
+        return { false, "write_clip: with @length " + barsText (parsed.clip->lengthInBars) + ", " + who + " would run from "
+                            + notes::formatPosition (tightest->start, meter) + " to " + notes::formatPosition (newEnd, meter) + where
+                            + ", so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
     }
 
     // Compared in canonical form: the parser keeps notes and comments where the
     // text had them, so two texts that write out the same can parse differently,
     // e.g. a client sending back read_clip's text for a clip loaded from looser text.
-    if (notes::write (*parsed.clip, meter) == notes::write (clip->content, meter))
+    if (notes::write (*parsed.clip, meter) == notes::write (project::notesOf (currentProject, *clip), meter))
         return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
 
     description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
-    edits.push_back (SetClipContent { clip->id, std::move (*parsed.clip) });
+
+    if (! linked.empty())
+    {
+        description += ", and its linked clip" + std::string (linked.size() == 1 ? " " : "s ");
+
+        for (std::size_t i = 0; i < linked.size(); ++i)
+            description += (i == 0 ? "" : ", ") + linked[i];
+    }
+
+    edits.push_back (SetNotes { clip->file, std::move (*parsed.clip) });
     return { true, {} };
 }
 
 CommandBus::Edit CommandBus::apply (const Edit& edit)
 {
-    return std::visit ([this] (const SetClipContent& set) -> Edit
+    return std::visit ([this] (const SetNotes& set) -> Edit
     {
-        auto& clip = clipById (currentProject, set.clipId);
-        SetClipContent inverse { set.clipId, std::move (clip.content) };
-        clip.content = set.content;
-        notify (ClipContentChanged { set.clipId });
+        // Edits are only made for files that validation found.
+        auto& content = currentProject.notesFiles.at (set.file);
+        SetNotes inverse { set.file, std::move (content) };
+        content = set.content;
+        notify (NotesChanged { set.file });
         return inverse;
     }, edit);
 }
@@ -350,17 +390,17 @@ std::vector<HistoryEntry> CommandBus::history() const
     return entries;
 }
 
-std::vector<HistoryEntry> CommandBus::changesTo (std::string_view clipId) const
+std::vector<HistoryEntry> CommandBus::changesTo (std::string_view file) const
 {
-    const auto changesClip = [clipId] (const Edit& edit)
+    const auto changesFile = [file] (const Edit& edit)
     {
-        return std::visit ([clipId] (const SetClipContent& set) { return set.clipId == clipId; }, edit);
+        return std::visit ([file] (const SetNotes& set) { return set.file == file; }, edit);
     };
 
     std::vector<HistoryEntry> entries;
 
     for (auto i = done.size(); i-- > 0;)
-        if (std::ranges::any_of (done[i].forward, changesClip))
+        if (std::ranges::any_of (done[i].forward, changesFile))
             entries.push_back (done[i].info);
 
     return entries;

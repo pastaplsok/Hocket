@@ -48,7 +48,7 @@ namespace hocket::engine
         int listenerId = 0;
         bool playRequested = false; // by the last transport command
 
-        void clipContentChanged (const std::string& clipId);
+        void notesChanged (const std::string& file);
         void clearTracktionUndo();
 
         commands::Result play() override;

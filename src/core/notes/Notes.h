@@ -11,20 +11,33 @@
 
 namespace hocket::notes
 {
-    // Time inside a clip, counted from the clip start.
+    // Time inside a clip, counted from the clip start: 960 ticks per quarter
+    // note, whatever the time signature (SPEC §5.1).
     using Ticks = std::int64_t;
-    inline constexpr Ticks ticksPerBeat = 960;
+    inline constexpr Ticks ticksPerQuarterNote = 960;
+    inline constexpr Ticks ticksPerWholeNote = 4 * ticksPerQuarterNote;
+    inline constexpr Ticks ticksPerSixteenth = ticksPerQuarterNote / 4;
 
     // The longest a clip can be (SPEC §5.4), so a typo in a bar number can't
     // make a clip, and a loop, thousands of bars long.
     inline constexpr int maxLengthInBars = 999;
 
-    // Milestone 0 supports n/4 meters only, so a beat is always a quarter note.
+    // The time signature. A beat is the denominator's note: a quarter in 4/4,
+    // an eighth in 6/8 (SPEC §4.4). Tempo is in quarter notes per minute
+    // whatever the signature.
     struct Meter
     {
-        int beatsPerBar = 4;
+        static constexpr int maxNumerator = 32;
 
-        Ticks ticksPerBar() const { return beatsPerBar * ticksPerBeat; }
+        int numerator = 4;   // beats in a bar, 1 to maxNumerator
+        int denominator = 4; // the beat's note: 2, 4, 8 or 16
+
+        Ticks ticksPerBeat() const { return ticksPerWholeNote / denominator; }
+        Ticks ticksPerBar() const { return numerator * ticksPerBeat(); }
+        int sixteenthsPerBeat() const { return 16 / denominator; }
+
+        // "6/8"
+        std::string text() const { return std::to_string (numerator) + "/" + std::to_string (denominator); }
 
         bool operator== (const Meter&) const = default;
     };
@@ -49,7 +62,7 @@ namespace hocket::notes
     struct Note
     {
         Ticks start = 0;
-        Ticks length = ticksPerBeat;
+        Ticks length = ticksPerQuarterNote;
         int pitch = 60;     // MIDI note number, 0-127 (C4 = 60)
         int velocity = 100; // 1-127
         Accidental spelling = Accidental::natural;

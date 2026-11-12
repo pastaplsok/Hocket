@@ -7,14 +7,11 @@ namespace hocket::project
 ClipFileWatcher::ClipFileWatcher (const std::filesystem::path& folder, const Project& project, Clock::duration settle)
     : settleTime (settle)
 {
-    for (const auto& track : project.tracks)
+    for (const auto& [file, content] : project.notesFiles)
     {
-        for (const auto& clip : track.clips)
-        {
-            auto path = folder / pathFromUtf8 (clip.file);
-            auto stamp = stampOf (path);
-            files.push_back ({ clip.id, clip.file, std::move (path), stamp, {} });
-        }
+        auto path = folder / pathFromUtf8 (file);
+        auto stamp = stampOf (path);
+        files.push_back ({ file, std::move (path), stamp, {} });
     }
 }
 
@@ -43,7 +40,7 @@ std::vector<ClipFileWatcher::Change> ClipFileWatcher::poll (Clock::time_point no
                 continue;
 
             file.changedAt.reset();
-            changes.push_back ({ file.clipId, file.file, std::move (text) });
+            changes.push_back ({ file.file, std::move (text) });
         }
     }
 

@@ -1,5 +1,6 @@
 #include "core/project/Project.h"
 #include "core/notes/NotesSyntax.h"
+#include "core/units/Units.h"
 
 #include <nlohmann/json.hpp>
 
@@ -39,6 +40,10 @@ namespace
         value["id"] = track.id;
         value["name"] = track.name;
         value["type"] = trackTypeName (track.type);
+        value["volume"] = units::format (track.volume, units::volume());
+        value["pan"] = units::formatPan (track.pan);
+        value["mute"] = track.mute;
+        value["solo"] = track.solo;
 
         auto& devices = value["devices"] = Json::array();
 
@@ -76,7 +81,7 @@ std::map<std::string, std::string> write (const Project& project)
     root["format"] = "hocket-project";
     root["formatVersion"] = formatVersion;
     root["tempo"] = tempoValue (project.tempo);
-    root["timeSignature"] = std::to_string (project.meter.beatsPerBar) + "/4";
+    root["timeSignature"] = project.meter.text();
 
     auto& tracks = root["tracks"] = Json::array();
 
@@ -86,9 +91,9 @@ std::map<std::string, std::string> write (const Project& project)
     std::map<std::string, std::string> files;
     files["project.json"] = root.dump (2) + "\n";
 
-    for (const auto& track : project.tracks)
-        for (const auto& clip : track.clips)
-            files[clip.file] = notes::write (clip.content, project.meter);
+    // Once each, however many clips are linked to it.
+    for (const auto& [file, content] : project.notesFiles)
+        files[file] = notes::write (content, project.meter);
 
     return files;
 }

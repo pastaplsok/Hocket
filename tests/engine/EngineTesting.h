@@ -10,6 +10,7 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,17 +26,35 @@ namespace hocket::testing
     juce::File testFolder();
 
     //==============================================================================
-    inline constexpr notes::Ticks beat = notes::ticksPerBeat;
+    // In 4/4.
+    inline constexpr notes::Ticks beat = notes::ticksPerQuarterNote;
     inline constexpr notes::Ticks bar = 4 * beat;
 
-    // A clip with the given .notes text, which must be valid.
-    project::Clip makeClip (std::string id, notes::Ticks start, std::string_view notesText);
+    // A clip, and the .notes text of its file; no text for a clip linked to
+    // another, which uses that one's file.
+    struct TestClip
+    {
+        project::Clip clip;
+        std::optional<std::string> notesText;
+    };
 
-    // A midi track with a 4OSC and the given clips.
-    project::Track makeTrack (std::string id, std::string name, std::vector<project::Clip> clips);
+    // A clip whose file is clips/<its ID without "clp-">.notes, with this text.
+    TestClip makeClip (std::string id, notes::Ticks start, std::string_view notesText);
 
-    // A 4/4 project.
-    project::Project makeProject (std::vector<project::Track> tracks, double tempo = 120.0);
+    // A clip linked to another: it uses that one's file, and so its notes.
+    TestClip linkedClip (std::string id, notes::Ticks start, const TestClip& linkedTo);
+
+    struct TestTrack
+    {
+        project::Track track;
+        std::vector<TestClip> clips;
+    };
+
+    // A midi track with a hocket:synth (a 4OSC in the Edit) and the given clips.
+    TestTrack makeTrack (std::string id, std::string name, std::vector<TestClip> clips);
+
+    // A project with these tracks. Each clip file's text must be valid in this time signature.
+    project::Project makeProject (std::vector<TestTrack> tracks, double tempo = 120.0, notes::Meter meter = {});
 
     inline const commands::Author lee { "Lee" };
     inline const commands::Author claude { "Claude", "test-session" };

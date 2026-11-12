@@ -36,7 +36,7 @@ namespace
         return text.find (part) != std::string::npos;
     }
 
-    // A canonical file exercising every Milestone 0 feature.
+    // A canonical file exercising every feature so far.
     constexpr std::string_view canonicalClip = R"(# bass-verse.notes — 4 bars
 # second header line
 @length 4bars  # four bars
@@ -198,8 +198,8 @@ TEST_CASE ("errors give line, column, the problem, and a valid example")
         { "1.5 C2 1/8 v96", 1, 1, "'1.5' isn't a valid position: beat 5 doesn't exist in 4/4" },
         { "1.1 H2 1/8 v96", 1, 5, "'H2' isn't a note name: it must start with a letter from A to G" },
         { "1.1 c2 1/8 v96", 1, 5, "note names start with an uppercase letter, e.g. 'C2'. Lowercase names are drum-map names" },
-        { "1.1 kick 1/16 v110", 1, 5, "'kick' looks like a drum-map name; drum maps aren't supported yet in Milestone 0" },
-        { "2.1 cc74 ramp 40->100 until 3.1", 1, 5, "controller lines ('cc74', 'pb', 'at') aren't supported yet in Milestone 0" },
+        { "1.1 kick 1/16 v110", 1, 5, "'kick' looks like a drum-map name; drum maps aren't supported yet" },
+        { "2.1 cc74 ramp 40->100 until 3.1", 1, 5, "controller lines ('cc74', 'pb', 'at') aren't supported yet (they come in Milestone 6)" },
         { "3.3 pb +0.5 until 3.4", 1, 5, "controller lines" },
         { "2.1 at ramp 0->100 until 3.1", 1, 5, "controller lines" },
         { "1.1 C2 1/7 v96", 1, 8, "'1/7' isn't a valid length: it doesn't come out to a whole number of ticks" },
@@ -208,17 +208,17 @@ TEST_CASE ("errors give line, column, the problem, and a valid example")
         { "1.1 C2 1/8", 1, 11, "expected a velocity after the length, e.g. 'v96'" },
         { "1.1 C2", 1, 7, "expected a length after the pitch, e.g. '1/8'" },
         { "1.1", 1, 4, "expected a pitch after the position" },
-        { "1.1 C2 1/8 v96 ch2", 1, 16, "per-note MIDI channels ('ch2') aren't supported yet in Milestone 0" },
+        { "1.1 C2 1/8 v96 ch2", 1, 16, "per-note MIDI channels ('ch2') aren't supported yet (they come in Milestone 3)" },
         { "1.1 C2 1/8 v96 loud", 1, 16, "unexpected 'loud' after the velocity" },
         { "1.1 [C3 E3 1/8 v96", 1, 5, "this chord has no closing ']'" },
         { "1.1 [] 1/8 v96", 1, 5, "this chord is empty" },
         { "1.1 [C3 X3] 1/8 v96", 1, 9, "'X3' isn't a note name" },
         { "1.1 G#9 1/8 v96", 1, 5, "'G#9' is above the MIDI range; the highest note is G9" },
-        { "@swing 1/16 58%", 1, 1, "'@swing' isn't supported yet in Milestone 0" },
-        { "@ch 2", 1, 1, "'@ch' isn't supported yet in Milestone 0" },
-        { "@tempo 120", 1, 1, "unknown directive '@tempo'; Milestone 0 supports only '@length'" },
+        { "@swing 1/16 58%", 1, 1, "'@swing' isn't supported yet (it comes in Milestone 3)" },
+        { "@ch 2", 1, 1, "'@ch' isn't supported yet (it comes in Milestone 3)" },
+        { "@tempo 120", 1, 1, "unknown directive '@tempo'; the only one so far is '@length'" },
         { "@length", 1, 8, "@length needs a value, e.g. '@length 4bars'" },
-        { "@length 4beats", 1, 9, "'4beats' isn't a valid @length: Milestone 0 clip lengths are a whole number of bars" },
+        { "@length 4beats", 1, 9, "'4beats' isn't a valid @length: clip lengths are a whole number of bars" },
         { "@length 0bars", 1, 9, "isn't a valid @length" },
         { "@length 1000bars", 1, 9, "'1000bars' is too long: a clip is at most 999 bars" },
         { "@length 99999999bars", 1, 9, "'99999999bars' is too long: a clip is at most 999 bars" },

@@ -6,6 +6,8 @@
 
 #include <doctest/doctest.h>
 
+#include <iterator>
+#include <limits>
 #include <random>
 #include <set>
 
@@ -61,11 +63,11 @@ namespace
     }
 
     // One note per position, so the writer's chord grouping can't reorder them.
-    notes::Clip randomNotes (Rng& rng)
+    notes::Clip randomNotes (Rng& rng, notes::Meter meter)
     {
         notes::Clip clip;
         clip.lengthInBars = randomInt (rng, 1, 4);
-        const auto slots = clip.lengthInBars * 16;
+        const auto slots = static_cast<int> (clip.lengthInBars * meter.ticksPerBar() / 240); // sixteenths
         std::set<int> used;
 
         for (int i = randomInt (rng, 0, 8); i > 0; --i)
@@ -85,11 +87,30 @@ namespace
         return clip;
     }
 
+    notes::Meter randomMeter (Rng& rng)
+    {
+        static constexpr int denominators[] = { 2, 4, 8, 16 };
+
+        if (randomInt (rng, 0, 2) == 0)
+            return {};
+
+        return { randomInt (rng, 1, notes::Meter::maxNumerator), denominators[randomInt (rng, 0, 3)] };
+    }
+
+    double randomVolume (Rng& rng)
+    {
+        if (randomInt (rng, 0, 9) == 0)
+            return -std::numeric_limits<double>::infinity();
+
+        return randomInt (rng, 0, 2) == 0 ? 0.0 : randomInt (rng, -960, 60) / 10.0;
+    }
+
     Project randomProject (Rng& rng)
     {
         Project project;
         project.tempo = randomInt (rng, 0, 1) == 0 ? randomInt (rng, 20, 999)
                                                    : std::uniform_real_distribution<double> (20.0, 999.0) (rng);
+        project.meter = randomMeter (rng);
         std::set<std::string> ids;
         int fileNumber = 0;
 
@@ -105,7 +126,13 @@ namespace
             Track track;
             track.id = uniqueId ("trk-");
             track.name = randomName (rng);
-            track.devices.push_back ({ uniqueId ("dev-"), DeviceType::fourOsc });
+            track.volume = randomVolume (rng);
+            track.pan = randomInt (rng, 0, 2) == 0 ? 0 : randomInt (rng, -100, 100);
+            track.mute = randomInt (rng, 0, 3) == 0;
+            track.solo = randomInt (rng, 0, 3) == 0;
+
+            if (randomInt (rng, 0, 4) > 0)
+                track.devices.push_back ({ uniqueId ("dev-"), DeviceType::synth });
 
             notes::Ticks nextFree = 0;
 
@@ -113,10 +140,22 @@ namespace
             {
                 Clip clip;
                 clip.id = uniqueId ("clp-");
-                clip.file = "clips/c" + std::to_string (++fileNumber) + ".notes";
                 clip.start = nextFree + 240 * randomInt (rng, 0, 32);
-                clip.content = randomNotes (rng);
-                nextFree = clip.start + clip.content.lengthInBars * 3840;
+
+                // Sometimes linked to an earlier clip: it uses that one's file.
+                if (! project.notesFiles.empty() && randomInt (rng, 0, 2) == 0)
+                {
+                    auto file = project.notesFiles.begin();
+                    std::advance (file, randomInt (rng, 0, static_cast<int> (project.notesFiles.size()) - 1));
+                    clip.file = file->first;
+                }
+                else
+                {
+                    clip.file = "clips/c" + std::to_string (++fileNumber) + ".notes";
+                    project.notesFiles[clip.file] = randomNotes (rng, project.meter);
+                }
+
+                nextFree = clip.start + project.notesFiles.at (clip.file).lengthInBars * project.meter.ticksPerBar();
                 track.clips.push_back (std::move (clip));
             }
 

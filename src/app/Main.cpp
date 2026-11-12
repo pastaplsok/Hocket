@@ -101,9 +101,14 @@ namespace
         for (const auto& track : project.tracks)
             clipCount += track.clips.size();
 
-        std::cout << "OK: " << project.tempo << " BPM, " << project.meter.beatsPerBar << "/4, "
+        std::cout << "OK: " << project.tempo << " BPM, " << project.meter.text() << ", "
                   << project.tracks.size() << (project.tracks.size() == 1 ? " track, " : " tracks, ")
-                  << clipCount << (clipCount == 1 ? " clip\n" : " clips\n");
+                  << clipCount << (clipCount == 1 ? " clip" : " clips");
+
+        if (const auto files = project.notesFiles.size(); files < clipCount)
+            std::cout << " in " << files << (files == 1 ? " file" : " files") << ", as linked clips share them";
+
+        std::cout << "\n";
         return 0;
     }
 
@@ -293,11 +298,11 @@ namespace
             {
                 if (! change.text)
                 {
-                    std::cerr << change.file << ": the file is gone or can't be read; clip " << change.clipId << " keeps its notes\n";
+                    std::cerr << change.file << ": the file is gone or can't be read; the clips using it keep their notes\n";
                     continue;
                 }
 
-                const auto saved = saves->save (change.clipId, *change.text);
+                const auto saved = saves->save (change.file, *change.text);
                 (saved.result.ok ? std::cout : std::cerr) << change.file << ": " << saved.result.message << std::endl;
 
                 if (saved.warning)
@@ -316,6 +321,15 @@ namespace
 
         if (! loaded.project)
             return 1;
+
+        // The Edit gets them in Milestone 1's step 6; until then, say so rather than mislead.
+        const auto mixed = std::ranges::any_of (loaded.project->tracks, [] (const hocket::project::Track& track)
+        {
+            return track.volume != 0.0 || track.pan != 0 || track.mute || track.solo;
+        });
+
+        if (mixed)
+            std::cerr << "Note: --play doesn't apply tracks' volume, pan, mute and solo yet, so every track plays at 0dB, centred.\n";
 
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();

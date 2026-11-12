@@ -71,6 +71,71 @@ TEST_CASE ("invalid positions explain what's wrong")
     CHECK (error ("1.5").find ("e.g. '1.1'") != std::string::npos);
 }
 
+TEST_CASE ("in any time signature, a beat is the denominator's note, sixteenths count within it, and ticks are per quarter note")
+{
+    const auto at = [] (std::string_view text, Meter meter)
+    {
+        const auto parsed = parsePosition (text, meter);
+        REQUIRE_MESSAGE (parsed.value, parsed.error);
+        CHECK (formatPosition (*parsed.value, meter) == text); // these are all in shortest form
+        return *parsed.value;
+    };
+
+    // 6/8: beats are eighths (480 ticks), with two sixteenths each.
+    constexpr Meter sixEight { 6, 8 };
+    CHECK (sixEight.ticksPerBar() == 2880);
+    CHECK (at ("1.2", sixEight) == 480);
+    CHECK (at ("1.6.2", sixEight) == 5 * 480 + 240);
+    CHECK (at ("2.1", sixEight) == 2880);
+    CHECK (at ("3.4+30", sixEight) == 2 * 2880 + 3 * 480 + 30);
+
+    // 7/8 and 5/16: a bar is 7 eighths, or 5 sixteenths, each a beat of its own.
+    CHECK (at ("2.7", { 7, 8 }) == 3360 + 6 * 480);
+    CHECK (at ("2.5", { 5, 16 }) == 1200 + 4 * 240);
+    CHECK (at ("1.5+120", { 5, 16 }) == 4 * 240 + 120);
+
+    // 3/2: beats are half notes, with eight sixteenths each.
+    CHECK (at ("1.2.8", { 3, 2 }) == 1920 + 7 * 240);
+    CHECK (at ("2.1", { 3, 2 }) == 5760);
+
+    const auto error = [] (std::string_view text, Meter meter) { return parsePosition (text, meter).error; };
+
+    CHECK (error ("1.7", sixEight) == "'1.7' isn't a valid position: beat 7 doesn't exist in 6/8 (beats are 1-6). "
+                                      "Positions are bar.beat[.sixteenth][+ticks], e.g. '1.1', '2.3.2', '1.1+30'");
+    CHECK (error ("1.1.3", sixEight).starts_with ("'1.1.3' isn't a valid position: sixteenth 3 doesn't exist in 6/8: "
+                                                  "a beat there is an eighth note, so sixteenths are 1-2."));
+    CHECK (error ("1.1.2", { 5, 16 }).starts_with ("'1.1.2' isn't a valid position: sixteenth 2 doesn't exist in 5/16: "
+                                                   "a beat there is a sixteenth note, so the third number can only be 1, or left out."));
+    CHECK (error ("1.1.1", { 5, 16 }).empty());
+    CHECK (error ("1.1.5", fourFour).starts_with ("'1.1.5' isn't a valid position: sixteenth 5 doesn't exist in 4/4: "
+                                                  "a beat there is a quarter note, so sixteenths are 1-4."));
+    CHECK (error ("1.1.9", { 3, 2 }).find ("a beat there is a half note, so sixteenths are 1-8") != std::string::npos);
+}
+
+TEST_CASE ("time signatures: the top number 1 to 32, the bottom one 2, 4, 8 or 16")
+{
+    CHECK (parseMeter ("4/4").value == Meter { 4, 4 });
+    CHECK (parseMeter ("6/8").value == Meter { 6, 8 });
+    CHECK (parseMeter ("7/8").value == Meter { 7, 8 });
+    CHECK (parseMeter ("3/2").value == Meter { 3, 2 });
+    CHECK (parseMeter ("1/16").value == Meter { 1, 16 });
+    CHECK (parseMeter ("32/16").value == Meter { 32, 16 });
+
+    for (const auto* text : { "4/4", "6/8", "13/16", "2/2" })
+        CHECK (parseMeter (text).value->text() == text);
+
+    const std::string how = ". The top number is 1 to 32 and the bottom one 2, 4, 8 or 16, e.g. '4/4', '3/4', '6/8', '7/8'";
+
+    CHECK (parseMeter ("6/3").error == "'6/3' isn't a time signature Hocket supports: the bottom number is 3" + how);
+    CHECK (parseMeter ("4/1").error == "'4/1' isn't a time signature Hocket supports: the bottom number is 1" + how);
+    CHECK (parseMeter ("4/32").error == "'4/32' isn't a time signature Hocket supports: the bottom number is 32" + how);
+    CHECK (parseMeter ("33/8").error == "'33/8' isn't a time signature Hocket supports: the top number is 33" + how);
+    CHECK (parseMeter ("0/4").error == "'0/4' isn't a time signature Hocket supports: the top number is 0" + how);
+    CHECK (parseMeter ("4").error == "'4' isn't a time signature Hocket supports: it needs a '/' between two numbers" + how);
+    CHECK (parseMeter ("4/").error == "'4/' isn't a time signature Hocket supports: both sides of the '/' must be whole numbers" + how);
+    CHECK (parseMeter (" 4/4").error.starts_with ("' 4/4' isn't a time signature Hocket supports: both sides"));
+}
+
 TEST_CASE ("pitches use C4 = 60 and keep their spelling")
 {
     CHECK (pitch ("C4") == SpelledPitch { 60, Accidental::natural });
@@ -160,7 +225,7 @@ TEST_CASE ("invalid lengths explain what's wrong")
 {
     const auto error = [] (std::string_view text) { return parseLength (text).error; };
 
-    CHECK (error ("1/7").find ("whole number of ticks (960 per beat)") != std::string::npos);
+    CHECK (error ("1/7").find ("whole number of ticks (960 per quarter note)") != std::string::npos);
     CHECK (error ("0/4").find ("longer than zero") != std::string::npos);
     CHECK (error ("0tk").find ("longer than zero") != std::string::npos);
     CHECK (error ("1/0").find ("bottom number can't be zero") != std::string::npos);

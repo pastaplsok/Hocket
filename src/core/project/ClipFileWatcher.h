@@ -35,13 +35,12 @@ namespace hocket::project
 
         struct Change
         {
-            std::string clipId;
             std::string file;                // relative to the project folder, e.g. "clips/bass.notes"
             std::optional<std::string> text; // nullopt if the file is gone, or still can't be read after readRetryTime
         };
 
-        // Watches every clip file in the project. What's on disk now is the
-        // starting point: only later changes are reported.
+        // Watches every clip file in the project, once however many clips use
+        // it. What's on disk now is the starting point: only later changes are reported.
         ClipFileWatcher (const std::filesystem::path& folder, const Project& project, Clock::duration settleTime = defaultSettleTime);
 
         // Files that changed and have since settled, each reported once per change.
@@ -59,7 +58,6 @@ namespace hocket::project
 
         struct WatchedFile
         {
-            std::string clipId;
             std::string file;
             std::filesystem::path path;
             Stamp lastSeen;

@@ -56,11 +56,25 @@ TEST_CASE ("the clip file watcher reports a change once it has settled, once")
 
     const auto changes = watcher.poll (start + 200ms);
     REQUIRE (changes.size() == 1);
-    CHECK (changes[0].clipId == "clp-bass");
     CHECK (changes[0].file == "clips/bass.notes");
     CHECK (changes[0].text == twoNotes);
 
     CHECK (watcher.poll (start + 300ms).empty());
+}
+
+TEST_CASE ("a file that linked clips share is watched once")
+{
+    DemoProject demo;
+    demo.project.tracks[0].clips.push_back ({ "clp-bass-again", "clips/bass.notes", 4 * 3840 });
+    const auto start = ClipFileWatcher::Clock::now();
+    ClipFileWatcher watcher (demo.folder, demo.project);
+
+    writeFile (demo.bass, twoNotes);
+    CHECK (watcher.poll (start + 50ms).empty());
+
+    const auto changes = watcher.poll (start + 200ms);
+    REQUIRE (changes.size() == 1);
+    CHECK (changes[0].file == "clips/bass.notes");
 }
 
 TEST_CASE ("the clip file watcher waits for a file that's saved in several steps")

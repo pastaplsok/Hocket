@@ -332,7 +332,7 @@ TEST_CASE ("get_project_overview summarizes the project")
            == "Tempo 120 BPM, 4/4. The song is 2 bars long, from 1.1 to 3.1. There's no audio engine here, so it can't play.\n"
               "\n"
               "Tracks, in display order:\n"
-              "- trk-bass \"Bass\" (midi), devices: dev-bass-synth (tracktion:4osc)\n"
+              "- trk-bass \"Bass\" (midi; volume 0dB, pan C), devices: dev-bass-synth (hocket:synth)\n"
               "  - clip clp-bass: 1.1 to 3.1 (@length 2bars), 14 notes, file clips/bass.notes\n"
               "\n"
               "History: empty; nothing has changed since Hocket opened the project.\n"
@@ -379,6 +379,7 @@ TEST_CASE ("get_project_overview lists a track's clips in song order")
     later.file = "clips/later.notes";
     later.start = 4 * 3840;
     clips.insert (clips.begin(), later); // listed first, but starts at bar 5
+    project.notesFiles["clips/later.notes"] = project.notesFiles.at ("clips/bass.notes");
 
     commands::CommandBus bus (std::move (project));
     api::HandlerOptions handlerOptions;
@@ -394,6 +395,56 @@ TEST_CASE ("get_project_overview lists a track's clips in song order")
     REQUIRE (first != std::string::npos);
     REQUIRE (second != std::string::npos);
     CHECK (first < second);
+}
+
+TEST_CASE ("the overview and read_clip show linked clips, mix settings, and what a beat is in 6/8")
+{
+    auto project = demoProject();
+    project.meter = { 6, 8 };
+    project.notesFiles["clips/bass.notes"] = *notes::parse ("@length 1bar\n\n1.1 C2 1/8 v100\n", project.meter).clip;
+    project.tracks[0].clips.push_back ({ "clp-bass-again", "clips/bass.notes", 2 * 2880 });
+
+    auto& lead = project.tracks.emplace_back();
+    lead = { "trk-lead", "Lead", project::TrackType::midi, {}, { { "clp-lead", "clips/bass.notes", 2880 } } };
+    lead.volume = -6.5;
+    lead.pan = -20;
+    lead.mute = true;
+    lead.solo = true;
+
+    commands::CommandBus bus (std::move (project));
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    CHECK (connection.text ("get_project_overview")
+           == "Tempo 120 BPM, 6/8 (a beat is an eighth note; BPM counts quarter notes). The song is 3 bars long, from 1.1 to 4.1. "
+              "There's no audio engine here, so it can't play.\n"
+              "\n"
+              "Tracks, in display order:\n"
+              "- trk-bass \"Bass\" (midi; volume 0dB, pan C), devices: dev-bass-synth (hocket:synth)\n"
+              "  - clip clp-bass: 1.1 to 2.1 (@length 1bar), 1 note, file clips/bass.notes (linked with clp-bass-again, clp-lead)\n"
+              "  - clip clp-bass-again: 3.1 to 4.1 (@length 1bar), 1 note, file clips/bass.notes (linked with clp-bass, clp-lead)\n"
+              "- trk-lead \"Lead\" (midi; volume -6.5dB, pan L20, muted, soloed), devices: none\n"
+              "  - clip clp-lead: 2.1 to 3.1 (@length 1bar), 1 note, file clips/bass.notes (linked with clp-bass, clp-bass-again)\n"
+              "\n"
+              "History: empty; nothing has changed since Hocket opened the project.\n"
+              "No transaction is open.\n");
+
+    const auto read = connection.call ("read_clip", { { "clip_id", "clp-lead" } });
+    CHECK (read.at ("content")[0].at ("text")
+           == "clip clp-lead on track trk-lead \"Lead\"\n"
+              "file: clips/bass.notes (linked with clp-bass, clp-bass-again)\n"
+              "from 2.1 to 3.1 (@length 1bar), 1 note\n"
+              "The next block is the clip's .notes text, exactly as stored. To change the clip, edit that text and send all of it to write_clip; "
+              "its linked clips change with it, since they share the file.");
+
+    const auto written = connection.call ("write_clip", { { "clip_id", "clp-lead" }, { "notes", "@length 1bar\n\n1.6.2 C2 1/16 v100\n" } });
+    CHECK (written.at ("isError") == false);
+    CHECK (contains (written.at ("content")[0].at ("text").get<std::string>(),
+                     "#1 wrote clip clp-lead (1 note), and its linked clips clp-bass, clp-bass-again"));
 }
 
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")

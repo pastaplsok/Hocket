@@ -19,14 +19,21 @@ namespace
         return std::uniform_int_distribution<int> (low, high) (rng);
     }
 
+    // clp-a and clp-b on the bass; clp-a2, linked to clp-a, on the lead.
     project::Project makeProject()
     {
-        project::Track track { "trk-bass", "Bass", project::TrackType::midi, { { "dev-bass-synth", project::DeviceType::fourOsc } }, {} };
-        track.clips.push_back ({ "clp-a", "clips/a.notes", 0, {} });
-        track.clips.push_back ({ "clp-b", "clips/b.notes", 4 * 3840, {} });
+        project::Track bass { "trk-bass", "Bass", project::TrackType::midi, { { "dev-bass-synth", project::DeviceType::synth } }, {} };
+        bass.clips.push_back ({ "clp-a", "clips/a.notes", 0 });
+        bass.clips.push_back ({ "clp-b", "clips/b.notes", 4 * 3840 });
+
+        project::Track lead { "trk-lead", "Lead", project::TrackType::midi, {}, {} };
+        lead.clips.push_back ({ "clp-a2", "clips/a.notes", 8 * 3840 });
 
         project::Project project;
-        project.tracks.push_back (std::move (track));
+        project.tracks.push_back (std::move (bass));
+        project.tracks.push_back (std::move (lead));
+        project.notesFiles["clips/a.notes"] = {};
+        project.notesFiles["clips/b.notes"] = {};
         return project;
     }
 
@@ -74,9 +81,10 @@ TEST_CASE ("undo and redo always match a reference history of whole-project copi
                 case 0:
                 case 1:
                 {
-                    const auto clipIndex = static_cast<std::size_t> (randomInt (rng, 0, 1));
-                    const auto clipId = clipIndex == 0 ? "clp-a" : "clp-b";
-                    const auto text = notes::write (randomClip (rng, clipIndex == 0 ? 4 : 3)); // clp-a must stay clear of clp-b
+                    const auto clipIndex = randomInt (rng, 0, 2);
+                    const auto clipId = clipIndex == 0 ? "clp-a" : clipIndex == 1 ? "clp-b" : "clp-a2";
+                    const auto file = clipIndex == 1 ? "clips/b.notes" : "clips/a.notes";
+                    const auto text = notes::write (randomClip (rng, clipIndex == 1 ? 3 : 4)); // clp-a must stay clear of clp-b
                     const auto author = randomInt (rng, 0, 1) == 0 ? Author { "Lee" } : Author { "Claude", "session-1" };
 
                     const auto result = bus.execute (WriteClip { clipId, text }, author);
@@ -84,7 +92,7 @@ TEST_CASE ("undo and redo always match a reference history of whole-project copi
 
                     // The bus stores what the text parses to: sorted, with spellings filled in.
                     auto next = expected;
-                    next.tracks[0].clips[clipIndex].content = *notes::parse (text).clip;
+                    next.notesFiles[file] = *notes::parse (text).clip; // linked clips share it
 
                     if (next != expected)
                     {

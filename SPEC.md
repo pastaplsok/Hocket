@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.7** — 2026-11-06
+> Status: **Draft v0.8** — 2026-11-12
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -112,7 +112,7 @@ A project is a **folder**, designed to be readable by humans and models, and dif
 my-song/
   project.json          # tempo, time signature, tracks, routing, mixer, device chains, clip placements
   clips/
-    bass-verse.notes    # note data, one file per MIDI clip
+    bass-verse.notes    # note data: one file per MIDI clip, or per set of linked clips
     drums-chorus.notes
   automation/
     pad-cutoff.auto     # automation lanes
@@ -148,22 +148,26 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Comping:** a clip can hold a list of take references, with the chosen segment of each take marked.
 - Recording writes new files into `audio/` and adds take references; it never modifies existing audio files.
 
-### 4.4 `project.json` (Milestone 0 subset)
+### 4.4 `project.json`
 ```json
 {
   "format": "hocket-project",
   "formatVersion": 0,
   "tempo": 120,
-  "timeSignature": "4/4",
+  "timeSignature": "6/8",
   "tracks": [
     {
       "id": "trk-bass",
       "name": "Bass",
       "type": "midi",
+      "volume": "-6dB",
+      "pan": "L20",
+      "mute": false,
+      "solo": false,
       "devices": [
         {
           "id": "dev-bass-synth",
-          "type": "tracktion:4osc"
+          "type": "hocket:synth"
         }
       ],
       "clips": [
@@ -171,6 +175,11 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
           "id": "clp-bass-verse",
           "file": "clips/bass-verse.notes",
           "start": "1.1"
+        },
+        {
+          "id": "clp-bass-verse-2",
+          "file": "clips/bass-verse.notes",
+          "start": "9.1"
         }
       ]
     }
@@ -179,9 +188,16 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 ```
 - **Strict:** every key shown is required. Unknown keys and duplicate keys are errors, so a typo is never silently ignored.
 - **Order:** `tracks` is in display order, `devices` in signal-chain order.
-- **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name. A clip's length comes from its `.notes` file (`@length`), never from `project.json`. Clips on one track may not overlap.
-- **Milestone 0 only:** each clip has its own file. **Linked clips** come in v1: several clips sharing one `.notes` file, pattern-style as in FL Studio, so editing it once changes every instance. Nothing may be designed around a file belonging to exactly one clip.
-- **Milestone 0 limits:** `"midi"` tracks with exactly one device, `"tracktion:4osc"`; time signature `"4/4"`; tempo 20–999 BPM.
+- **Tempo** is in quarter notes per minute, whatever the time signature: 20–999.
+- **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion counts beats the same way, with its default engine behaviour, so its BPM is quarter notes per minute too.)
+- **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name. A clip's length comes from its `.notes` file (`@length`), never from `project.json`. Clips on one track may not overlap. A song is at most 999 bars long: every clip ends by 1000.1, so a typo in a start can't make a loop thousands of bars long.
+- **Linked clips:** several clips may name the same `.notes` file, pattern-style as in FL Studio. They share its notes and its `@length`, so editing one edits them all (`write_clip` says which others changed). Hocket reads each file once and writes it once.
+- **Mix:** each track's `volume`, `pan`, `mute` and `solo`, always written.
+  - **Values with units** are a number and then the unit: an optional sign, digits, and an optional decimal point with digits after it. The writer puts no space between number and unit; the reader accepts one. Units are case-sensitive (`dB`, not `db`). Device parameters use the same syntax from Milestone 4 (`"2.4kHz"`, `"12ms"`).
+  - **`volume`** is in dB, from `"-96dB"` to `"+6dB"` in steps of 0.1 dB (finer values are rounded), or `"-infdB"` for silence. `"0dB"` leaves the signal as it is. The writer drops trailing zeros and puts `+` on boosts: `"-6.5dB"`, `"0dB"`, `"+3dB"`. The top is Tracktion's fader's.
+  - **`pan`** is `"C"`, `"L1"` to `"L100"`, or `"R1"` to `"R100"`. **It's a balance control:** at C both channels pass unchanged. Panning towards one side leaves that side's channel unchanged and lowers the other linearly in gain, to silence at L100 or R100: at L50 the right channel is at half gain (−6 dB). So `"0dB"` and `"C"` together leave a track exactly as its instrument made it. Pan never moves one channel's content to the other side: at L100, anything only in the right channel is silent. (Tracktion's own pan laws either boost the near side or lower the centre, so the sync layer gets this one out of its linear law with a matching volume, in Milestone 1's step 6.)
+  - **`mute` and `solo`** are `true` or `false`. While any track is soloed, only soloed tracks are heard; a muted track is silent even when soloed.
+- **Devices:** none, or one instrument: `"hocket:synth"` (§8.1). Effects come in Milestone 5.
 - **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
 
 ### 4.5 Saving
@@ -210,7 +226,7 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 
 | Field | Format | Notes |
 |---|---|---|
-| Position | `bar.beat[.sixteenth][+ticks]` | 1-based, relative to the clip start. `+ticks` allows micro-timing (960 ticks per beat). |
+| Position | `bar.beat[.sixteenth][+ticks]` | 1-based, relative to the clip start. Beats are the time signature's, and the sixteenth counts within the beat (§4.4). `+ticks` allows micro-timing (960 ticks per quarter note). |
 | Pitch | Note name + octave (`C2`, `F#4`, `Bb3`) | Uppercase letter, optional `#` or `b`, octave. `C4` = MIDI 60 (middle C); range `C-1` to `G9`. No key-signature inference — the written name is the pitch, and its spelling (`Eb2` vs `D#2`) is kept. Lowercase names are drum-map names (§5.2). |
 | Length | Fraction of a whole note (`1/8`, `1/16`, `3/8`), triplets (`1/8t`), or ticks (`250tk`) | |
 | Velocity | `v1`–`v127` | Required on every note line. |
@@ -218,7 +234,7 @@ Design goal: every line stands on its own. Positions are **absolute**, so a mist
 | Comments | `#` to end of line | `#` starts a comment at the start of a line or after whitespace, so the `#` in `F#4` is not one. Preserved on canonical rewrite. |
 
 ### 5.1 Decided details
-- **Timing resolution:** 960 ticks per beat. `+ticks` offsets are for human feel and micro-timing.
+- **Timing resolution:** 960 ticks per quarter note, whatever the time signature. `+ticks` offsets are for human feel and micro-timing.
 - **Chords:** one note per entry internally. The canonical writer collapses notes sharing position, length, and velocity into bracket form, and the parser accepts either form:
   ```
   1.1      [C3 E3 G3]  1/2   v80
@@ -262,7 +278,7 @@ The writer always produces exactly this form. The parser accepts looser input: a
 - **Position:** shortest form: `bar.beat`, plus `.sixteenth` only when it isn't 1, plus `+ticks` only when they aren't 0 (always under 240).
 - **Pitch:** as written, except `Cb`, `Fb`, `B#` and `E#`, which are written as the natural note (`Cb4` → `B3`).
 - **Length:** a reduced fraction with a power-of-two denominator up to 64, if there is one (`2/8` → `1/4`); otherwise such a fraction as a triplet (`1/12` → `1/8t`); otherwise ticks (`250tk`).
-- **`@length`:** always written, in bars (`@length 1bar`, `@length 4bars`). A file without it gets the smallest whole number of bars that holds every note's start (at least one).
+- **`@length`:** always written, in bars of the song's time signature (`@length 1bar`, `@length 4bars`). A file without it gets the smallest whole number of bars that holds every note's start (at least one).
 - **Comments:**
   - Comments before the first directive or note line are the file header and stay at the top.
   - Any other full-line comment belongs to the line after it and moves with that line. A trailing comment belongs to its own line.
@@ -392,6 +408,7 @@ Raw data remains available on explicit request (e.g. for a script).
 **Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
 - Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
 - Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
+- So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4.
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
 
 ### 8.2 VST3 hosting requirements (Phase 2)
@@ -513,5 +530,4 @@ Not in v1: an installer, and a public release.
 - Analysis toolkit summary vocabulary and thresholds (§7.4) — tune against real renders during v1
 - CLAP support (Phase 2)
 - Device changes during playback: when the audio or MIDI device list changes (a MIDI keyboard plugged in, a driver's settings changed), Tracktion stops the transport. Keep playing, restart, or say so? Settled in Milestone 3 (§10.1), with MIDI input: plugging a keyboard in mid-session is a realistic case.
-- Time signatures in eighths (6/8, 7/8): what a beat is for `.notes` positions and `+ticks`. Settled in Milestone 1, with the other time signatures.
 - Name check: confirm "Hocket" is clear on GitHub, domains, and trademarks before going public

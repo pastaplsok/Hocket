@@ -8,24 +8,48 @@
 
 namespace hocket::testing
 {
-project::Clip makeClip (std::string id, notes::Ticks start, std::string_view notesText)
+TestClip makeClip (std::string id, notes::Ticks start, std::string_view notesText)
 {
-    auto parsed = notes::parse (notesText);
-    REQUIRE (parsed.clip);
-    return { id, "clips/" + id.substr (4) + ".notes", start, std::move (*parsed.clip) };
+    auto file = "clips/" + id.substr (4) + ".notes";
+    return { { std::move (id), std::move (file), start }, std::string (notesText) };
 }
 
-project::Track makeTrack (std::string id, std::string name, std::vector<project::Clip> clips)
+TestClip linkedClip (std::string id, notes::Ticks start, const TestClip& linkedTo)
+{
+    return { { std::move (id), linkedTo.clip.file, start }, std::nullopt };
+}
+
+TestTrack makeTrack (std::string id, std::string name, std::vector<TestClip> clips)
 {
     auto deviceId = "dev-" + id.substr (4) + "-synth";
-    return { std::move (id), std::move (name), project::TrackType::midi, { { std::move (deviceId), project::DeviceType::fourOsc } }, std::move (clips) };
+    return { { std::move (id), std::move (name), project::TrackType::midi, { { std::move (deviceId), project::DeviceType::synth } }, {} },
+             std::move (clips) };
 }
 
-project::Project makeProject (std::vector<project::Track> tracks, double tempo)
+project::Project makeProject (std::vector<TestTrack> tracks, double tempo, notes::Meter meter)
 {
     project::Project project;
     project.tempo = tempo;
-    project.tracks = std::move (tracks);
+    project.meter = meter;
+
+    for (auto& [track, clips] : tracks)
+    {
+        for (auto& [clip, text] : clips)
+        {
+            if (text)
+            {
+                auto parsed = notes::parse (*text, meter);
+                INFO (clip.file);
+                REQUIRE (parsed.clip);
+                project.notesFiles[clip.file] = std::move (*parsed.clip);
+            }
+
+            track.clips.push_back (std::move (clip));
+        }
+
+        project.tracks.push_back (std::move (track));
+    }
+
     return project;
 }
 

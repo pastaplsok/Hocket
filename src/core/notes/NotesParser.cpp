@@ -236,11 +236,11 @@ namespace
             const auto& name = fields[0];
 
             if (name.text == "@swing" || name.text == "@ch")
-                return error (lineNumber, name.column, quoted (name.text) + " isn't supported yet in Milestone 0; remove the line");
+                return error (lineNumber, name.column, quoted (name.text) + " isn't supported yet (it comes in Milestone 3); remove the line");
 
             if (name.text != "@length")
                 return error (lineNumber, name.column, "unknown directive " + quoted (name.text)
-                                                           + "; Milestone 0 supports only '@length', e.g. '@length 4bars'");
+                                                           + "; the only one so far is '@length', e.g. '@length 4bars'");
 
             if (lengthLine)
                 return error (lineNumber, name.column, "@length is set twice; it was already set on line " + std::to_string (*lengthLine));
@@ -268,7 +268,7 @@ namespace
                                                             + std::to_string (maxLengthInBars) + " bars, e.g. '@length 16bars'");
 
             if (bars < 1)
-                return error (lineNumber, value.column, quoted (value.text) + " isn't a valid @length: Milestone 0 clip lengths are "
+                return error (lineNumber, value.column, quoted (value.text) + " isn't a valid @length: clip lengths are "
                                                             "a whole number of bars, e.g. '@length 4bars' or '@length 1bar'");
 
             clip.lengthInBars = bars;
@@ -316,7 +316,7 @@ namespace
 
                 if (extra.text.starts_with ("ch") && isDigits (extra.text.substr (2)))
                     return error (lineNumber, extra.column, "per-note MIDI channels (" + quoted (extra.text)
-                                                                + ") aren't supported yet in Milestone 0; remove it");
+                                                                + ") aren't supported yet (they come in Milestone 3); remove it");
 
                 return error (lineNumber, extra.column, "unexpected " + quoted (extra.text)
                                                             + " after the velocity; a note line is position, pitch, length, velocity, e.g. "
@@ -383,7 +383,7 @@ namespace
         {
             if (looksLikeController (field.text))
             {
-                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb', 'at') aren't supported yet in Milestone 0; only note lines like ")
+                error (lineNumber, field.column, std::string ("controller lines ('cc74', 'pb', 'at') aren't supported yet (they come in Milestone 6); only note lines like ")
                                                      + noteLineExample);
                 return false;
             }
@@ -391,13 +391,13 @@ namespace
             if (looksLikeLowercaseNote (field.text))
             {
                 error (lineNumber, field.column, quoted (field.text) + " isn't a note name: note names start with an uppercase letter, e.g. 'C2'. "
-                                                                         "Lowercase names are drum-map names, which Milestone 0 doesn't support yet");
+                                                                         "Lowercase names are drum-map names, which aren't supported yet");
                 return false;
             }
 
             if (! field.text.empty() && field.text[0] >= 'a' && field.text[0] <= 'z')
             {
-                error (lineNumber, field.column, quoted (field.text) + " looks like a drum-map name; drum maps aren't supported yet in Milestone 0, "
+                error (lineNumber, field.column, quoted (field.text) + " looks like a drum-map name; drum maps aren't supported yet, "
                                                                          "so use a note name such as 'C1'");
                 return false;
             }

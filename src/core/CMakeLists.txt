@@ -19,7 +19,9 @@ add_library(hocket_core STATIC
     project/Project.cpp
     project/Project.h
     project/ProjectReader.cpp
-    project/ProjectWriter.cpp)
+    project/ProjectWriter.cpp
+    units/Units.cpp
+    units/Units.h)
 
 target_include_directories(hocket_core PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(hocket_core PUBLIC cxx_std_20)
