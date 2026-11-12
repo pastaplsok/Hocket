@@ -26,7 +26,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 1 | Device options and Milestone 0's loose ends | Done (2026-11-12); two checks wait for the Magni (Loose ends) |
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
-| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: part 1 of 8 done |
+| 4 | Commands for the song's structure, with undo and gesture coalescing | In progress: parts 1 and 2 of 8 done |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Not started |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
@@ -131,7 +131,11 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - No client can send these commands until step 10's tools, and steps 5 and 6 sync them, so `--play` can't fall out of step meanwhile. But `EditSync::notesChanged` asserts that every clip using a file is in the Edit: a `NotesChanged` for a clip a step 4 command added would trip it. Engine tests mustn't send structural commands to an `EditSync` before step 5.
 - Build order, committing each part:
   1. The shared checks, out of the reader. Done: `project/Rules.h` has IDs, track names, tempo, track and device types, where a drum sampler goes, kit names, building a drum map from entries (duplicates included), clip files and the 999-bar song. Transaction names use its `isOneLineText`, so they must be valid UTF-8 now too. Overlaps stay in the reader for now: the bus needs a different check (where a moved clip would fit), written with the clip commands.
-  2. Edits with their inverses (`CommandBus::Edit` grows past `SetNotes`), and the change notices.
+  2. Edits with their inverses (`CommandBus::Edit` grows past `SetNotes`), and the change notices. Done:
+     - `commands/Edits.h`: ten edits, each returning its exact inverse (a file's notes set, added or removed; tempo; meter; a track inserted, removed, moved or its settings set; a clip inserted, removed or its start and file set). Commands are planned into them by free functions (`commands/Planning.h`; `write_clip`'s is in `ClipCommands.cpp`), so the bus keeps only history and transactions.
+     - `commands/Changes.h`: a change notice for each kind of change, named by ID. Listeners get them once all of a command's (or undo's) edits have applied, so they never see a half-applied command.
+     - `changesTo (file)` (for `--watch`'s warning) now also counts entries that change how a file is written, not only its notes: a time signature, a drum map. Each entry keeps the files whose canonical text it changed (`project::clipFileText`, before and after).
+     - The command types moved to `commands/Commands.h`. The new edits get their tests with the commands that make them (parts 3 to 6).
   3. Song: tempo and time signature.
   4. Tracks: add, remove, rename, move, mix.
   5. Clips: add (each way), move, remove, make unique.

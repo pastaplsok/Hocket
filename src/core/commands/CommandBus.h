@@ -7,65 +7,20 @@
 //
 // Not thread-safe: use it from the message thread only (SPEC §3.2).
 
+#include "core/commands/Changes.h"
+#include "core/commands/Commands.h"
+#include "core/commands/Edits.h"
 #include "core/project/Project.h"
 
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace hocket::commands
 {
-    // Replaces a clip's notes with new .notes text (SPEC §6.2). The notes are
-    // its file's, so clips linked to it change too.
-    struct WriteClip
-    {
-        std::string clipId;
-        std::string notes;
-    };
-
-    // Transport commands (SPEC §3.1). They don't change the project, so they're
-    // never validated against it, never enter the history, and don't split an
-    // open transaction.
-    struct Play
-    {
-    };
-
-    struct Stop
-    {
-    };
-
-    using Command = std::variant<WriteClip, Play, Stop>;
-
-    // Who sends a command (SPEC §3.1). Two authors are the same when their names
-    // and sessions match, so two Claude sessions are different authors, and a
-    // client that reconnects with its session ID is still the author of its own
-    // changes. The label only tells same-named authors apart in messages.
-    struct Author
-    {
-        std::string name;    // "Lee", "Claude", "script:walking-bass"
-        std::string session; // the client's session ID; empty for the person at the DAW
-        std::string label;   // optional, chosen by the client, e.g. "drums"
-
-        bool operator== (const Author& other) const { return name == other.name && session == other.session; }
-    };
-
-    // "Claude", or "Claude (drums)" with a label.
-    std::string displayName (const Author& author);
-
-    // How a message to `reader` names `author`: "you" for the reader; otherwise
-    // the display name, plus " in another session" when it alone would look
-    // like the reader's own.
-    std::string nameFor (const Author& author, const Author& reader);
-
-    struct Result
-    {
-        bool ok = false;
-        std::string message; // on success, what happened; on failure, what's wrong and how to fix it
-    };
-
     // Carries out transport commands for the bus. The engine provides one; without
     // it, transport commands fail.
     class Transport
@@ -94,15 +49,6 @@ namespace hocket::commands
         int part = 1;          // > 1 once another author's command has split it
         bool hasEdits = false; // in the current part
     };
-
-    // What changed in the project, so the engine can update just that (SPEC §3.3).
-    // A clip file's notes: every clip that uses the file changed.
-    struct NotesChanged
-    {
-        std::string file;
-    };
-
-    using Change = std::variant<NotesChanged>;
 
     // Whose changes an undo may take back. The GUI undoes anything; AI clients
     // undo only their own changes unless they pass force (SPEC §3.1).
@@ -139,13 +85,17 @@ namespace hocket::commands
         // Newest first. An open transaction's edits aren't listed until they're committed.
         std::vector<HistoryEntry> history() const;
 
-        // The entries in history() that changed this clip file's notes, newest first.
+        // The entries in history() that changed this clip file's text, newest
+        // first: its notes, or how they're written (the time signature, the
+        // drum map it's written with).
         std::vector<HistoryEntry> changesTo (std::string_view file) const;
 
         std::optional<OpenTransaction> openTransaction() const;
 
-        // Called after every change to the project, including undo, redo and rollback.
-        // Returns an ID for removeListener. Listeners mustn't add or remove listeners.
+        // Called with each change, after every command, undo, redo and
+        // rollback, once all of its edits have applied, so a listener sees
+        // the project whole. Returns an ID for removeListener. Listeners
+        // mustn't add or remove listeners.
         int addListener (std::function<void (const Change&)> listener);
         void removeListener (int listenerId);
 
@@ -157,28 +107,31 @@ namespace hocket::commands
         std::optional<bool> isPlaying() const;
 
     private:
-        struct SetNotes
-        {
-            std::string file;
-            notes::Clip content;
-        };
+        using Edit = edits::Edit;
 
-        using Edit = std::variant<SetNotes>;
+        // Edits recorded together: a history entry, or an open transaction's current part.
+        struct Edits
+        {
+            std::vector<Edit> forward;       // in the order they were applied
+            std::vector<Edit> inverse;       // the same edits' inverses, in the same order
+            edits::Files rewritten;          // the clip files whose text they changed (changesTo)
+
+            bool empty() const { return forward.empty(); }
+            void append (Edits&& more);
+        };
 
         struct Entry
         {
             HistoryEntry info;
-            std::vector<Edit> forward; // in the order they were applied
-            std::vector<Edit> inverse; // the same edits' inverses, in the same order
+            Edits edits;
         };
 
         struct Transaction
         {
             Author author;
             std::string name;
-            int part = 1;              // > 1 once another author's command has split it
-            std::vector<Edit> forward; // the current part's edits
-            std::vector<Edit> inverse;
+            int part = 1; // > 1 once another author's command has split it
+            Edits edits;  // the current part's
         };
 
         project::Project currentProject;
@@ -191,10 +144,15 @@ namespace hocket::commands
         Transport* transport = nullptr;
 
         Result runTransportCommand (const Command&);
-        Result validate (const WriteClip&, std::vector<Edit>& edits, std::string& description) const;
-        Edit apply (const Edit&);
-        void record (const Author& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse);
+        edits::Plan plan (const Command&) const;
+
+        // Applies a command's edits, and says what they did.
+        Edits applyCommand (std::vector<Edit> forward);
+        void applyForward (const Edits&);
+        void applyInverse (const Edits&);
+
+        void record (const Author& author, std::string description, Edits edits);
         void closeTransactionPart();
-        void notify (const Change&);
+        void notify (const std::vector<Change>&);
     };
 }

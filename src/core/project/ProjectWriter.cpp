@@ -105,9 +105,19 @@ std::map<std::string, std::string> write (const Project& project)
     files["project.json"] = root.dump (2) + "\n";
 
     // Once each, however many clips are linked to it.
-    for (const auto& [file, content] : project.notesFiles)
-        files[file] = notes::write (content, project.meter, drumMapOfFile (project, file));
+    for (const auto& entry : project.notesFiles)
+        files[entry.first] = *clipFileText (project, entry.first);
 
     return files;
+}
+
+std::optional<std::string> clipFileText (const Project& project, std::string_view file)
+{
+    const auto found = project.notesFiles.find (file);
+
+    if (found == project.notesFiles.end())
+        return {};
+
+    return notes::write (found->second, project.meter, drumMapOfFile (project, file));
 }
 }

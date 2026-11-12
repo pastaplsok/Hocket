@@ -2,22 +2,11 @@
 
 namespace hocket::commands
 {
-namespace
-{
-    std::optional<std::string> canonicalText (const project::Project& project, std::string_view file)
-    {
-        if (const auto found = project.notesFiles.find (file); found != project.notesFiles.end())
-            return notes::write (found->second, project.meter, project::drumMapOfFile (project, file));
-
-        return {};
-    }
-}
-
 WatchedSaves::WatchedSaves (CommandBus& commandBus, Author personAtTheDaw)
     : bus (commandBus), person (std::move (personAtTheDaw))
 {
-    for (const auto& [file, content] : bus.project().notesFiles)
-        matchedFile[file] = notes::write (content, bus.project().meter, project::drumMapOfFile (bus.project(), file));
+    for (const auto& entry : bus.project().notesFiles)
+        matchedFile[entry.first] = *project::clipFileText (bus.project(), entry.first);
 }
 
 WatchedSaves::Outcome WatchedSaves::save (const std::string& file, const std::string& text)
@@ -28,7 +17,7 @@ WatchedSaves::Outcome WatchedSaves::save (const std::string& file, const std::st
     if (clips.empty())
         return { { false, "no clip uses " + file + " any more, so the save wasn't played" }, {} };
 
-    const auto before = canonicalText (bus.project(), file);
+    const auto before = project::clipFileText (bus.project(), file);
     auto result = bus.execute (WriteClip { clips.front()->id, text }, person);
 
     if (! result.ok || ! before)
@@ -37,7 +26,7 @@ WatchedSaves::Outcome WatchedSaves::save (const std::string& file, const std::st
     // Something other than the file changed its notes since they last matched.
     const auto matched = matchedFile.find (file);
     const auto changedElsewhere = matched == matchedFile.end() || *before != matched->second;
-    const auto after = *canonicalText (bus.project(), file);
+    const auto after = *project::clipFileText (bus.project(), file);
     matchedFile[file] = after;
 
     if (! changedElsewhere || after == *before)

@@ -118,6 +118,10 @@ namespace hocket::project
     // project must be valid.
     std::map<std::string, std::string> write (const Project& project);
 
+    // A clip file's text in canonical form, as write() writes it; nullopt if
+    // the project doesn't have the file.
+    std::optional<std::string> clipFileText (const Project& project, std::string_view file);
+
     // "clips/bass.notes:6:10: message", "project.json: message", or just the message.
     std::string formatDiagnostic (const Diagnostic& diagnostic);
 

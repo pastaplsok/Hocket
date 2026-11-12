@@ -5,8 +5,14 @@ add_library(hocket_core STATIC
     Paths.h
     Suggestions.cpp
     Suggestions.h
+    commands/Changes.h
+    commands/ClipCommands.cpp
     commands/CommandBus.cpp
     commands/CommandBus.h
+    commands/Commands.h
+    commands/Edits.cpp
+    commands/Edits.h
+    commands/Planning.h
     commands/WatchedSaves.cpp
     commands/WatchedSaves.h
     notes/DrumMap.cpp

@@ -1,9 +1,9 @@
 #include "core/commands/CommandBus.h"
-#include "core/notes/NotesSyntax.h"
+#include "core/commands/Planning.h"
 #include "core/project/Rules.h"
 
 #include <algorithm>
-#include <cassert>
+#include <map>
 
 namespace hocket::commands
 {
@@ -11,25 +11,16 @@ namespace
 {
     constexpr std::size_t maxTransactionNameLength = 100;
 
-    std::string singleQuoted (std::string_view text)
-    {
-        return "'" + std::string (text) + "'";
-    }
-
     std::string doubleQuoted (std::string_view text)
     {
         return "\"" + std::string (text) + "\"";
     }
 
-    std::string barsText (int bars)
+    template <typename... Types>
+    struct Overloaded : Types...
     {
-        return std::to_string (bars) + (bars == 1 ? "bar" : "bars");
-    }
-
-    std::string countText (std::size_t count, std::string_view noun)
-    {
-        return std::to_string (count) + " " + std::string (noun) + (count == 1 ? "" : "s");
-    }
+        using Types::operator()...;
+    };
 }
 
 std::string displayName (const Author& author)
@@ -47,6 +38,13 @@ std::string nameFor (const Author& author, const Author& reader)
 }
 
 //==============================================================================
+void CommandBus::Edits::append (Edits&& more)
+{
+    forward.insert (forward.end(), std::make_move_iterator (more.forward.begin()), std::make_move_iterator (more.forward.end()));
+    inverse.insert (inverse.end(), std::make_move_iterator (more.inverse.begin()), std::make_move_iterator (more.inverse.end()));
+    rewritten.merge (more.rewritten);
+}
+
 CommandBus::CommandBus (project::Project project) : currentProject (std::move (project))
 {
 }
@@ -59,37 +57,32 @@ Result CommandBus::execute (const Command& command, const Author& author)
     if (std::holds_alternative<Play> (command) || std::holds_alternative<Stop> (command))
         return runTransportCommand (command);
 
-    std::vector<Edit> edits;
-    std::string description;
-    auto result = validate (std::get<WriteClip> (command), edits, description);
+    auto planned = plan (command);
 
     // Invalid, or valid but changes nothing.
-    if (! result.ok || edits.empty())
-        return result;
+    if (! planned.result.ok || planned.edits.empty())
+        return planned.result;
 
     // Another author's command never waits for an open transaction (SPEC §3.1).
     if (transaction && transaction->author != author)
         closeTransactionPart();
 
-    std::vector<Edit> inverse;
-
-    for (const auto& edit : edits)
-        inverse.push_back (apply (edit));
+    auto applied = applyCommand (std::move (planned.edits));
+    const auto remarks = planned.remarks.empty() ? std::string() : ". " + planned.remarks;
 
     // Undone entries assumed the project as it was; after a new edit they can't be redone.
     undone.clear();
 
     if (transaction && transaction->author == author)
     {
-        transaction->forward.insert (transaction->forward.end(), edits.begin(), edits.end());
-        transaction->inverse.insert (transaction->inverse.end(), inverse.begin(), inverse.end());
-        return { true, description + " in your open transaction " + doubleQuoted (transaction->name)
-                           + "; it becomes a history entry when you commit" };
+        transaction->edits.append (std::move (applied));
+        return { true, planned.description + " in your open transaction " + doubleQuoted (transaction->name)
+                           + "; it becomes a history entry when you commit" + remarks };
     }
 
     const auto id = nextEntryId;
-    record (author, description, std::move (edits), std::move (inverse));
-    return { true, "#" + std::to_string (id) + " " + description };
+    record (author, planned.description, std::move (applied));
+    return { true, "#" + std::to_string (id) + " " + planned.description + remarks };
 }
 
 Result CommandBus::runTransportCommand (const Command& command)
@@ -102,148 +95,85 @@ Result CommandBus::runTransportCommand (const Command& command)
     return std::holds_alternative<Play> (command) ? transport->play() : transport->stop();
 }
 
-Result CommandBus::validate (const WriteClip& command, std::vector<Edit>& edits, std::string& description) const
+edits::Plan CommandBus::plan (const Command& command) const
 {
-    const project::Track* clipTrack = nullptr;
-    const auto* clip = project::findClip (currentProject, command.clipId, &clipTrack);
-
-    if (clip == nullptr)
-        return { false, "write_clip: " + project::unknownClipMessage (currentProject, command.clipId, "write_clip") };
-
-    // A drums track's clips are read with its drum map (SPEC §5.2).
-    const auto* drumMap = project::drumMapOf (*clipTrack);
-    auto parsed = notes::parse (command.notes, currentProject.meter, drumMap);
-
-    if (! parsed.clip)
-    {
-        auto message = "write_clip: the new text for clip " + singleQuoted (clip->id) + " has "
-                     + countText (parsed.errors.size(), "error") + ", so nothing was changed:";
-
-        for (const auto& error : parsed.errors)
-            message += "\n" + notes::formatDiagnostic (error, clip->file);
-
-        return { false, message };
-    }
-
-    // A longer @length mustn't run any clip that uses the file into the next
-    // clip on its track, or past the end of the longest song. The tightest
-    // limit is the one reported, so the length it suggests fits every clip.
-    const auto meter = currentProject.meter;
-    const auto newLength = parsed.clip->lengthInBars * meter.ticksPerBar();
-    const auto songLimit = project::maxSongLengthInBars * meter.ticksPerBar();
-    const project::Clip* tightest = nullptr;
-    const project::Clip* tightestNext = nullptr; // the clip after it, if that's what limits it
-    notes::Ticks tightestRoom = 0;
-    std::vector<std::string> linked;
-
-    for (const auto& track : currentProject.tracks)
-    {
-        for (const auto& user : track.clips)
-        {
-            if (user.file != clip->file)
-                continue;
-
-            if (&user != clip)
-                linked.push_back (user.id);
-
-            const project::Clip* next = nullptr;
-
-            for (const auto& other : track.clips)
-                if (&other != &user && other.start >= user.start && (next == nullptr || other.start < next->start))
-                    next = &other;
-
-            const auto room = next != nullptr && next->start < songLimit ? next->start - user.start : songLimit - user.start;
-
-            if (tightest == nullptr || room < tightestRoom)
-            {
-                tightest = &user;
-                tightestNext = next != nullptr && next->start < songLimit ? next : nullptr;
-                tightestRoom = room;
-            }
-        }
-    }
-
-    if (newLength > tightestRoom)
-    {
-        const auto newEnd = tightest->start + newLength;
-        const auto maxBars = static_cast<int> (tightestRoom / meter.ticksPerBar());
-        const auto who = tightest == clip ? "clip " + singleQuoted (clip->id)
-                                          : "clip " + singleQuoted (tightest->id) + " (linked to " + singleQuoted (clip->id) + ": they share "
-                                                + clip->file + ")";
-
-        const auto where = tightestNext != nullptr
-                             ? ", into clip " + singleQuoted (tightestNext->id) + " at " + notes::formatPosition (tightestNext->start, meter)
-                                   + ". Clips on a track can't overlap"
-                             : ", past the end of bar " + std::to_string (project::maxSongLengthInBars) + ". A song is at most "
-                                   + std::to_string (project::maxSongLengthInBars) + " bars long";
-
-        return { false, "write_clip: with @length " + barsText (parsed.clip->lengthInBars) + ", " + who + " would run from "
-                            + notes::formatPosition (tightest->start, meter) + " to " + notes::formatPosition (newEnd, meter) + where
-                            + ", so make @length at most " + barsText (maxBars) + ". Nothing was changed" };
-    }
-
-    // A file used on several tracks must mean the same notes on each, so their
-    // drum maps must name the new notes alike (SPEC §5.2).
-    for (const auto* track : project::tracksUsing (currentProject, clip->file))
-    {
-        if (track == clipTrack)
-            continue;
-
-        if (const auto conflicts = project::drumNameConflicts (*parsed.clip, *clipTrack, *track); ! conflicts.empty())
-            return { false, "write_clip: " + clip->file + " is used on tracks " + clipTrack->id + " and " + track->id
-                                + ", and their drum maps don't name these notes alike: " + conflicts + ". A file used on several tracks "
-                                  "must mean the same notes on each, so nothing was changed. Leave those notes out, or make the maps agree" };
-    }
-
-    // Compared in canonical form: the parser keeps notes and comments where the
-    // text had them, so two texts that write out the same can parse differently,
-    // e.g. a client sending back read_clip's text for a clip loaded from looser text.
-    if (notes::write (*parsed.clip, meter, drumMap) == notes::write (project::notesOf (currentProject, *clip), meter, drumMap))
-        return { true, "clip " + singleQuoted (clip->id) + " already has exactly these notes, so nothing changed and no history entry was added" };
-
-    description = "wrote clip " + clip->id + " (" + countText (parsed.clip->notes.size(), "note") + ")";
-
-    if (! linked.empty())
-    {
-        description += ", and its linked clip" + std::string (linked.size() == 1 ? " " : "s ");
-
-        for (std::size_t i = 0; i < linked.size(); ++i)
-            description += (i == 0 ? "" : ", ") + linked[i];
-    }
-
-    edits.push_back (SetNotes { clip->file, std::move (*parsed.clip) });
-    return { true, {} };
+    return std::visit (Overloaded {
+                           [this] (const WriteClip& c) { return planning::plan (currentProject, c); },
+                           [] (const Play&) { return edits::Plan {}; }, // transport commands never get here
+                           [] (const Stop&) { return edits::Plan {}; },
+                       },
+                       command);
 }
 
-CommandBus::Edit CommandBus::apply (const Edit& edit)
+//==============================================================================
+CommandBus::Edits CommandBus::applyCommand (std::vector<Edit> forward)
 {
-    return std::visit ([this] (const SetNotes& set) -> Edit
+    // The clip files whose text the edits could change, and that text now.
+    edits::Files candidates;
+
+    for (const auto& edit : forward)
+        edits::addFilesAffected (currentProject, edit, candidates);
+
+    std::map<std::string, std::optional<std::string>, std::less<>> before;
+
+    for (const auto& file : candidates)
+        before[file] = project::clipFileText (currentProject, file);
+
+    Edits applied;
+    std::vector<Change> changes;
+
+    for (const auto& edit : forward)
+        applied.inverse.push_back (edits::apply (currentProject, edit, changes));
+
+    applied.forward = std::move (forward);
+
+    for (const auto& edit : applied.forward)
+        edits::addFilesAffected (currentProject, edit, candidates);
+
+    for (const auto& file : candidates)
     {
-        // Edits are only made for files that validation found.
-        auto& content = currentProject.notesFiles.at (set.file);
-        SetNotes inverse { set.file, std::move (content) };
-        content = set.content;
-        notify (NotesChanged { set.file });
-        return inverse;
-    }, edit);
+        const auto was = before.find (file);
+
+        if ((was != before.end() ? was->second : std::nullopt) != project::clipFileText (currentProject, file))
+            applied.rewritten.insert (file);
+    }
+
+    notify (changes);
+    return applied;
 }
 
-void CommandBus::record (const Author& author, std::string description, std::vector<Edit> forward, std::vector<Edit> inverse)
+void CommandBus::applyForward (const Edits& entryEdits)
 {
-    done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (forward), std::move (inverse) });
+    std::vector<Change> changes;
+
+    for (const auto& edit : entryEdits.forward)
+        edits::apply (currentProject, edit, changes);
+
+    notify (changes);
+}
+
+void CommandBus::applyInverse (const Edits& entryEdits)
+{
+    std::vector<Change> changes;
+
+    for (auto i = entryEdits.inverse.size(); i-- > 0;)
+        edits::apply (currentProject, entryEdits.inverse[i], changes);
+
+    notify (changes);
+}
+
+void CommandBus::record (const Author& author, std::string description, Edits edits)
+{
+    done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (edits) });
     undone.clear();
 }
 
 void CommandBus::closeTransactionPart()
 {
-    if (! transaction || transaction->forward.empty())
+    if (! transaction || transaction->edits.empty())
         return;
 
-    record (transaction->author, transaction->name + " (part " + std::to_string (transaction->part) + ")",
-            std::move (transaction->forward), std::move (transaction->inverse));
-
-    transaction->forward.clear();
-    transaction->inverse.clear();
+    record (transaction->author, transaction->name + " (part " + std::to_string (transaction->part) + ")", std::exchange (transaction->edits, {}));
     ++transaction->part;
 }
 
@@ -283,13 +213,13 @@ Result CommandBus::commitTransaction (const Author& author)
     auto finished = std::move (*transaction);
     transaction.reset();
 
-    if (finished.forward.empty())
+    if (finished.edits.empty())
         return { true, finished.part == 1 ? "committed " + doubleQuoted (finished.name) + " with no changes; nothing was added to the history"
                                           : "committed " + doubleQuoted (finished.name) + "; its earlier parts are already in the history" };
 
     const auto name = finished.part == 1 ? finished.name : finished.name + " (part " + std::to_string (finished.part) + ")";
     const auto id = nextEntryId;
-    record (finished.author, name, std::move (finished.forward), std::move (finished.inverse));
+    record (finished.author, name, std::move (finished.edits));
     return { true, "#" + std::to_string (id) + " " + name };
 }
 
@@ -303,14 +233,14 @@ Result CommandBus::interruptTransaction (const Author& author)
 
     const auto closed = "transaction " + doubleQuoted (finished.name) + " was closed";
 
-    if (finished.forward.empty())
+    if (finished.edits.empty())
         return { true, closed + (finished.part == 1 ? " with no edits, so nothing was added to the history"
                                                     : "; its earlier parts are already in the history, and the last part had no edits") };
 
     const auto name = finished.part == 1 ? finished.name + " (interrupted)"
                                          : finished.name + " (part " + std::to_string (finished.part) + ", interrupted)";
     const auto id = nextEntryId;
-    record (finished.author, name, std::move (finished.forward), std::move (finished.inverse));
+    record (finished.author, name, std::move (finished.edits));
 
     return { true, closed + (finished.part == 1 ? "; its edits are " : "; its earlier parts are already in the history, and the last part is ")
                        + "#" + std::to_string (id) + " " + doubleQuoted (name) };
@@ -324,8 +254,7 @@ Result CommandBus::rollbackTransaction (const Author& author)
     auto finished = std::move (*transaction);
     transaction.reset();
 
-    for (auto i = finished.inverse.size(); i-- > 0;)
-        apply (finished.inverse[i]);
+    applyInverse (finished.edits);
 
     auto message = "rolled back " + doubleQuoted (finished.name);
 
@@ -343,7 +272,7 @@ Result CommandBus::undo (const Author& author, UndoScope scope)
         if (transaction->author == author)
             return { false, "can't undo while your transaction " + doubleQuoted (transaction->name) + " is open; roll it back instead, or commit it first" };
 
-        if (scope == UndoScope::callersOwn && ! transaction->forward.empty())
+        if (scope == UndoScope::callersOwn && ! transaction->edits.empty())
             return { false, "didn't undo: the most recent change is part of the open transaction " + doubleQuoted (transaction->name) + " by "
                                 + nameFor (transaction->author, author) + ", not yours. Leave it, or undo with force to undo it anyway" };
 
@@ -368,8 +297,7 @@ Result CommandBus::undo (const Author& author, UndoScope scope)
     auto entry = std::move (done.back());
     done.pop_back();
 
-    for (auto i = entry.inverse.size(); i-- > 0;)
-        apply (entry.inverse[i]);
+    applyInverse (entry.edits);
 
     const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     undone.push_back (std::move (entry));
@@ -387,8 +315,7 @@ Result CommandBus::redo (const Author& author)
     auto entry = std::move (undone.back());
     undone.pop_back();
 
-    for (const auto& edit : entry.forward)
-        apply (edit);
+    applyForward (entry.edits);
 
     const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
     done.push_back (std::move (entry));
@@ -407,15 +334,10 @@ std::vector<HistoryEntry> CommandBus::history() const
 
 std::vector<HistoryEntry> CommandBus::changesTo (std::string_view file) const
 {
-    const auto changesFile = [file] (const Edit& edit)
-    {
-        return std::visit ([file] (const SetNotes& set) { return set.file == file; }, edit);
-    };
-
     std::vector<HistoryEntry> entries;
 
     for (auto i = done.size(); i-- > 0;)
-        if (std::ranges::any_of (done[i].forward, changesFile))
+        if (done[i].edits.rewritten.contains (file))
             entries.push_back (done[i].info);
 
     return entries;
@@ -426,7 +348,7 @@ std::optional<OpenTransaction> CommandBus::openTransaction() const
     if (! transaction)
         return {};
 
-    return OpenTransaction { transaction->author, transaction->name, transaction->part, ! transaction->forward.empty() };
+    return OpenTransaction { transaction->author, transaction->name, transaction->part, ! transaction->edits.empty() };
 }
 
 int CommandBus::addListener (std::function<void (const Change&)> listener)
@@ -453,9 +375,10 @@ std::optional<bool> CommandBus::isPlaying() const
     return transport->isPlaying();
 }
 
-void CommandBus::notify (const Change& change)
+void CommandBus::notify (const std::vector<Change>& changes)
 {
-    for (const auto& listener : listeners)
-        listener.second (change);
+    for (const auto& change : changes)
+        for (const auto& listener : listeners)
+            listener.second (change);
 }
 }
