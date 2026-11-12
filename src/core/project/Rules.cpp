@@ -354,4 +354,97 @@ std::optional<std::string> songLengthProblem (notes::Meter meter, notes::Ticks s
          + std::to_string (maxSongLengthInBars) + " bars long, so every clip ends by " + notes::formatPosition (songLimit, meter)
          + "; start it at " + notes::formatPosition (std::max<notes::Ticks> (0, songLimit - (end - start)), meter) + " or earlier";
 }
+
+std::optional<std::string> clipPlacementProblem (const Project& project, const Track& track, notes::Ticks start, notes::Ticks length,
+                                                 std::string_view except)
+{
+    const auto meter = project.meter;
+    const auto end = start + length;
+
+    if (auto problem = songLengthProblem (meter, start, end))
+        return problem;
+
+    struct Span
+    {
+        const Clip* clip;
+        notes::Ticks start;
+        notes::Ticks end;
+    };
+
+    std::vector<Span> others;
+
+    for (const auto& clip : track.clips)
+        if (clip.id != except)
+            others.push_back ({ &clip, clip.start, clipEnd (project, clip) });
+
+    std::ranges::sort (others, {}, &Span::start);
+    std::vector<std::string> inTheWay;
+
+    for (const auto& other : others)
+        if (other.start < end && start < other.end)
+            inTheWay.push_back (singleQuoted (other.clip->id) + " (" + notes::formatPosition (other.start, meter) + " to "
+                                + notes::formatPosition (other.end, meter) + ")");
+
+    if (inTheWay.empty())
+        return {};
+
+    // The free stretches of the track, up to the end of the longest song, and
+    // the nearest start in them on either side of the one asked for.
+    const auto songLimit = maxSongLengthInBars * meter.ticksPerBar();
+    std::optional<notes::Ticks> before;
+    std::optional<notes::Ticks> after;
+    notes::Ticks freeFrom = 0;
+
+    const auto consider = [&] (notes::Ticks freeStart, notes::Ticks freeEnd)
+    {
+        if (freeEnd - freeStart < length)
+            return;
+
+        const auto latest = freeEnd - length;
+
+        if (freeStart <= start)
+            before = std::max (before.value_or (0), std::min (start, latest));
+
+        if (latest >= start)
+            after = std::min (after.value_or (songLimit), std::max (start, freeStart));
+    };
+
+    for (const auto& other : others)
+    {
+        consider (freeFrom, other.start);
+        freeFrom = std::max (freeFrom, other.end);
+    }
+
+    consider (freeFrom, songLimit);
+
+    std::string listed;
+
+    for (std::size_t i = 0; i < inTheWay.size(); ++i)
+        listed += (i == 0 ? "" : i + 1 == inTheWay.size() ? " and " : ", ") + inTheWay[i];
+
+    auto message = "it would run from " + notes::formatPosition (start, meter) + " to " + notes::formatPosition (end, meter) + " on " + track.id
+                 + ", overlapping " + (inTheWay.size() == 1 ? "clip " : "clips ") + listed + "; clips on a track can't overlap. ";
+
+    if (before && after)
+        message += "The nearest starts where it fits are " + notes::formatPosition (*before, meter) + " and " + notes::formatPosition (*after, meter);
+    else if (before || after)
+        message += "The nearest start where it fits is " + notes::formatPosition (before ? *before : *after, meter);
+    else
+        message += "There's no room for it anywhere on " + track.id;
+
+    return message;
+}
+
+std::string unusedClipFile (const Project& project, std::string_view clipId)
+{
+    const auto words = std::string (clipId.substr (idPrefix (IdKind::clip).size()));
+
+    for (int number = 1;; ++number)
+    {
+        auto file = "clips/" + words + (number == 1 ? std::string() : "-" + std::to_string (number)) + ".notes";
+
+        if (! project.notesFiles.contains (file))
+            return file;
+    }
+}
 }

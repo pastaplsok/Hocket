@@ -20,6 +20,10 @@ namespace hocket::commands::planning
 
     // ClipCommands.cpp
     edits::Plan plan (const project::Project& project, const WriteClip& command);
+    edits::Plan plan (const project::Project& project, const AddClip& command);
+    edits::Plan plan (const project::Project& project, const MoveClip& command);
+    edits::Plan plan (const project::Project& project, const RemoveClip& command);
+    edits::Plan plan (const project::Project& project, const MakeClipUnique& command);
 
     // A refusal: what was being done, why not, and how to fix it.
     edits::Plan refused (std::string message);

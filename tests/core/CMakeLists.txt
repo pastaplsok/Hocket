@@ -1,4 +1,5 @@
 add_executable(hocket_core_tests
+    ClipCommandTests.cpp
     ClipFileWatcherTests.cpp
     CommandBusPropertyTests.cpp
     CommandBusTests.cpp

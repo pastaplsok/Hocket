@@ -111,4 +111,14 @@ namespace hocket::project
     // A song is at most maxSongLengthInBars long, so a clip from start to end
     // must end by the end of that bar. Suggests where it could start instead.
     std::optional<std::string> songLengthProblem (notes::Meter meter, notes::Ticks start, notes::Ticks end);
+
+    // Why a clip `length` long can't start at `start` on this track: it would
+    // end after bar 999 (songLengthProblem), or overlap another clip there,
+    // other than `except` (the clip being moved). Says where the nearest room is.
+    std::optional<std::string> clipPlacementProblem (const Project& project, const Track& track, notes::Ticks start, notes::Ticks length,
+                                                     std::string_view except = {});
+
+    // A clip file named after a clip ID, that no clip uses: clp-verse-2 gets
+    // clips/verse-2.notes, or clips/verse-2-2.notes if that's taken (SPEC §4.4).
+    std::string unusedClipFile (const Project& project, std::string_view clipId);
 }

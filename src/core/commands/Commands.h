@@ -91,6 +91,61 @@ namespace hocket::commands
     };
 
     //==============================================================================
+    // What a new clip holds: one of these.
+    struct EmptyClip
+    {
+        int lengthInBars = 1;
+    };
+
+    struct ClipText
+    {
+        std::string notes; // .notes text, read with the track's drum map
+    };
+
+    // The same file as another clip: editing one edits both (SPEC §4.4).
+    struct LinkedTo
+    {
+        std::string clipId;
+    };
+
+    // A file of its own, with a copy of another clip's notes (the GUI's duplicate).
+    struct CopyOf
+    {
+        std::string clipId;
+    };
+
+    using ClipContent = std::variant<EmptyClip, ClipText, LinkedTo, CopyOf>;
+
+    struct AddClip
+    {
+        std::string trackId;
+        std::string start; // a song position, "9.1"
+        ClipContent content;
+        std::string id;   // optional: Hocket makes one from the track's, or a copy's or linked clip's from its clip's (SPEC §4.1)
+        std::string file; // optional, "clips/verse-2.notes": named after the ID if not given; never for a linked clip
+    };
+
+    struct MoveClip
+    {
+        std::string clipId;
+        std::string start;   // a song position, "9.1"
+        std::string trackId; // optional: another track to move it to
+    };
+
+    // A file no other clip uses leaves the project.
+    struct RemoveClip
+    {
+        std::string clipId;
+    };
+
+    // Gives a linked clip a file of its own, with a copy of its notes.
+    struct MakeClipUnique
+    {
+        std::string clipId;
+        std::string file; // optional: named after the clip's ID if not given
+    };
+
+    //==============================================================================
     // Transport commands (SPEC §3.1). They don't change the project, so they're
     // never validated against it, never enter the history, and don't split an
     // open transaction.
@@ -102,7 +157,8 @@ namespace hocket::commands
     {
     };
 
-    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, Play, Stop>;
+    using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, AddClip, MoveClip,
+                                 RemoveClip, MakeClipUnique, Play, Stop>;
 
     // Who sends a command (SPEC §3.1). Two authors are the same when their names
     // and sessions match, so two Claude sessions are different authors, and a
