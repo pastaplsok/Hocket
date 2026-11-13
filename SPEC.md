@@ -79,6 +79,10 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
   - The tempo and a track's mix take gestures; a change to several mix settings at once is one setting, so dragging volume alone and then volume with pan are two gestures.
   - There's no start or end call, so a client that disconnects mid-gesture leaves nothing open.
 - **Transport actions** (play, stop, seek, the loop region, loop on/off) also go through the command bus, but they don't change the project, so they're not recorded in undo history. The bus hands them to the engine to carry out. They aren't validated against the project, and they don't split another author's open transaction, since they aren't edits.
+  - Since they can't be undone, their results say what the previous value was ("seeked to 9.1, from 3.2", "loop region 5.1 to 9.1, was the whole song").
+  - **Seek** takes a song position ("9.1"). While playing it jumps there; while stopped it sets where play starts. A position past the song's end is refused.
+  - **The loop region** lasts the session: it's transport state, not saved in the project. With one set, play loops it; without, play loops the whole song. When one is set and the playhead is outside it, the playhead wraps into it as in §3.3, keeping its place in the bar. When stopped, play starts at the region's start, unless a seek put the playhead inside it.
+  - **Loop off:** play runs to the end of the song (or the region) and stops.
 
 ### 3.2 Real-time safety
 - The audio thread is never touched directly by any client.
@@ -502,6 +506,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - Audio drivers vary more than their names suggest. Many people's only ASIO is a wrapper (ASIO4ALL, FL Studio ASIO), and on Milestone 0's test machine ASIO4ALL buzzed while FL Studio ASIO played cleanly, likely because ASIO4ALL ran the DAC at a sample rate Windows wasn't using. Not one driver tried there reported xruns. So:
   - v1's audio settings let the person choose the sample rate and buffer size, rather than taking whatever the driver offers;
   - Hocket counts late audio callbacks itself, since the driver's xrun count often isn't there.
+- Some drivers (ASIO, Windows Audio in exclusive mode) bypass the Windows volume slider, so playback can be far louder than other audio at the same setting. Until the master bus (Milestone 5), `hocket-headless --play` has a master level of its own: −12 dB by default, set with `--master-volume <dB>` (written like track volumes), and not saved in the project. It prints the level at start, and at exit the peak output level next to the xrun count, with a warning if the output clipped. The master bus should keep a safe default too.
 - Keep platform-specific code isolated so Linux (JACK/PipeWire) and macOS (CoreAudio, AU) ports are additive.
 - Unicode paths: all text is UTF-8 inside Hocket. On Windows, text from the OS (paths, command line) is converted from UTF-16 at the platform boundary, never through the ANSI code page, so folders with any name work.
 

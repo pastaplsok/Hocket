@@ -28,7 +28,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
 | 4 | Commands for the song's structure, with undo and gesture coalescing | Done (2026-11-12) |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Done (2026-11-12) |
-| 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region, and a master level for `--play` | Next |
+| 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region, and a master level for `--play` | Planned with Lee (2026-11-13); part 1 next |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
 | 8 | The first bundled drum kit | Not started |
 | 9 | Saving, the recovery copy, and changes made outside Hocket | Not started |
@@ -187,14 +187,21 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
      - All glitch-free on 2026-11-12: no block over budget (slowest 0.29 to 0.59 ms of the 5.8 ms a block lasts), no dropped block, gap, click or retrigger, and the message thread kept up, synths and all. So adding and removing tracks and instruments is gapless, and there was nothing to stop and report (Lee's condition).
      - The clips with notes sit on tracks with no instrument, so they're silent, and a `MidiRecorder` there checks that none of their notes is left on.
 
-**6. Sync: mix settings, tempo, time signature, transport**
-- Volume and pan through Tracktion's volume plugin, smoothed so that a jump doesn't click; mute and solo (SPEC §4.4: a muted track stays silent when soloed). Then take out `--play`'s "doesn't apply ... yet" note.
-- The pan law is SPEC §4.4's balance law, which Tracktion doesn't have. Its linear law (`PanLawLinear`: left `g(1 − p)`, right `g(1 + p)`) gives it exactly: for a balance pan `b` to the right, use Tracktion pan `p = b / (2 − b)` and gain `g = volume / (1 + p)`, and the mirror image to the left. Set the law per plugin (`VolumeAndPanPlugin::panLaw`), not engine-wide. A render test checks both channels' gains at C, L50 and R100.
-- Tempo and time-signature changes during playback: the playhead keeps its place in bars, and held notes aren't retriggered.
-- Transport, moved here from step 4 (Lee, 2026-11-12): bus commands for seek, the loop region, and loop on and off; `commands::Transport` grows to match, and `EditSync` carries them out. Not history entries, and they don't split another author's transaction (SPEC §3.1).
-  - To decide: what play does with a loop region (today it loops the whole song), and whether the region is saved with the project or only lasts the session. SPEC §4.4 has no key for it.
-- Stress tests: volume and pan changed 20 a second with no click, mute toggled, tempo changed.
-- **A master level for `--play`** (Lee, 2026-11-12; Loose ends, the loudness item): playback shouldn't reach the device at full scale while there's no master bus (Milestone 5). Through Tracktion's master volume plugin, with a conservative default and an option to change it, since this step wires volume into Tracktion anyway. To pick then: the default (Claude proposes −12 dB, checked against an offline render of the demo's peak level) and the option (e.g. `--master-volume -6dB`, read with `units::volume()`). Not saved in the project: Milestone 5's master bus is.
+**6. Sync: mix settings, tempo, time signature, transport, and a master level for `--play`** — planned with Lee on 2026-11-13; in SPEC §3.1 and §9
+- Lee's decisions (2026-11-13):
+  - **The loop region lasts the session**, not saved in the project. With one set, play loops it; without, the whole song. When one is set and the playhead is outside it, the step 5 wrap rule applies (it wraps in, keeping its place in the bar). When stopped, play starts at the region's start, unless a seek put the playhead inside it.
+  - **Seek, loop region and loop on/off results say the previous value**, since they can't be undone.
+  - **Master level:** −12 dB by default (checked against an offline render of the demo's peak level first), `--master-volume <dB>` to change it, written with `units::volume()`, not saved. `--play` prints it at start; at exit, the peak output level next to the xrun count, and a warning if the output clipped.
+  - **Pan:** a render test of a pan change during a held note, checking the near channel's level stays flat while the far channel moves.
+- Claude's calls, approved: seek takes a song position; while playing it jumps, while stopped it sets where play starts; past the song's end is refused. With loop off, play runs to the end and stops.
+- Build order, committing each part:
+  1. **Master level for `--play`**: render the demo and measure its peak, then the default, the option, and what `--play` prints at start and exit (peak and clipping need a meter after Tracktion's output, read without locking the audio thread).
+  2. **The mix reaches the Edit**: volume and pan through each track's Tracktion volume plugin, smoothed so a jump doesn't click; mute and solo (a muted track stays silent when soloed); then `--play`'s "doesn't apply ... yet" note goes.
+     - The pan law is SPEC §4.4's balance law, which Tracktion doesn't have. Its linear law (`PanLawLinear`: left `g(1 − p)`, right `g(1 + p)`) gives it exactly: for a balance pan `b` to the right, use Tracktion pan `p = b / (2 − b)` and gain `g = volume / (1 + p)`, and the mirror image to the left. Set the law per plugin (`VolumeAndPanPlugin::panLaw`), not engine-wide.
+     - Render tests: both channels' gains at C, L50 and R100; a pan change during a held note leaves the near channel flat while the far one moves (Lee).
+  3. **Tempo and time signature during playback**: the playhead keeps its place in bars, and held notes aren't retriggered. Every clip is rewritten after a time-signature change (Tracktion's beats are the signature's). The random sequences in `StructureSyncTests.cpp` then include tempo and time-signature commands.
+  4. **Transport commands**: seek, the loop region, loop on and off; `commands::Transport` grows to match, and `EditSync` carries them out, using `updateLoop`'s wrap.
+  5. **Stress tests**: volume and pan changed 20 a second with no click, mute toggled, tempo changed.
 
 **7. Hocket's drum sampler, and how kits work** (SPEC §8.1, §8.4)
 - Hocket's first device, a Tracktion plugin type of its own (`PluginManager::createBuiltInType`). It sets the pattern the synth and effects follow in Milestones 4 and 5.
@@ -322,7 +329,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - **Playback can be dangerously loud through drivers that bypass Windows' volume (Lee, 2026-11-12).** The ASIO4ALL check on the Magni was far louder than a YouTube mix playing through Windows at the same knob setting. ASIO4ALL streams straight to the device, so neither the Windows volume nor any app's applies, and Hocket has no master level yet (Milestone 5): the demo's bass reaches the DAC at whatever level 4OSC makes it.
   - Lee's decisions (2026-11-12), rather than waiting for Milestone 5:
     - **Done:** `--play` warns, when it opens an ASIO driver (or Windows Audio in exclusive mode), that the driver may bypass the Windows volume slider, so the device's own volume control sets the level, and to turn it down (`engine::volumeWarning`). It comes as playback starts, so it helps most the next time.
-    - **Step 6:** `--play` gets a master level with a conservative default (see step 6). The full master bus still comes in Milestone 5, and should keep a safe default too.
+    - **Step 6:** `--play` gets a master level, −12 dB by default, printed at start, with the peak output level and a clipping warning at exit (see step 6; SPEC §9). The full master bus still comes in Milestone 5, and should keep a safe default too.
   - Still a proposal: Milestone 2's audio settings could say the same when an ASIO driver is picked.
   - Until the master level is in, any check over ASIO starts with the Magni's knob well down.
 - **FL Studio ASIO wouldn't start with headphones on the Realtek (2026-11-12).** "Device didn't start correctly", with or without `--sample-rate`. On the Magni it opens and plays (checked 2026-11-12, `--sample-rate 44100`), so the Realtek setup was the cause, not Hocket. The saved device is FL Studio ASIO again. If it matters away from the desk, its output setting (`HKCU\Software\Image-Line\ASIO`, `outputEndPoint`) is blank, which seems to mean the Windows default output.
