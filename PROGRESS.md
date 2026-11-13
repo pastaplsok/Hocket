@@ -27,7 +27,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
 | 4 | Commands for the song's structure, with undo and gesture coalescing | Done (2026-11-12) |
-| 5 | Sync: tracks and clips added, moved and removed during playback | Next |
+| 5 | Sync: tracks and clips added, moved and removed during playback | Planned with Lee (2026-11-12); part 1 next |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
 | 8 | The first bundled drum kit | Not started |
@@ -161,11 +161,20 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - Random command sequences, invalid ones included, which must change nothing: after each command the project writes and reads back unchanged (`project::write`, then `parse`); undoing everything gives the original; redoing everything gives the same end state.
   - Gestures: merging; another author or setting ending it; undo mid-gesture; a gesture back to its start leaving no entry.
 
-**5. Sync: tracks and clips**
-- `EditSync` brings the Edit in line with the model after each change, matching tracks, devices and clips by ID and touching only what changed, using step 4's change notices. (It asserts today that clips are never added or removed: see step 4.)
-- Offline renders: tracks and clips added, moved, removed, linked, and undone.
-- Live tests: a change to one track doesn't stop or retrigger a held note on another, and a clip moved or removed ends its sounding notes.
-- A stress test for each kind of change: clips moved, added and removed, and tracks added and removed, 20 a second during playback. Each has Milestone 0's checks: no block over budget, no dropped block, gap, click, retriggered note or stuck note.
+**5. Sync: tracks and clips** — planned with Lee on 2026-11-12
+- Lee's decisions (2026-11-12):
+  - **When a change ends the song before the playhead** (the last clip removed while it plays, say), the playhead wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on. If that isn't clean in Tracktion, say why, and jump to 1.1 instead. [Claude's note: Tracktion's playhead maps its running sample count into the loop by remainder, which may already do this when playback started at the loop's start. Check its source and test it live.]
+  - **Clip changes must be glitch-free.** If adding or removing a track or an instrument can't be made gapless, stop and tell Lee what was measured before working around it.
+- How it works (proposed by Claude, approved):
+  - `EditSync` keeps Tracktion's tracks by ID, as it does clips, not by their index in the project.
+  - Each change notice names a track or clip; `EditSync` brings that one in line with the model as it now is, whatever the notice says, so the order of a command's notices doesn't matter (a clip moved between tracks is "removed", then "added").
+  - Handled: tracks added, removed, moved and renamed; instruments added, replaced or removed (a 4OSC made or deleted); clips added, removed, moved, or given a new file; files joining or leaving the project. The assertion that clips never appear or vanish goes.
+  - The loop range is recomputed after every structural change.
+- Build order, committing each part:
+  1. Sync by ID, with structural tests: after each command, the Edit's tracks, plugins and clips match the model. Step 4's random command sequences run against a live `EditSync` too (fewer seeds: 4OSC is slow to create).
+  2. Offline renders: clips added, moved, removed, linked and undone are heard where the model says.
+  3. Live tests, the riskiest first: a clip removed or moved while its note sounds ends that note (Tracktion's `LoopingMidiNode` hands notes on only when the node survives a rebuild, and a removed clip's doesn't); a change to one track doesn't stop or retrigger a held note on another; the playhead wraps when the song gets shorter. `MidiRecorder` moves to the shared test helpers.
+  4. Stress tests, one for each kind of change at 20 a second during playback: clips moved, added and removed; tracks added and removed. Each has Milestone 0's checks: no block over budget, no dropped block, gap, click, retriggered note or stuck note. If 4OSC's set-up (it builds its wavetables each time) keeps the message thread from managing 20 tracks a second, that delays commands but needn't glitch audio: then device-less tracks at 20 a second, and a slower run with synths, saying so.
 
 **6. Sync: mix settings, tempo, time signature, transport**
 - Volume and pan through Tracktion's volume plugin, smoothed so that a jump doesn't click; mute and solo (SPEC §4.4: a muted track stays silent when soloed). Then take out `--play`'s "doesn't apply ... yet" note.
