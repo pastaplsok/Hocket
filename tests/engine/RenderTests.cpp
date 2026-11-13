@@ -7,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace hocket;
@@ -107,4 +108,95 @@ TEST_CASE ("a clip written empty renders silent")
 
     REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 1bar\n" }, testing::claude).ok);
     CHECK (firstNoteAt (sync) < 0.0);
+}
+
+//==============================================================================
+// Structural changes (Milestone 1's step 5). At 120 BPM a bar is 2 s; each
+// clip here holds one short note at its start.
+namespace
+{
+    const std::string oneNote = "@length 1bar\n\n1.1 C3 1/8 v100\n";
+
+    // Whether there's sound between these times, in seconds.
+    bool soundBetween (const Audio& audio, double from, double to)
+    {
+        const auto end = std::min (audio.sampleAt (to), audio.buffer.getNumSamples());
+        return audio.sampleAt (from) < end && peakBetween (audio.buffer, audio.sampleAt (from), end) > 0.01f;
+    }
+
+    // The bars of the loop that start with a note, 1-based.
+    std::vector<int> barsWithNotes (engine::EditSync& sync)
+    {
+        const auto audio = renderLoop (sync);
+        std::vector<int> bars;
+
+        for (int number = 1; audio.sampleAt (2.0 * number) <= audio.buffer.getNumSamples(); ++number)
+            if (soundBetween (audio, 2.0 * (number - 1), 2.0 * (number - 1) + 0.2))
+                bars.push_back (number);
+
+        return bars;
+    }
+
+    void run (commands::CommandBus& bus, const commands::Command& command)
+    {
+        const auto result = bus.execute (command, testing::claude);
+        INFO (result.message);
+        REQUIRE (result.ok);
+    }
+}
+
+TEST_CASE ("render: clips added, moved, removed and undone are heard where the model puts them")
+{
+    commands::CommandBus bus (makeProject ({
+        makeTrack ("trk-bass", "Bass", { makeClip ("clp-a", 0, oneNote) }),
+        makeTrack ("trk-lead", "Lead", {}),
+    }));
+    engine::EditSync sync (testEngine(), bus);
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1 });
+
+    // A copy on the lead at bar 3, and a clip linked to it at bar 4: the song grows to four bars.
+    run (bus, commands::AddClip { "trk-lead", "3.1", commands::CopyOf { "clp-a" }, "clp-copy", {} });
+    run (bus, commands::AddClip { "trk-bass", "4.1", commands::LinkedTo { "clp-copy" }, "clp-link", {} });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1, 3, 4 });
+
+    // Moved to bar 2 on the bass, the copy plays there, and the song ends with the linked clip.
+    run (bus, commands::MoveClip { "clp-copy", "2.1", "trk-bass" });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1, 2, 4 });
+
+    // Removing the last clip shortens the song again; the linked clip goes silent with its file's notes.
+    run (bus, commands::RemoveClip { "clp-link" });
+    run (bus, commands::WriteClip { "clp-copy", "@length 1bar\n" });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1 });
+    CHECK (renderLoop (sync).buffer.getNumSamples() == renderLoop (sync).sampleAt (4.0)); // two bars, clp-copy's
+
+    while (! bus.history().empty())
+        REQUIRE (bus.undo (testing::lee, commands::UndoScope::anyAuthor).ok);
+
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1 });
+    CHECK (renderLoop (sync).buffer.getNumSamples() == renderLoop (sync).sampleAt (2.0));
+}
+
+TEST_CASE ("render: a track and its instrument added are heard, and removed are silent")
+{
+    commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-a", 0, oneNote) }) }));
+    engine::EditSync sync (testEngine(), bus);
+
+    // A track with no instrument plays nothing.
+    run (bus, commands::AddTrack { "midi", "Keys", {}, {}, {} });
+    run (bus, commands::AddClip { "trk-keys", "2.1", commands::ClipText { oneNote }, {}, {} });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1 });
+
+    run (bus, commands::SetInstrument { "trk-keys", commands::Instrument { "hocket:synth", {} } });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1, 2 });
+
+    // Removed, it's silent; back, it plays. (Tracktion won't render an Edit
+    // with nothing in it that makes a sound, so one synth always stays.)
+    run (bus, commands::RemoveTrack { "trk-keys" });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1 });
+
+    REQUIRE (bus.undo (testing::lee, commands::UndoScope::anyAuthor).ok);
+    CHECK (barsWithNotes (sync) == std::vector<int> { 1, 2 });
+
+    run (bus, commands::SetInstrument { "trk-bass", {} });
+    CHECK (barsWithNotes (sync) == std::vector<int> { 2 });
 }

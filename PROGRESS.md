@@ -27,7 +27,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 2 | The format grows to a song: linked clips, time signatures, track mix settings, `hocket:synth` | Done (2026-11-12) |
 | 3 | Drum tracks in the format: drum maps, drum names in `.notes`, `hocket:drum-sampler` | Done (2026-11-12) |
 | 4 | Commands for the song's structure, with undo and gesture coalescing | Done (2026-11-12) |
-| 5 | Sync: tracks and clips added, moved and removed during playback | In progress: part 1 of 4 done |
+| 5 | Sync: tracks and clips added, moved and removed during playback | In progress: parts 1 and 2 of 4 done |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region | Not started |
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Not started |
 | 8 | The first bundled drum kit | Not started |
@@ -176,7 +176,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
      - Tracks go after the Edit's own tracks (tempo, markers), in the model's order; `syncTrackOrder` moves any that are out of place.
      - The tempo, time signature and mix still don't reach the Edit (step 6), so the random sequences here leave them out. The generator moved to `tests/common/RandomCommands.h`, shared with the core tests.
      - 4OSC turned out quick to create: 20 random sequences of 30 steps, each checked against the whole Edit, take under a second. Its slowness is in rendering (Loose ends).
-  2. Offline renders: clips added, moved, removed, linked and undone are heard where the model says.
+  2. Offline renders: clips added, moved, removed, linked and undone are heard where the model says. Done (`RenderTests.cpp`, "render:"): which bars start with a note, after clips are added (a copy, a linked clip), moved across tracks, removed and undone, and after a track or instrument is added and removed. Tracktion won't render an Edit in which nothing makes a sound, so those tests keep one synth.
   3. Live tests, the riskiest first: a clip removed or moved while its note sounds ends that note (Tracktion's `LoopingMidiNode` hands notes on only when the node survives a rebuild, and a removed clip's doesn't); a change to one track doesn't stop or retrigger a held note on another; the playhead wraps when the song gets shorter. `MidiRecorder` moves to the shared test helpers.
   4. Stress tests, one for each kind of change at 20 a second during playback: clips moved, added and removed; tracks added and removed. Each has Milestone 0's checks: no block over budget, no dropped block, gap, click, retriggered note or stuck note. If 4OSC's set-up (it builds its wavetables each time) keeps the message thread from managing 20 tracks a second, that delays commands but needn't glitch audio: then device-less tracks at 20 a second, and a slower run with synths, saying so.
 
