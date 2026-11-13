@@ -405,3 +405,189 @@ TEST_CASE ("stress: rewrites that change the notes leave none of them stuck")
     damaged.push_back ({ emptiedAt, 127, true });
     CHECK (notesLeftOn (damaged).size() == left.size() + 1);
 }
+
+//==============================================================================
+// Structural changes at 20 a second during playback (Milestone 1's step 5).
+//
+// The bass holds a whole-bar C3 in each of two bars; the changes happen on
+// other tracks, and every bar must sound exactly like the first: no block over
+// budget, no dropped block, gap, click or retrigger. Clips with notes go on
+// tracks with no instrument, so they're silent, and a MidiRecorder there
+// checks that no note is left on.
+namespace
+{
+    const std::string heldTwoBars = "@length 2bars\n\n1.1 C3 1/1 v100\n2.1 C3 1/1 v100\n";
+    const std::string shortNotes = "@length 1bar\n\n1.1 E3 1/8 v100\n1.3 G3 1/8 v100\n";
+
+    // A note on every sixteenth, for clips that only last 50 ms: some always play.
+    const std::string denseNotes = [] {
+        std::string text = "@length 1bar\n\n";
+
+        for (int number = 1; number <= 4; ++number)
+            for (int sixteenth = 1; sixteenth <= 4; ++sixteenth)
+                text += "1." + std::to_string (number) + "." + std::to_string (sixteenth) + " E3 1/32 v100\n";
+
+        return text;
+    }();
+
+    // trk-bass with a synth and the held notes; trk-lead and trk-pad with no instrument.
+    project::Project structureProject (std::vector<TestClip> leadClips = {})
+    {
+        auto lead = makeTrack ("trk-lead", "Lead", std::move (leadClips));
+        auto pad = makeTrack ("trk-pad", "Pad", {});
+        lead.track.devices.clear();
+        pad.track.devices.clear();
+        return makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, heldTwoBars) }), std::move (lead), std::move (pad) });
+    }
+
+    struct StressRun
+    {
+        juce::AudioBuffer<float> out;
+        std::vector<double> processing;
+        int blocks = 0;
+        int firstBlock = 0; // the first block played after the changes began
+        double changesTook = 0.0;
+        std::vector<std::vector<MidiRecorder::Event>> midi; // what each recorder `before` gave recorded
+    };
+
+    // Plays a bar untouched, then sends `count` commands at 20 a second, then
+    // plays to the end of the bar after the last. `before` runs once the Edit
+    // exists, and gives the recorders it added, whose MIDI the run keeps;
+    // `after` runs once the changes are sent.
+    StressRun stressWith (project::Project project, int count, const std::function<commands::Command (int)>& change,
+                          const std::function<std::vector<MidiRecorder*> (engine::EditSync&)>& before = {},
+                          const std::function<void (commands::CommandBus&)>& after = {})
+    {
+        FakeAudioDevice device;
+        commands::CommandBus bus (std::move (project));
+        engine::EditSync sync (testEngine(), bus);
+
+        const auto recorders = before ? before (sync) : std::vector<MidiRecorder*> {};
+        REQUIRE (bus.execute (commands::Play {}, lee).ok);
+
+        AudioThread audio (device, 4.0 + count * 0.05 + 4.0);
+        runMessagesUntil ([&audio] { return audio.blocksPlayed() * blockSize >= barSamples; });
+
+        StressRun run;
+        run.firstBlock = audio.blocksPlayed();
+        const auto start = Clock::now();
+
+        for (int i = 0; i < count; ++i)
+        {
+            runMessagesUntil ([due = start + i * 50ms] { return Clock::now() >= due; });
+            const auto result = bus.execute (change (i), claude);
+            INFO ("change " << i << ": " << result.message);
+            REQUIRE (result.ok);
+        }
+
+        run.changesTook = std::chrono::duration<double> (Clock::now() - start).count();
+
+        if (after)
+            after (bus);
+
+        audio.stopAfter ((audio.blocksPlayed() * blockSize / barSamples + 2) * barSamples / blockSize + 1);
+        runMessagesUntil ([&audio] { return audio.isDone(); });
+
+        run.out = audio.output();
+        run.processing = audio.processingSeconds();
+        run.blocks = audio.blocksPlayed();
+
+        // The recorders go with the Edit.
+        for (const auto* recorder : recorders)
+            run.midi.push_back (recorder->recorded());
+
+        return run;
+    }
+
+    // Milestone 0's checks on the held bass notes, bar by bar.
+    void checkHeldNotes (const StressRun& run, int count)
+    {
+        CHECK_MESSAGE (run.changesTook < count * 0.05 + 0.5, "the changes took " << run.changesTook << " s: the message thread fell behind");
+
+        const auto stressed = timing (run.processing, run.firstBlock, run.blocks);
+        MESSAGE ("during the changes: " << describe (stressed));
+
+#ifdef NDEBUG
+        CHECK (stressed.overBudget == 0);
+#endif
+
+        const auto bars = run.blocks * blockSize / barSamples;
+        REQUIRE (bars >= 4);
+        REQUIRE (run.out.getRMSLevel (0, checkedFrom, window) > 0.01f);
+
+        const auto dropped = droppedBlocks (run.out, run.blocks);
+        CHECK_MESSAGE (dropped.empty(), "Tracktion played " << dropped.size() << " block(s) of silence");
+
+        for (int checked = 1; checked < bars; ++checked)
+        {
+            CAPTURE (checked);
+            CHECK (problemsInPass (run.out, checked, dropped).empty());
+        }
+    }
+
+    void checkNothingLeftOn (const std::vector<MidiRecorder::Event>& events, const char* track)
+    {
+        const auto left = notesLeftOn (events);
+        CHECK_MESSAGE (left.empty(), track << " is left holding " << left.size() << " note(s); the first's last events: "
+                                           << (left.empty() ? std::string() : historyOf (left.front(), events)));
+    }
+}
+
+TEST_CASE ("stress: clips moved 20 a second, in place and between tracks, during playback")
+{
+    // Round and round: to 2.1, across to the pad, to 1.1 there, back to the lead at 1.1.
+    const std::array<std::pair<const char*, const char*>, 4> moves { { { "2.1", "" }, { "2.1", "trk-pad" }, { "1.1", "" }, { "1.1", "trk-lead" } } };
+    const auto run = stressWith (structureProject ({ makeClip ("clp-move", 0, shortNotes) }), 100,
+                                 [&moves] (int i) { return commands::MoveClip { "clp-move", moves[static_cast<std::size_t> (i % 4)].first, moves[static_cast<std::size_t> (i % 4)].second }; },
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1), &MidiRecorder::addTo (sync.edit(), 2) }; },
+                                 [] (commands::CommandBus& bus) { REQUIRE (bus.execute (commands::RemoveClip { "clp-move" }, claude).ok); });
+
+    checkHeldNotes (run, 100);
+    REQUIRE (run.midi.size() == 2);
+    CHECK (std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; }) > 10); // the clip did play
+    checkNothingLeftOn (run.midi[0], "trk-lead");
+    checkNothingLeftOn (run.midi[1], "trk-pad");
+}
+
+TEST_CASE ("stress: clips added and removed 20 a second during playback")
+{
+    const auto run = stressWith (structureProject(), 100,
+                                 [] (int i) -> commands::Command
+                                 {
+                                     if (i % 2 == 1)
+                                         return commands::RemoveClip { "clp-new" };
+
+                                     return commands::AddClip { "trk-lead", i % 4 == 0 ? "1.1" : "2.1", commands::ClipText { denseNotes }, "clp-new", {} };
+                                 },
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1) }; });
+
+    checkHeldNotes (run, 100);
+    REQUIRE (run.midi.size() == 1);
+    const auto played = std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; });
+    MESSAGE ("notes the added clips played: " << played);
+    CHECK (played > 10); // they did play
+    checkNothingLeftOn (run.midi[0], "trk-lead");
+}
+
+TEST_CASE ("stress: tracks with a synth added and removed 20 a second during playback")
+{
+    const auto run = stressWith (structureProject(), 100, [] (int i) -> commands::Command
+    {
+        if (i % 2 == 1)
+            return commands::RemoveTrack { "trk-extra" };
+
+        return commands::AddTrack { "midi", "Extra", "trk-extra", { "trk-lead", {} }, commands::Instrument { "hocket:synth", {} } };
+    });
+
+    checkHeldNotes (run, 100);
+}
+
+TEST_CASE ("stress: an instrument added and removed 20 a second during playback")
+{
+    const auto run = stressWith (structureProject(), 100, [] (int i)
+    {
+        return commands::SetInstrument { "trk-lead", i % 2 == 0 ? std::optional (commands::Instrument { "hocket:synth", {} }) : std::nullopt };
+    });
+
+    checkHeldNotes (run, 100);
+}
