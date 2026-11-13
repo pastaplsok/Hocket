@@ -410,6 +410,9 @@ namespace
         const hocket::engine::PlaybackDevice playbackDevice (devices);
         std::cout << "Playing on " << playbackDevice.description() << "\n";
 
+        if (const auto warning = playbackDevice.volumeWarning(); ! warning.empty())
+            std::cerr << warning << std::endl;
+
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 

@@ -386,9 +386,30 @@ std::string formatNumbers (std::vector<int> values)
 }
 
 //==============================================================================
+std::string volumeWarning (const juce::String& driverType)
+{
+    // ASIO drivers talk to the device directly, and exclusive mode takes it
+    // from Windows' mixer, so the volume slider may not apply to either.
+    const auto drivers = driverType == "ASIO" ? std::string ("ASIO drivers")
+                       : driverType.containsIgnoreCase ("Exclusive") ? "Windows Audio in exclusive mode"
+                                                                     : std::string();
+
+    if (drivers.empty())
+        return {};
+
+    return "Warning: " + drivers + " may bypass the Windows volume slider, so the device's own volume control is what sets the level. "
+           "If it isn't down already, turn it down now, and bring it up once you hear the music.";
+}
+
 PlaybackDevice::PlaybackDevice (juce::AudioDeviceManager& deviceManager)
     : devices (deviceManager)
 {
+}
+
+std::string PlaybackDevice::volumeWarning() const
+{
+    const auto* device = devices.getCurrentAudioDevice();
+    return device == nullptr ? std::string() : engine::volumeWarning (device->getTypeName());
 }
 
 std::string PlaybackDevice::description() const

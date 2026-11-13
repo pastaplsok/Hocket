@@ -244,6 +244,28 @@ TEST_CASE ("the xrun report counts audio callbacks that took longer than their b
     CHECK (playing.xrunReport() == "this driver doesn't report xruns, and 2 audio callbacks took longer than their block");
 }
 
+TEST_CASE ("drivers that may bypass the Windows volume slider come with a warning to turn the device down")
+{
+    const auto warning = engine::volumeWarning ("ASIO");
+    CHECK (warning == "Warning: ASIO drivers may bypass the Windows volume slider, so the device's own volume control is what sets the level. "
+                      "If it isn't down already, turn it down now, and bring it up once you hear the music.");
+    CHECK (engine::volumeWarning ("Windows Audio (Exclusive Mode)").starts_with ("Warning: Windows Audio in exclusive mode may bypass"));
+
+    CHECK (engine::volumeWarning ("Windows Audio").empty());
+    CHECK (engine::volumeWarning ("Windows Audio (Low Latency Mode)").empty());
+    CHECK (engine::volumeWarning ("DirectSound").empty());
+
+    // The device open now: a test device, so none; and none with no device.
+    juce::AudioDeviceManager devices;
+    auto& type = addTestDevices (devices, { { "Interface", 0 } });
+    REQUIRE (pick (devices, "Test", "Interface").empty());
+    const engine::PlaybackDevice playing (devices);
+    CHECK (playing.volumeWarning().empty());
+
+    type.unplug ("Interface");
+    CHECK (playing.volumeWarning().empty());
+}
+
 TEST_CASE ("the xrun report says when no device is open")
 {
     juce::AudioDeviceManager devices;

@@ -50,6 +50,12 @@ namespace hocket::engine
     // "64 to 2048 in steps of 32", "44100, 48000". "none" when there are none.
     std::string formatNumbers (std::vector<int> values);
 
+    // For a driver type that may bypass the Windows volume slider (ASIO, and
+    // Windows Audio's exclusive mode), a warning that the device's own volume
+    // control sets the level, so turn it down; empty for others. A loud
+    // surprise through headphones is the worry (PROGRESS.md, Loose ends).
+    std::string volumeWarning (const juce::String& driverType);
+
     class PlaybackDevice
     {
     public:
@@ -57,6 +63,9 @@ namespace hocket::engine
 
         // "Windows Audio: Speakers, 48000 Hz, 480 samples (10.0 ms)"; empty if no device is open.
         std::string description() const;
+
+        // volumeWarning for the device open now.
+        std::string volumeWarning() const;
 
         // The xruns since the device opened, for the end of a run: the driver's
         // count where it keeps one (many don't: WASAPI, ASIO4ALL and FL Studio
