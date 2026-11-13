@@ -77,6 +77,9 @@ namespace hocket::engine
         // The Tracktion track a Hocket track at this place in the display order goes after.
         tracktion::Track* trackBefore (std::size_t index) const;
 
+        // Sets the loop to loopRange(), and hands it to the playhead at once.
+        void updateLoop();
+
         void clearTracktionUndo();
 
         commands::Result play() override;

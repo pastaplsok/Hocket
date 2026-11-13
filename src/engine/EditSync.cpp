@@ -2,7 +2,10 @@
 
 #include "core/notes/NotesSyntax.h"
 
+#include <tracktion_graph/tracktion_graph.h>
+
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 #include <stdexcept>
 
@@ -131,7 +134,45 @@ void EditSync::changed (const commands::Change& change)
     clearTracktionUndo();
 
     // Clips added, moved or removed, or a new @length, can move the end of the song.
-    tracktionEdit->getTransport().setLoopRange (loopRange());
+    updateLoop();
+}
+
+void EditSync::updateLoop()
+{
+    auto& transport = tracktionEdit->getTransport();
+    const auto range = loopRange();
+
+    if (transport.getLoopRange() == range)
+        return;
+
+    transport.setLoopRange (range);
+
+    // The transport hands a new loop range to the playhead on its timer, up to
+    // 200 ms later (every tenth tick at 50 Hz), and until then plays on past
+    // the song's new end. So hand it over now.
+    if (! transport.looping)
+        return;
+
+    auto* context = transport.getCurrentPlaybackContext();
+    auto* playHead = context != nullptr ? context->getNodePlayHead() : nullptr;
+
+    if (playHead == nullptr)
+        return;
+
+    // When the song now ends before the playhead, it wraps as if the loop had
+    // always been this long: the place within the new loop, by remainder.
+    // The loop starts at 1.1 and is whole bars, so that's the same beat of
+    // the bar, and the pulse carries on (Lee's decision, 2026-11-12).
+    // Tracktion's own setLoopRange clamps the place to the loop's end, which
+    // wraps to 1.1, so the place is set here. It's set even when it hasn't
+    // moved, as Tracktion does, since the playhead counts loops from where
+    // its place was last set.
+    const auto loop = tracktion::toSamples (range, context->getSampleRate());
+    const auto place = playHead->getPosition();
+    const auto wrapped = place < loop.getEnd() ? place : loop.getStart() + (place - loop.getStart()) % std::max<std::int64_t> (1, loop.getLength());
+
+    playHead->setLoopRange (true, loop, false);
+    playHead->setPosition (wrapped);
 }
 
 void EditSync::syncTrack (const std::string& trackId)
@@ -284,11 +325,22 @@ void EditSync::syncClip (const std::string& clipId)
 
     auto found = clips.find (clipId);
 
-    // Moved to another track: this one goes, and a new one is made there.
-    if (found != clips.end() && found->second->getTrack() != track->second.track.get())
+    // Moved: this one goes, and a new one is made in its place. Tracktion's
+    // LoopingMidiNode hands a clip's sounding notes to the next graph, so a
+    // clip moved in place would keep its note sounding until its new start;
+    // a clip removed takes its notes with it, so a moved clip's note ends
+    // when it moves (step 5's live tests). Only a new start does this: a new
+    // @length keeps the clip, so a note held across it isn't cut.
+    if (found != clips.end())
     {
-        removeClip (clipId);
-        found = clips.end();
+        const auto movedTrack = found->second->getTrack() != track->second.track.get();
+        const auto movedStart = std::abs (found->second->getStartBeat().inBeats() - beatPosition (source->start, project.meter).inBeats()) > 1.0e-9;
+
+        if (movedTrack || movedStart)
+        {
+            removeClip (clipId);
+            found = clips.end();
+        }
     }
 
     if (found == clips.end())
