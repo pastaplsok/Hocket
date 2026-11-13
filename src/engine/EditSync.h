@@ -4,7 +4,12 @@
 // project, then keeps it in step as commands apply. Hocket's model is the
 // source of truth; the Edit is derived state, never read back or saved.
 //
-// It's also the bus's transport. In Milestone 0, play loops the whole song.
+// Tracks, devices and clips are matched by their Hocket IDs. Each change the
+// bus announces names a track, clip or file; that one is brought in line with
+// the model as it is now, whatever the change was, so the order of a
+// command's changes doesn't matter.
+//
+// It's also the bus's transport. Play loops the whole song.
 //
 // Message thread only, like the bus.
 
@@ -42,13 +47,36 @@ namespace hocket::engine
         bool stoppedByItself() const;
 
     private:
+        // A Hocket track in the Edit, and the plugins its devices made, by device ID.
+        struct SyncedTrack
+        {
+            tracktion::AudioTrack::Ptr track;
+            std::map<std::string, tracktion::Plugin::Ptr, std::less<>> plugins;
+        };
+
         commands::CommandBus& bus;
         std::unique_ptr<tracktion::Edit> tracktionEdit;
+        std::map<std::string, SyncedTrack, std::less<>> tracks;             // by Hocket track ID
         std::map<std::string, tracktion::MidiClip::Ptr, std::less<>> clips; // by Hocket clip ID
         int listenerId = 0;
         bool playRequested = false; // by the last transport command
 
-        void notesChanged (const std::string& file);
+        void changed (const commands::Change&);
+
+        // Each brings one thing in the Edit in line with the model: makes it,
+        // changes it, or removes it.
+        void syncTrack (const std::string& trackId);
+        void syncClip (const std::string& clipId);
+        void syncFile (const std::string& file);
+
+        void syncDevices (const project::Track&, SyncedTrack&);
+        void syncTrackOrder();
+        void removeTrack (const std::string& trackId);
+        void removeClip (const std::string& clipId);
+
+        // The Tracktion track a Hocket track at this place in the display order goes after.
+        tracktion::Track* trackBefore (std::size_t index) const;
+
         void clearTracktionUndo();
 
         commands::Result play() override;
