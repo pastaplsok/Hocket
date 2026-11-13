@@ -234,7 +234,7 @@ TEST_CASE ("stress: 200 rewrites at 20 a second during playback cause no xruns a
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip (notes));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, lee).ok);
+    REQUIRE (timedPlay (bus, lee).ok);
 
     // A pass untouched, for reference, then 10 s of rewrites, then to the end of that pass.
     AudioThread audio (device, 20.0);
@@ -305,7 +305,7 @@ TEST_CASE ("stress: rewrites that move the notes cause no xruns, and the last on
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip (at1));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, lee).ok);
+    REQUIRE (timedPlay (bus, lee).ok);
 
     // A second of rewrites from the start, then a full pass after the one they end in.
     AudioThread audio (device, 5.0);
@@ -352,7 +352,7 @@ TEST_CASE ("stress: rewrites that change the notes leave none of them stuck")
     commands::CommandBus bus (oneClip (demo));
     engine::EditSync sync (testEngine(), bus);
     auto& midi = MidiRecorder::addTo (sync.edit());
-    REQUIRE (bus.execute (commands::Play {}, lee).ok);
+    REQUIRE (timedPlay (bus, lee).ok);
 
     AudioThread audio (device, 13.0);
     std::vector<int> rewrittenAt; // the sample each rewrite was sent at, roughly
@@ -463,7 +463,7 @@ namespace
         engine::EditSync sync (testEngine(), bus);
 
         const auto recorders = before ? before (sync) : std::vector<MidiRecorder*> {};
-        REQUIRE (bus.execute (commands::Play {}, lee).ok);
+        REQUIRE (timedPlay (bus, lee).ok);
 
         AudioThread audio (device, 4.0 + count * 0.05 + 4.0);
         runMessagesUntil ([&audio] { return audio.blocksPlayed() * blockSize >= barSamples; });

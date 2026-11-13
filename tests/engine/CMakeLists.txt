@@ -10,10 +10,17 @@ add_executable(hocket_engine_tests
     LiveStructureTests.cpp
     PlaybackDeviceTests.cpp
     RenderTests.cpp
+    StackSampler.cpp
+    StackSampler.h
     StressTests.cpp
     StructureSyncTests.cpp)
 
 target_link_libraries(hocket_engine_tests PRIVATE hocket_engine doctest::doctest)
+
+# StackSampler names frames with dbghelp; the main asks for 1 ms timers with winmm.
+if(WIN32)
+    target_link_libraries(hocket_engine_tests PRIVATE dbghelp winmm)
+endif()
 target_include_directories(hocket_engine_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
 # Tests load the example projects from the source tree, as checked out.

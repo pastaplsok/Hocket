@@ -64,7 +64,7 @@ TEST_CASE ("live: a clip removed while its note sounds ends the note")
     FakeAudioDevice device;
     commands::CommandBus bus (heldNoteProject());
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     device.play (beatSamples);
     run (bus, sync, commands::RemoveClip { "clp-held" });
@@ -85,7 +85,7 @@ TEST_CASE ("live: a clip moved while its note sounds ends the note, and plays fr
         engine::EditSync sync (testEngine(), bus);
         auto& bassMidi = MidiRecorder::addTo (sync.edit(), 0);
         auto& leadMidi = MidiRecorder::addTo (sync.edit(), 1);
-        REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+        REQUIRE (timedPlay (bus, testing::lee).ok);
 
         // At 1.2, to 2.1, on its own track or the lead.
         device.play (beatSamples);
@@ -134,7 +134,7 @@ TEST_CASE ("live: changes to other tracks don't stop or retrigger a held note")
         FakeAudioDevice device;
         commands::CommandBus bus (heldNoteProject());
         engine::EditSync sync (testEngine(), bus);
-        REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+        REQUIRE (timedPlay (bus, testing::lee).ok);
 
         // The change at 1.2, then on to just before 1.3. Nothing else sounds in bar 1.
         device.play (beatSamples);
@@ -172,7 +172,7 @@ TEST_CASE ("live: when the song ends before the playhead, it wraps as if the loo
     }));
     engine::EditSync sync (testEngine(), bus);
     auto& midi = MidiRecorder::addTo (sync.edit());
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     // At 2.2, the song shrinks to one bar. Wrapped, the playhead is at 1.2,
     // so the next note, at 1.1, comes three beats later, where bar 3 would

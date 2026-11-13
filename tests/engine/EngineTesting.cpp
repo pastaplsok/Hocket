@@ -1,10 +1,12 @@
 #include "EngineTesting.h"
+#include "StackSampler.h"
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 
 namespace hocket::testing
 {
@@ -160,5 +162,57 @@ double FakeAudioDevice::playBlock (juce::AudioBuffer<float>& destination, int st
     const auto before = std::chrono::steady_clock::now();
     device.processBlock (block, midiScratch);
     return std::chrono::duration<double> (std::chrono::steady_clock::now() - before).count();
+}
+
+namespace
+{
+    bool switchedOn (const char* name)
+    {
+        return juce::SystemStats::getEnvironmentVariable (name, {}) == "1";
+    }
+}
+
+commands::Result timedPlay (commands::CommandBus& bus, const commands::Author& author)
+{
+    if (switchedOn ("HOCKET_TEST_MIDI_OUTPUTS_OFF"))
+    {
+        auto& devices = testEngine().getDeviceManager();
+
+        for (int i = 0; i < devices.getNumMidiOutDevices(); ++i)
+            if (auto* output = devices.getMidiOutDevice (i); output != nullptr && output->isEnabled())
+                output->setEnabled (false);
+    }
+
+    std::unique_ptr<StackSampler> sampler;
+
+    if (switchedOn ("HOCKET_TEST_SAMPLE_PLAY"))
+        sampler = std::make_unique<StackSampler>();
+
+    const auto start = std::chrono::steady_clock::now();
+    auto result = bus.execute (commands::Play {}, author);
+    const auto seconds = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
+
+    if (switchedOn ("HOCKET_TEST_TIME_PLAY"))
+    {
+        // Tracktion's play() polls with Thread::sleep (1) until an audio block
+        // has been played, up to 200 times, so its time follows the timer's.
+        const auto sleepStart = std::chrono::steady_clock::now();
+
+        for (int i = 0; i < 10; ++i)
+            juce::Thread::sleep (1);
+
+        const auto sleepMs = std::chrono::duration<double, std::milli> (std::chrono::steady_clock::now() - sleepStart).count() / 10.0;
+        std::cout << "play took " << seconds << " s; a 1 ms sleep takes " << sleepMs << " ms\n";
+    }
+
+    if (seconds > 1.5)
+        std::cout << "\nWARNING: play() took " << seconds << " s, where it usually takes about 0.55 s. Before anything else changes, "
+                     "note what's using the audio devices (which are connected, the Magni among them, and what else is playing), "
+                     "for PROGRESS.md's loose end about the slow play().\n\n";
+
+    if (sampler != nullptr)
+        std::cout << sampler->stop() << std::endl;
+
+    return result;
 }
 }

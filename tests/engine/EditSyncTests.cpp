@@ -266,7 +266,7 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
         engine::EditSync sync (testEngine(), bus);
         auto& tracktionTransport = sync.edit().getTransport();
 
-        const auto played = bus.execute (commands::Play {}, testing::claude);
+        const auto played = timedPlay (bus, testing::claude);
         CHECK (played.ok);
         CHECK (played.message == "playing 1.1 to 6.1 on a loop");
         CHECK (tracktionTransport.isPlaying());
@@ -274,7 +274,7 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
         CHECK (tracktionTransport.looping.get());
         CHECK (tracktionTransport.getLoopRange() == sync.loopRange());
 
-        CHECK (bus.execute (commands::Play {}, testing::lee).message == "already playing");
+        CHECK (timedPlay (bus, testing::lee).message == "already playing");
 
         CHECK (bus.execute (commands::Stop {}, testing::lee).message == "stopped");
         CHECK_FALSE (tracktionTransport.isPlaying());
@@ -285,7 +285,7 @@ TEST_CASE ("play and stop go through the bus to the Edit's transport")
     }
 
     // Once the EditSync is gone, the bus has no transport again.
-    CHECK_FALSE (bus.execute (commands::Play {}, testing::claude).ok);
+    CHECK_FALSE (timedPlay (bus, testing::claude).ok);
 }
 
 TEST_CASE ("a stop no transport command asked for is told apart from one that was")
@@ -294,7 +294,7 @@ TEST_CASE ("a stop no transport command asked for is told apart from one that wa
     engine::EditSync sync (testEngine(), bus);
     CHECK_FALSE (sync.stoppedByItself()); // it never played
 
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
     CHECK_FALSE (sync.stoppedByItself());
 
     // As when Tracktion rebuilds its device lists.
@@ -302,7 +302,7 @@ TEST_CASE ("a stop no transport command asked for is told apart from one that wa
     CHECK (sync.stoppedByItself());
     CHECK (bus.isPlaying() == false);
 
-    REQUIRE (bus.execute (commands::Play {}, testing::claude).ok);
+    REQUIRE (timedPlay (bus, testing::claude).ok);
     CHECK_FALSE (sync.stoppedByItself());
 
     REQUIRE (bus.execute (commands::Stop {}, testing::lee).ok);

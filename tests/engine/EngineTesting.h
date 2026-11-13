@@ -74,6 +74,17 @@ namespace hocket::testing
         int sampleAt (double seconds) const { return static_cast<int> (seconds * sampleRate + 0.5); }
     };
 
+    // Sends play through the bus, as the tests do, and times it. A play that
+    // takes more than 1.5 s prints a warning: on some days Tracktion's play()
+    // has taken 3 s or more (PROGRESS.md, Loose ends). Switches, from the
+    // environment, for finding out why:
+    //   HOCKET_TEST_TIME_PLAY=1         prints how long every play took
+    //   HOCKET_TEST_MIDI_OUTPUTS_OFF=1  disables Tracktion's MIDI outputs first
+    //   HOCKET_TEST_SAMPLE_PLAY=1       samples the message thread's stack
+    //                                   during the play and prints it (names
+    //                                   need the vs2026-symbols build)
+    commands::Result timedPlay (commands::CommandBus& bus, const commands::Author& author);
+
     // Renders the loop range offline, without an audio device.
     Audio renderLoop (engine::EditSync& sync);
 

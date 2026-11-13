@@ -51,7 +51,7 @@ namespace
         FakeAudioDevice device;
         commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/1 v100\n"));
         engine::EditSync sync (testEngine(), bus);
-        REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+        REQUIRE (timedPlay (bus, testing::lee).ok);
 
         device.play (beatSamples);
         REQUIRE (bus.execute (commands::WriteClip { "clp-bass", rewrite }, testing::claude).ok);
@@ -79,7 +79,7 @@ TEST_CASE ("live: play loops the song")
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/8 v100\n"));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     device.play (2 * barSamples + beatSamples);
     const auto& out = device.output().buffer;
@@ -94,7 +94,7 @@ TEST_CASE ("live: a write_clip mid-loop is heard by the next pass, and what play
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/8 v100\n"));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     // Play to 1.2.3, then move the note from 1.1 to 1.3.
     device.play (beatSamples + beatSamples / 2);
@@ -121,7 +121,7 @@ TEST_CASE ("live: a rewrite that takes away a sounding note ends it, and starts 
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/1 v100\n"));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     device.play (beatSamples);
     REQUIRE (bus.execute (commands::WriteClip { "clp-bass", "@length 1bar\n\n1.1 G3 1/1 v100\n" }, testing::claude).ok);
@@ -157,7 +157,7 @@ TEST_CASE ("live: stop silences playback")
     FakeAudioDevice device;
     commands::CommandBus bus (oneClip ("@length 1bar\n\n1.1 C3 1/1 v100\n"));
     engine::EditSync sync (testEngine(), bus);
-    REQUIRE (bus.execute (commands::Play {}, testing::lee).ok);
+    REQUIRE (timedPlay (bus, testing::lee).ok);
 
     device.play (beatSamples);
     REQUIRE (bus.execute (commands::Stop {}, testing::lee).message == "stopped");
