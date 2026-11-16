@@ -478,6 +478,7 @@ Raw data remains available on explicit request (e.g. for a script).
 **Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
 - Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
 - Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
+- Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at about +8.6 dBFS.)
 - So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4, and `hocket:drum-sampler`, with a kit (§8.4).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
 

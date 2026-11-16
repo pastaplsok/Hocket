@@ -56,6 +56,35 @@ project::Project makeProject (std::vector<TestTrack> tracks, double tempo, notes
 }
 
 //==============================================================================
+ChannelGains specifiedGains (const project::Project& project, const project::Track& track)
+{
+    const auto anySoloed = std::ranges::any_of (project.tracks, [] (const project::Track& t) { return t.solo; });
+
+    if (track.mute || (anySoloed && ! track.solo))
+        return {};
+
+    const auto volume = std::pow (10.0, track.volume / 20.0);
+    const auto far = 1.0 - std::abs (track.pan) / 100.0;
+    return { track.pan > 0 ? volume * far : volume, track.pan < 0 ? volume * far : volume };
+}
+
+ChannelGains volumePluginGains (tracktion::VolumeAndPanPlugin& plugin)
+{
+    float left = 0.0f;
+    float right = 0.0f;
+    tracktion::getGainsFromVolumeFaderPositionAndPan (plugin.getSliderPos(), plugin.getPan(), plugin.getPanLaw(), left, right);
+    return { left, right };
+}
+
+bool sameGain (double a, double b)
+{
+    if (a == 0.0 || b == 0.0)
+        return a == b;
+
+    return std::abs (20.0 * std::log10 (a / b)) < 0.001;
+}
+
+//==============================================================================
 Audio renderLoop (engine::EditSync& sync)
 {
     auto& edit = sync.edit();

@@ -210,6 +210,83 @@ namespace hocket::testing
         }
     };
 
+    //==============================================================================
+    // A steady tone on both channels, in place of whatever comes in: a sine
+    // whose period is exactly `period` samples, at `level`. So the loudest
+    // sample in any `period` samples in a row is `level` times the gains after
+    // it, exactly: a track's mix can be measured, where 4OSC's level drifts.
+    class SteadyTone final : public tracktion::Plugin
+    {
+    public:
+        static inline const char* xmlTypeName = "hocketTestSteadyTone";
+        static constexpr int period = 100;
+        static constexpr float level = 0.25f;
+
+        explicit SteadyTone (tracktion::PluginCreationInfo info) : Plugin (info) {}
+        ~SteadyTone() override { notifyListenersOfDeletion(); }
+
+        // Puts one just ahead of the track's volume plugin, after its synth.
+        static SteadyTone& addTo (tracktion::AudioTrack& track)
+        {
+            static const bool registered = [&track]
+            {
+                track.edit.engine.getPluginManager().createBuiltInType<SteadyTone>();
+                return true;
+            }();
+
+            auto plugin = track.edit.getPluginCache().createNewPlugin (xmlTypeName, {});
+            REQUIRE ((registered && plugin != nullptr && track.getVolumePlugin() != nullptr));
+            track.pluginList.insertPlugin (plugin, track.pluginList.indexOf (track.getVolumePlugin()), nullptr);
+            return *dynamic_cast<SteadyTone*> (plugin.get());
+        }
+
+        juce::String getName() const override { return "Steady tone"; }
+        juce::String getPluginType() override { return xmlTypeName; }
+        juce::String getSelectableDescription() override { return getName(); }
+        BusLayout getBusses() const override { return BusLayout::singleStereoInOut(); }
+        int getNumOutputChannelsGivenInputs (int) override { return 2; }
+        void initialise (const tracktion::PluginInitialisationInfo&) override {}
+        void deinitialise() override {}
+
+        void applyToBuffer (const tracktion::PluginRenderContext& context) override
+        {
+            auto* buffer = context.destBuffer;
+
+            if (buffer == nullptr)
+                return;
+
+            for (int i = 0; i < context.bufferNumSamples; ++i)
+            {
+                const auto value = level * static_cast<float> (std::sin (juce::MathConstants<double>::twoPi * phase / period));
+                phase = (phase + 1) % period;
+
+                for (int channel = 0; channel < buffer->getNumChannels(); ++channel)
+                    buffer->setSample (channel, context.bufferStartSample + i, value);
+            }
+        }
+
+    private:
+        int phase = 0; // audio thread only
+    };
+
+    // A gain on each channel.
+    struct ChannelGains
+    {
+        double left = 0.0;
+        double right = 0.0;
+    };
+
+    // What SPEC §4.4 says a track's channels get from its mix: the volume on
+    // both, less on the far side when panned (balance law), and nothing when
+    // muted, or when another track is soloed and this one isn't.
+    ChannelGains specifiedGains (const project::Project&, const project::Track&);
+
+    // What Tracktion makes of a volume plugin's settings, by its own sums.
+    ChannelGains volumePluginGains (tracktion::VolumeAndPanPlugin&);
+
+    // Whether two gains are the same to within a thousandth of a dB, or both silence.
+    bool sameGain (double a, double b);
+
     // The notes the synth is left holding after these events, by JUCE's rules:
     // a note-on for a note already on retriggers it, and a note-off for one
     // that's off is ignored.

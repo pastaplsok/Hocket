@@ -1,6 +1,7 @@
 #include "engine/EditSync.h"
 
 #include "core/notes/NotesSyntax.h"
+#include "core/units/Units.h"
 
 #include <tracktion_graph/tracktion_graph.h>
 
@@ -48,6 +49,32 @@ namespace
         return {};
     }
 
+    // A track's mix (SPEC §4.4) as Tracktion's volume plugin takes it: its
+    // fader position and pan.
+    struct VolumePluginSettings
+    {
+        float faderPosition = 0.0f; // 0 is silence, 1 is +6 dB
+        float pan = 0.0f;           // -1 to 1
+    };
+
+    // Hocket's pan is a balance control: the near channel stays at the
+    // track's volume, and the far one goes down linearly in gain, to (1 - |b|)
+    // of it. The volume plugin's linear pan law gives left g(1 - p) and right
+    // g(1 + p), which is that when p = b / (2 - |b|) and g = volume / (1 + |p|).
+    // At L50, p is -1/3 and g 0.75 of the volume: left at the volume, right
+    // at half. A track that shouldn't be heard (muted, or another is soloed)
+    // gets no gain, so the plugin's 15 ms smoothing fades it out and back in.
+    VolumePluginSettings volumePluginSettings (const project::Track& track, bool audible)
+    {
+        const auto balance = static_cast<double> (track.pan) / static_cast<double> (units::maxPan);
+        const auto pan = balance / (2.0 - std::abs (balance));
+        const auto gain = audible ? std::pow (10.0, track.volume / 20.0) / (1.0 + std::abs (pan)) : 0.0; // -inf dB is 0
+
+        // From a gain, not dB: the plugin's dB conversion treats anything at
+        // -100 dB or under as silence, and -96 dB panned hard is lower.
+        return { tracktion::gainToVolumeFaderPosition (static_cast<float> (gain)), static_cast<float> (pan) };
+    }
+
     // Makes the Tracktion clip match the model's: position, length and notes.
     void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip)
     {
@@ -83,6 +110,13 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
     if (tracktionEdit == nullptr)
         throw std::runtime_error ("Tracktion couldn't create an Edit");
 
+    // Tracktion can record a parameter's changes during playback as
+    // automation, and then play that back: a volume set while playing would
+    // be overridden on the next pass. Its tracks start in read mode, which
+    // records nothing, but writing is on by default, and one setting away
+    // from recording; Hocket's mix and automation come only from commands.
+    tracktionEdit->getAutomationRecordManager().setWritingAutomation (false);
+
     auto& tempo = tracktionEdit->tempoSequence;
     tempo.getTempo (0)->setBpm (project.tempo);
     tempo.getTimeSig (0)->setStringTimeSig (juceString (project.meter.text()));
@@ -90,6 +124,7 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
     for (const auto& track : project.tracks)
         syncTrack (track.id);
 
+    syncMix();
     clearTracktionUndo();
     listenerId = bus.addListener ([this] (const commands::Change& change) { changed (change); });
     bus.setTransport (this);
@@ -127,10 +162,15 @@ void EditSync::changed (const commands::Change& change)
                            || std::is_same_v<Kind, commands::InstrumentChanged>)
             syncTrack (c.trackId);
 
-        // The tempo, time signature and mix reach the Edit in Milestone 1's
-        // step 6. A drum map changes how clips are written, not what they play.
+        // A MixChanged is handled below, with every track's. The tempo and
+        // time signature reach the Edit in part 3 of Milestone 1's step 6. A
+        // drum map changes how clips are written, not what they play.
     }, change);
 
+    // One track's solo changes whether the others are heard, and so does
+    // removing a soloed track, so every track's mix is checked. Only what
+    // differs is set.
+    syncMix();
     clearTracktionUndo();
 
     // Clips added, moved or removed, or a new @length, can move the end of the song.
@@ -196,7 +236,15 @@ void EditSync::syncTrack (const std::string& trackId)
         if (track == nullptr)
             throw std::runtime_error ("Tracktion couldn't add a track for " + trackId);
 
-        found = tracks.emplace (trackId, SyncedTrack { track, {} }).first;
+        // Tracktion gives every new track a volume plugin; its pan law is set
+        // here, not engine-wide, before it ever plays (syncMix).
+        tracktion::VolumeAndPanPlugin::Ptr volume = track->getVolumePlugin();
+
+        if (volume == nullptr)
+            throw std::runtime_error ("Tracktion added no volume plugin to the track for " + trackId);
+
+        volume->setPanLaw (tracktion::PanLawLinear);
+        found = tracks.emplace (trackId, SyncedTrack { track, {}, volume }).first;
     }
 
     found->second.track->setName (juceString (source->name));
@@ -241,6 +289,36 @@ void EditSync::syncDevices (const project::Track& source, SyncedTrack& synced)
             synced.track->pluginList.insertPlugin (plugin, index++, nullptr);
             synced.plugins.emplace (device.id, std::move (plugin));
         }
+    }
+}
+
+void EditSync::syncMix()
+{
+    const auto& project = bus.project();
+    const auto anySoloed = std::ranges::any_of (project.tracks, &project::Track::solo);
+
+    for (const auto& source : project.tracks)
+    {
+        const auto found = tracks.find (source.id);
+
+        if (found == tracks.end())
+            continue; // not made yet
+
+        // While any track is soloed, only soloed tracks are heard, and a muted
+        // track is never heard, soloed or not (SPEC §4.4).
+        const auto audible = ! source.mute && (! anySoloed || source.solo);
+        const auto settings = volumePluginSettings (source, audible);
+        auto& volume = *found->second.volume;
+
+        // The parameters, not the plugin's setters: setPan() rounds a pan
+        // under 0.005 to the centre, and L1 comes to 0.00503, only just over.
+        // The audio thread reads their values, which are atomic, and smooths
+        // the gains it makes from them.
+        if (volume.volParam->getCurrentValue() != settings.faderPosition)
+            volume.volParam->setParameter (settings.faderPosition, juce::sendNotification);
+
+        if (volume.panParam->getCurrentValue() != settings.pan)
+            volume.panParam->setParameter (settings.pan, juce::sendNotification);
     }
 }
 

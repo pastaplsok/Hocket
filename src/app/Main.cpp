@@ -346,15 +346,6 @@ namespace
         if (! loaded.project)
             return 1;
 
-        // The Edit gets them in Milestone 1's step 6; until then, say so rather than mislead.
-        const auto mixed = std::ranges::any_of (loaded.project->tracks, [] (const hocket::project::Track& track)
-        {
-            return track.volume != 0.0 || track.pan != 0 || track.mute || track.solo;
-        });
-
-        if (mixed)
-            std::cerr << "Note: --play doesn't apply tracks' volume, pan, mute and solo yet, so every track plays at 0dB, centred.\n";
-
         // Hocket's drum sampler arrives in Milestone 1's step 7.
         for (const auto& track : loaded.project->tracks)
             if (std::ranges::any_of (track.devices, [] (const auto& device) { return device.type == hocket::project::DeviceType::drumSampler; }))

@@ -7,7 +7,8 @@
 // Tracks, devices and clips are matched by their Hocket IDs. Each change the
 // bus announces names a track, clip or file; that one is brought in line with
 // the model as it is now, whatever the change was, so the order of a
-// command's changes doesn't matter.
+// command's changes doesn't matter. Every track's mix is checked after every
+// change, since one track's solo silences the others.
 //
 // It's also the bus's transport. Play loops the whole song.
 //
@@ -47,11 +48,13 @@ namespace hocket::engine
         bool stoppedByItself() const;
 
     private:
-        // A Hocket track in the Edit, and the plugins its devices made, by device ID.
+        // A Hocket track in the Edit, the plugins its devices made, by device
+        // ID, and the volume plugin Tracktion gave it, which plays its mix.
         struct SyncedTrack
         {
             tracktion::AudioTrack::Ptr track;
             std::map<std::string, tracktion::Plugin::Ptr, std::less<>> plugins;
+            tracktion::VolumeAndPanPlugin::Ptr volume;
         };
 
         commands::CommandBus& bus;
@@ -73,6 +76,10 @@ namespace hocket::engine
         void syncTrackOrder();
         void removeTrack (const std::string& trackId);
         void removeClip (const std::string& clipId);
+
+        // Every track's volume, pan, mute and solo, through its Tracktion
+        // volume plugin, which smooths changes so they don't click.
+        void syncMix();
 
         // The Tracktion track a Hocket track at this place in the display order goes after.
         tracktion::Track* trackBefore (std::size_t index) const;

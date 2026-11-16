@@ -1,5 +1,6 @@
 // Tracks, instruments and clips added, moved and removed by commands reach the
-// Edit, matched by ID, and undo takes them back (Milestone 1's step 5).
+// Edit, matched by ID, and undo takes them back (Milestone 1's step 5); so does
+// each track's mix (step 6).
 
 #include "EngineTesting.h"
 #include "common/RandomCommands.h"
@@ -7,6 +8,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <optional>
 #include <tuple>
 
 using namespace hocket;
@@ -41,6 +43,22 @@ namespace
 
             if (synths > 0)
                 CHECK (dynamic_cast<tracktion::FourOscPlugin*> (track.pluginList[0]) != nullptr);
+
+            // The mix, by Tracktion's own sums, is SPEC §4.4's, and isn't automated.
+            auto* volume = track.getVolumePlugin();
+            REQUIRE (volume != nullptr);
+            CHECK (volume->getPanLaw() == tracktion::PanLawLinear);
+            CHECK_FALSE (volume->volParam->hasAutomationPoints());
+            CHECK_FALSE (volume->panParam->hasAutomationPoints());
+
+            const auto specified = specifiedGains (project, source);
+            const auto mixed = volumePluginGains (*volume);
+            CAPTURE (source.volume);
+            CAPTURE (source.pan);
+            CAPTURE (source.mute);
+            CAPTURE (source.solo);
+            CHECK_MESSAGE (sameGain (mixed.left, specified.left), "left " << mixed.left << ", should be " << specified.left);
+            CHECK_MESSAGE (sameGain (mixed.right, specified.right), "right " << mixed.right << ", should be " << specified.right);
 
             const auto trackClips = track.getClips();
             REQUIRE (static_cast<std::size_t> (trackClips.size()) == source.clips.size());
@@ -158,6 +176,43 @@ TEST_CASE ("sync: clips added, moved, removed, linked and made unique")
     run (bus, sync, RemoveClip { "clp-a2" });
 
     undoAll (bus, sync);
+}
+
+TEST_CASE ("sync: volume, pan, mute and solo reach each track's volume plugin, and one track's solo silences the others")
+{
+    // A track with a mix of its own from the start.
+    auto start = randomSequenceProject();
+    start.tracks[1].volume = -6.5;
+    start.tracks[1].pan = 30;
+    CommandBus bus (start);
+    engine::EditSync sync (testEngine(), bus);
+    checkEditMatches (sync, bus.project());
+
+    const auto setMix = [&] (std::string track, std::optional<std::string> volume, std::optional<std::string> pan,
+                             std::optional<bool> mute = {}, std::optional<bool> solo = {})
+    {
+        run (bus, sync, SetMix { std::move (track), std::move (volume), std::move (pan), mute, solo, {} });
+    };
+
+    // The ends of each range, and the balance law between them.
+    setMix ("trk-bass", "+6dB", "L100");
+    setMix ("trk-bass", "-96dB", "R100");
+    setMix ("trk-bass", "-96dB", "L1"); // the smallest pan: not rounded to the centre
+    setMix ("trk-bass", "-infdB", "R50");
+    setMix ("trk-bass", "-0.1dB", "L50");
+    setMix ("trk-bass", "0dB", "C");
+
+    // Solo and mute, across tracks.
+    setMix ("trk-lead", {}, {}, {}, true);  // only the lead is heard
+    setMix ("trk-drums", {}, {}, {}, true); // the lead and the drums
+    setMix ("trk-lead", {}, {}, true, {});  // muted, though soloed: only the drums
+    setMix ("trk-bass", {}, {}, true, {});  // muted as well as not soloed
+    run (bus, sync, RemoveTrack { "trk-drums" }); // the soloed one goes: the lead is soloed, but muted
+    run (bus, sync, AddTrack { "midi", "Keys", {}, {}, Instrument { "hocket:synth", {} } }); // silent: the lead is soloed
+    setMix ("trk-lead", {}, {}, false, false); // nothing soloed: all but the muted bass
+
+    undoAll (bus, sync);
+    CHECK (bus.project() == start);
 }
 
 TEST_CASE ("sync: random command sequences keep the Edit matching the model, through undo and redo")
