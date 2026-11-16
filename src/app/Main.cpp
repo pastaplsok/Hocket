@@ -71,7 +71,7 @@ namespace
                "                            The device, sample rate and buffer size are kept for the next run.\n"
                "  --master-volume <dB>      the level of everything it plays, written like a track's volume:\n"
                "                            e.g. -6dB, 0dB (as the project mixes it), -infdB (silence).\n"
-               "                            Default -12dB, since some drivers bypass the Windows volume slider.\n"
+               "                            Default -15dB, since some drivers bypass the Windows volume slider.\n"
                "                            Not kept. At Ctrl+C it prints the peak output level.\n"
                "  --watch                   when a clip's .notes file is saved, play the change: it's sent\n"
                "                            as a write_clip, so it can be undone like any other edit\n"

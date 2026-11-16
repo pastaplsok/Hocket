@@ -105,6 +105,9 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
         .role = tracktion::Edit::forEditing,
         .numUndoLevelsToStore = 0,
         .numAudioTracks = 0, // made here, by ID
+        // Tracktion's default is -3 dB. At 0 dB, a track at "0dB" and "C"
+        // reaches a render exactly as its instrument made it (SPEC §4.4).
+        .defaultMasterVolumedB = 0.0f,
     });
 
     if (tracktionEdit == nullptr)

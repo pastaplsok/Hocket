@@ -18,9 +18,11 @@
 namespace hocket::engine
 {
     // --play's level without --master-volume, in dB. The Milestone 0 demo peaks
-    // at about -11 dBFS on its own (rendered on 2026-11-16), so about -23 dBFS
-    // reaches the device.
-    inline constexpr double defaultMasterVolume = -12.0;
+    // at about -8.2 dBFS on its own (rendered on 2026-11-16), so about -23 dBFS
+    // reaches the device. A five-note chord at full velocity on one 4OSC peaks
+    // at +11.3 to +13.5 dBFS, as its oscillators' phases fall, so it reaches
+    // the device at -3.7 to -1.5 dBFS.
+    inline constexpr double defaultMasterVolume = -15.0;
 
     class MasterOutput
     {

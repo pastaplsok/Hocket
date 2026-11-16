@@ -31,7 +31,8 @@ namespace
     }
 
     // The loudest sample the tone should reach on each channel, given the
-    // project's mix and the Edit's master volume (Tracktion's default, -3 dB).
+    // project's mix and the Edit's master volume (0 dB, which the test of a
+    // render at 0dB and C holds it to).
     ChannelGains expectedPeaks (engine::EditSync& sync, const project::Project& project)
     {
         const auto track = specifiedGains (project, *project::findTrack (project, "trk-tone"));
@@ -93,6 +94,45 @@ TEST_CASE ("render: each channel's level follows the track's volume and pan, by 
 
         CHECK_MESSAGE (closeTo (left, expected.left), "left " << left << ", should be " << expected.left);
         CHECK_MESSAGE (closeTo (right, expected.right), "right " << right << ", should be " << expected.right);
+    }
+}
+
+TEST_CASE ("render: at 0dB and C, a track reaches the render exactly as its instrument made it")
+{
+    // Nothing between the instrument and the render may change its level:
+    // not the track's volume plugin, nor the Edit's master, which Tracktion
+    // starts at -3 dB and EditSync sets to 0 dB. So this doesn't read
+    // Tracktion's gains, as expectedPeaks() does: the answer is the tone's own
+    // level, in every period, on both channels. The render is 24-bit, which
+    // holds 0.25 exactly, so a gain off by as little as 0.00001 dB shows.
+    commands::CommandBus bus (toneProject());
+    const auto& track = *project::findTrack (bus.project(), "trk-tone");
+    REQUIRE (track.volume == 0.0);
+    REQUIRE (track.pan == 0);
+    engine::EditSync sync (testEngine(), bus);
+    addTone (sync);
+
+    const auto audio = renderLoop (sync);
+    REQUIRE (audio.buffer.getNumChannels() == 2);
+    const auto from = audio.buffer.getNumSamples() / 4;
+
+    for (int channel = 0; channel < 2; ++channel)
+    {
+        CAPTURE (channel);
+        const auto peaks = periodPeaks (audio.buffer, channel, from);
+        REQUIRE (peaks.size() > 100);
+        int off = 0;
+        float example = SteadyTone::level;
+
+        for (const auto peak : peaks)
+            if (peak != SteadyTone::level)
+            {
+                ++off;
+                example = peak;
+            }
+
+        CHECK_MESSAGE (off == 0, off << " of " << peaks.size() << " periods peaked off the tone's level of " << SteadyTone::level
+                                     << ", e.g. at " << example << " (" << juce::Decibels::gainToDecibels (example / SteadyTone::level) << " dB)");
     }
 }
 
