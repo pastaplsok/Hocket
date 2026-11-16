@@ -70,4 +70,9 @@ function Get-StopResults ([string] $PlayLog, [string] $HowItEnded, [int] $ExitCo
     if ($stopped -match '(no audio callback took longer than its block|\d+ audio callbacks? took longer than (its|their) block)') {
         New-Result 'Late audio callbacks' 'NOTE' $Matches[1]
     }
+
+    # The master level's meter: what reached the device. The run's clip is empty, so it should be silent.
+    if ($stopped -match '(the output was silent|peak output level \S+ dBFS)') {
+        New-Result 'Peak output level' 'NOTE' $Matches[1]
+    }
 }

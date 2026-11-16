@@ -14,7 +14,8 @@ so it makes no sound. What it checks:
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
   - Ctrl+C stops --play cleanly (exit code 0, its "stopped" line, the token file removed), and
     the driver's xrun count, where it reports one, is 0. JUCE's count of late audio callbacks is
-    a note. AcceptanceChecks.ps1 makes these results, and tests/acceptance tests it.
+    a note, and so is the peak output level, which should be silence. AcceptanceChecks.ps1 makes
+    these results, and tests/acceptance tests it.
 Hearing the changes, and hearing no clicks or gaps, is the part left for a person.
 
 Run it from a PowerShell window, after building Release:

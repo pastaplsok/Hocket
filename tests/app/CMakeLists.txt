@@ -31,3 +31,12 @@ add_test(NAME hocket_headless_check_drum_project
 set_tests_properties(hocket_headless_check_drum_project PROPERTIES
     FIXTURES_REQUIRED drum_project
     PASS_REGULAR_EXPRESSION "OK: 174 BPM, 4/4, 2 tracks, 4 clips in 3 files, as linked clips share them")
+
+# A --master-volume that isn't a volume is refused before anything else. The
+# folder doesn't exist either, so --play can't get as far as opening a device.
+add_test(NAME hocket_headless_master_volume_needs_a_unit
+    COMMAND hocket_headless --play "${unicode_folder}/nope" --master-volume -12)
+set_tests_properties(hocket_headless_master_volume_needs_a_unit PROPERTIES
+    FIXTURES_REQUIRED unicode_project
+    TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "--master-volume: '-12' isn't a valid volume: it has no unit; volume is written in dB")

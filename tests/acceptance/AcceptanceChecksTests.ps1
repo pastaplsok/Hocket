@@ -37,20 +37,22 @@ function Test-Stop ([string] $Name, [string] $Log, [string] $HowItEnded, [int] $
 $playing = "Playing on Test: Speakers, 44100 Hz, 256 samples (5.8 ms)`nplaying 1.1 to 3.1 on a loop. Ctrl+C to stop.`n"
 
 try {
-    Test-Stop 'a clean stop over ASIO' "${playing}stopped; the driver reported 0 xruns, and no audio callback took longer than its block`n" 'ctrl-c' 0 $false @(
+    Test-Stop 'a clean stop over ASIO' "${playing}stopped; the driver reported 0 xruns, and no audio callback took longer than its block; the output was silent`n" 'ctrl-c' 0 $false @(
         'PASS --play stops cleanly on Ctrl+C: stopped; *token file removed*',
         'PASS No xruns: the driver reported 0 xruns',
-        'NOTE Late audio callbacks: no audio callback took longer than its block')
+        'NOTE Late audio callbacks: no audio callback took longer than its block',
+        'NOTE Peak output level: the output was silent')
 
     Test-Stop 'xruns from the driver fail' "${playing}stopped; the driver reported 3 xruns, and no audio callback took longer than its block`n" 'ctrl-c' 0 $false @(
         'PASS --play stops cleanly on Ctrl+C: *',
         'FAIL No xruns: the driver reported 3 xruns',
         'NOTE Late audio callbacks: *')
 
-    Test-Stop 'a driver that keeps no count, with late callbacks' "${playing}stopped; this driver doesn't report xruns, and 2 audio callbacks took longer than their block`n" 'ctrl-c' 0 $false @(
+    Test-Stop 'a driver that keeps no count, with late callbacks and a peak' "${playing}stopped; this driver doesn't report xruns, and 2 audio callbacks took longer than their block; peak output level -23.1 dBFS`n" 'ctrl-c' 0 $false @(
         'PASS --play stops cleanly on Ctrl+C: *',
         "NOTE Xruns: this driver doesn't report them*",
-        'NOTE Late audio callbacks: 2 audio callbacks took longer than their block')
+        'NOTE Late audio callbacks: 2 audio callbacks took longer than their block',
+        'NOTE Peak output level: peak output level -23.1 dBFS')
 
     Test-Stop 'a crash on the way out, before "stopped" was written' $playing 'ctrl-c' -1073741819 $true @(
         "FAIL --play stops cleanly on Ctrl+C: it exited with code -1073741819 (0xC0000005)*no 'stopped' line*")

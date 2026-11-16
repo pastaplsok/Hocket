@@ -8,6 +8,7 @@ add_executable(hocket_engine_tests
     EngineTesting.h
     LivePlaybackTests.cpp
     LiveStructureTests.cpp
+    MasterOutputTests.cpp
     PlaybackDeviceTests.cpp
     RenderTests.cpp
     StackSampler.cpp

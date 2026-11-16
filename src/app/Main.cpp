@@ -15,7 +15,9 @@
 #include "core/commands/WatchedSaves.h"
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
+#include "core/units/Units.h"
 #include "engine/EditSync.h"
+#include "engine/MasterOutput.h"
 #include "engine/PlaybackDevice.h"
 #include "platform/Platform.h"
 
@@ -46,7 +48,8 @@ namespace
     {
         out << "usage: hocket-headless --check <project-folder>   validate a project; errors go to stderr\n"
                "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>]\n"
-               "                       [--sample-rate <Hz>] [--buffer-size <samples>] [--watch] [--user <name>]\n"
+               "                       [--sample-rate <Hz>] [--buffer-size <samples>] [--master-volume <dB>]\n"
+               "                       [--watch] [--user <name>]\n"
                "                                                  play the project on a loop until Ctrl+C\n"
                "       hocket-headless --list-devices [--driver <type>] [--device <name>]\n"
                "                                                  list audio devices by driver type; for a driver\n"
@@ -66,6 +69,10 @@ namespace
                "  --buffer-size <samples>   e.g. 256: values the device offers (--list-devices --device <name>\n"
                "                            lists them). Without these, it keeps the device's last ones.\n"
                "                            The device, sample rate and buffer size are kept for the next run.\n"
+               "  --master-volume <dB>      the level of everything it plays, written like a track's volume:\n"
+               "                            e.g. -6dB, 0dB (as the project mixes it), -infdB (silence).\n"
+               "                            Default -12dB, since some drivers bypass the Windows volume slider.\n"
+               "                            Not kept. At Ctrl+C it prints the peak output level.\n"
                "  --watch                   when a clip's .notes file is saved, play the change: it's sent\n"
                "                            as a write_clip, so it can be undone like any other edit\n"
                "  --user <name>             your name in the history and in messages to AI clients, e.g. \"was\n"
@@ -160,8 +167,10 @@ namespace
     {
         std::string folder;
         hocket::engine::DeviceChoice device; // empty and zero: as last time, or the system default
+        double masterVolume = hocket::engine::defaultMasterVolume; // dB (SPEC §9)
         bool watch = false;
         std::string user = "user"; // the display name of the person at the DAW (SPEC §3.1)
+        std::string error;         // an option's value that's wrong, and why
     };
 
     std::optional<PlayOptions> parsePlayOptions (const std::vector<std::string>& arguments)
@@ -194,6 +203,15 @@ namespace
             }
             else if (arguments[i] == "--user" && hasValue && ! arguments[i + 1].empty())
                 options.user = arguments[++i];
+            else if (arguments[i] == "--master-volume" && hasValue)
+            {
+                const auto parsed = hocket::units::parse (arguments[++i], hocket::units::volume());
+
+                if (parsed.value)
+                    options.masterVolume = *parsed.value;
+                else if (options.error.empty())
+                    options.error = "--master-volume: " + parsed.error;
+            }
             else
                 return {};
         }
@@ -313,6 +331,12 @@ namespace
 
     int playProject (const PlayOptions& options)
     {
+        if (! options.error.empty())
+        {
+            std::cerr << options.error << "\n";
+            return 1;
+        }
+
         const auto folder = hocket::pathFromUtf8 (options.folder);
         auto loaded = hocket::project::load (folder);
 
@@ -413,6 +437,10 @@ namespace
         if (const auto warning = playbackDevice.volumeWarning(); ! warning.empty())
             std::cerr << warning << std::endl;
 
+        // Before anything plays. Declared after the engine, so it's destroyed first.
+        const hocket::engine::MasterOutput master (engine.getDeviceManager(), options.masterVolume);
+        std::cout << "Master level " << hocket::units::format (master.volume(), hocket::units::volume()) << " (--master-volume <dB> changes it)\n";
+
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 
@@ -472,7 +500,12 @@ namespace
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 
-        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message << "; " << playbackDevice.xrunReport() << "\n";
+        std::cout << bus.execute (hocket::commands::Stop {}, localUser).message << "; " << playbackDevice.xrunReport() << "; "
+                  << hocket::engine::describePeak (master.peak()) << std::endl;
+
+        if (const auto warning = hocket::engine::clippingWarning (master.peak(), master.clippedSamples(), master.volume()); ! warning.empty())
+            std::cerr << warning << "\n";
+
         return 0;
     }
 

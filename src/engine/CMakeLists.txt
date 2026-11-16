@@ -3,6 +3,8 @@
 add_library(hocket_engine STATIC
     EditSync.cpp
     EditSync.h
+    MasterOutput.cpp
+    MasterOutput.h
     PlaybackDevice.cpp
     PlaybackDevice.h)
 
