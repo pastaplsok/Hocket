@@ -8,7 +8,8 @@
 // bus announces names a track, clip or file; that one is brought in line with
 // the model as it is now, whatever the change was, so the order of a
 // command's changes doesn't matter. Every track's mix is checked after every
-// change, since one track's solo silences the others.
+// change, since one track's solo silences the others. A tempo change during
+// playback keeps the playhead's place in the bar, and the notes sounding.
 //
 // It's also the bus's transport. Play loops the whole song.
 //
@@ -22,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace hocket::engine
 {
@@ -81,11 +83,24 @@ namespace hocket::engine
         // volume plugin, which smooths changes so they don't click.
         void syncMix();
 
+        // The tempo, with every clip moved to keep its beats, and the
+        // playhead's place and loop changed to match in the same instant.
+        void syncTempo();
+
         // The Tracktion track a Hocket track at this place in the display order goes after.
         tracktion::Track* trackBefore (std::size_t index) const;
 
         // Sets the loop to loopRange(), and hands it to the playhead at once.
         void updateLoop();
+
+        // The playhead while the transport loops (as play() sets it to), and
+        // the sample rate it counts in; none before the first play.
+        std::pair<tracktion::graph::PlayHead*, double> loopingPlayHead() const;
+
+        // JUCE's lock around each audio block. Held on the message thread,
+        // only for a few microseconds, so a change to the playhead and what
+        // it reads happens between blocks.
+        juce::CriticalSection& audioCallbackLock() const;
 
         void clearTracktionUndo();
 

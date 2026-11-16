@@ -196,3 +196,31 @@ TEST_CASE ("live: when the song ends before the playhead, it wraps as if the loo
     // And it loops a bar at a time from there.
     CHECK (nearSample (firstSoundAt (out, 2 * barSamples + beatSamples), 3 * barSamples));
 }
+
+TEST_CASE ("live: a wrap into the middle of a note strikes it, as if the loop had always been that long")
+{
+    // As above, with the bass's note lasting the whole bar: wrapped to 1.2
+    // at 2.2, the note would be sounding there, so it's struck, and ends at
+    // 2.1 as it would have. Tracktion's players do that when told the
+    // playhead jumped, which a wrap on the first pass didn't use to tell them.
+    FakeAudioDevice device;
+    commands::CommandBus bus (heldNoteProject());
+    engine::EditSync sync (testEngine(), bus);
+    auto& midi = MidiRecorder::addTo (sync.edit());
+    REQUIRE (timedPlay (bus, testing::lee).ok);
+
+    const auto changeAt = barSamples + beatSamples;
+    device.play (changeAt);
+    run (bus, sync, commands::RemoveClip { "clp-later" });
+    device.play (barSamples);
+
+    const auto events = midi.recorded();
+    INFO (historyOf (48, events));
+    const auto struck = std::ranges::find_if (events, [changeAt] (const MidiRecorder::Event& e) { return e.sample >= changeAt && e.on; });
+    REQUIRE (struck != events.end());
+    CHECK (nearSample (static_cast<int> (struck->sample), changeAt));
+
+    const auto ended = std::ranges::find_if (events, [changeAt] (const MidiRecorder::Event& e) { return e.sample > changeAt && ! e.on; });
+    REQUIRE (ended != events.end());
+    CHECK (nearSample (static_cast<int> (ended->sample), 2 * barSamples));
+}

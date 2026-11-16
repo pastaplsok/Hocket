@@ -63,6 +63,27 @@ TEST_CASE ("notes sound where the clip and the .notes text put them; write_clip 
     CHECK_MESSAGE (near (restored, 2.5), "first note at " << restored << " s");
 }
 
+TEST_CASE ("a new tempo moves notes in time to keep their beats; a new time signature moves nothing")
+{
+    // The note is 5 quarter notes in: 2.5 s at 120 BPM.
+    commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", bar, "@length 1bar\n\n1.2 C3 1/8 v100\n") }) }));
+    engine::EditSync sync (testEngine(), bus);
+
+    REQUIRE (bus.execute (commands::SetTempo { 90.0, {} }, testing::claude).ok);
+    const auto slower = firstNoteAt (sync);
+    CHECK_MESSAGE (near (slower, 5 * 60.0 / 90.0), "first note at " << slower << " s");
+
+    // 2/4 halves the bars, so the clip's start is 3.1 and the note's 1.2 of its first bar: the same time.
+    REQUIRE (bus.execute (commands::SetTimeSignature { "2/4" }, testing::claude).ok);
+    const auto twoFour = firstNoteAt (sync);
+    CHECK_MESSAGE (near (twoFour, 5 * 60.0 / 90.0), "first note at " << twoFour << " s");
+
+    REQUIRE (bus.undo (testing::claude, commands::UndoScope::callersOwn).ok);
+    REQUIRE (bus.undo (testing::claude, commands::UndoScope::callersOwn).ok);
+    const auto restored = firstNoteAt (sync);
+    CHECK_MESSAGE (near (restored, 2.5), "first note at " << restored << " s");
+}
+
 TEST_CASE ("in any time signature, notes sound where their positions put them, and BPM counts quarter notes")
 {
     // At 120 BPM a quarter note is 0.5 s, whatever the signature.

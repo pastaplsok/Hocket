@@ -19,18 +19,18 @@ namespace
         return juce::String::fromUTF8 (utf8.data(), static_cast<int> (utf8.size()));
     }
 
-    // Hocket counts ticks, 960 per quarter note; Tracktion counts beats, which
-    // are the time signature's (eighths in 6/8), since Hocket keeps Tracktion's
-    // default EngineBehaviour::lengthOfOneBeatDependsOnTimeSignature(). Its BPM
-    // is then quarter notes per minute, as Hocket's is (SPEC §4.4).
-    tracktion::BeatPosition beatPosition (notes::Ticks ticks, notes::Meter meter)
+    // Hocket counts ticks, 960 per quarter note; Tracktion counts beats, and
+    // its beats are quarter notes, since the Edit's time signature stays at
+    // Tracktion's 4/4 whatever the song's is (see the constructor). Its BPM is
+    // quarter notes per minute, as Hocket's is (SPEC §4.4).
+    tracktion::BeatPosition beatPosition (notes::Ticks ticks)
     {
-        return tracktion::BeatPosition::fromBeats (static_cast<double> (ticks) / static_cast<double> (meter.ticksPerBeat()));
+        return tracktion::BeatPosition::fromBeats (static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote));
     }
 
-    tracktion::BeatDuration beatDuration (notes::Ticks ticks, notes::Meter meter)
+    tracktion::BeatDuration beatDuration (notes::Ticks ticks)
     {
-        return tracktion::BeatDuration::fromBeats (static_cast<double> (ticks) / static_cast<double> (meter.ticksPerBeat()));
+        return tracktion::BeatDuration::fromBeats (static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote));
     }
 
     tracktion::Plugin::Ptr createDevice (tracktion::Edit& edit, const project::Device& device)
@@ -75,12 +75,21 @@ namespace
         return { tracktion::gainToVolumeFaderPosition (static_cast<float> (gain)), static_cast<float> (pan) };
     }
 
+    tracktion::BeatRange clipBeats (const project::Project& project, const project::Clip& clip)
+    {
+        return { beatPosition (clip.start), beatPosition (hocket::project::clipEnd (project, clip)) };
+    }
+
+    // Puts the Tracktion clip where the model's is, in time at the Edit's tempo.
+    void placeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip)
+    {
+        target.setPosition ({ target.edit.tempoSequence.toTime (clipBeats (project, clip)) });
+    }
+
     // Makes the Tracktion clip match the model's: position, length and notes.
     void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip)
     {
-        const auto meter = project.meter;
-        const tracktion::BeatRange beats { beatPosition (clip.start, meter), beatPosition (hocket::project::clipEnd (project, clip), meter) };
-        target.setPosition ({ target.edit.tempoSequence.toTime (beats) });
+        placeClip (target, project, clip);
 
         // Undo is Hocket's job (SPEC §3.3), so no UndoManager. Notes that run past
         // the clip end are cut off there by Tracktion, as SPEC §5.4 says.
@@ -88,7 +97,7 @@ namespace
         sequence.clear (nullptr);
 
         for (const auto& note : hocket::project::notesOf (project, clip).notes)
-            sequence.addNote (note.pitch, beatPosition (note.start, meter), beatDuration (note.length, meter), note.velocity, 0, nullptr);
+            sequence.addNote (note.pitch, beatPosition (note.start), beatDuration (note.length), note.velocity, 0, nullptr);
     }
 }
 
@@ -120,9 +129,14 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
     // from recording; Hocket's mix and automation come only from commands.
     tracktionEdit->getAutomationRecordManager().setWritingAutomation (false);
 
-    auto& tempo = tracktionEdit->tempoSequence;
-    tempo.getTempo (0)->setBpm (project.tempo);
-    tempo.getTimeSig (0)->setStringTimeSig (juceString (project.meter.text()));
+    // The Edit's time signature stays at Tracktion's 4/4, so its beats are
+    // quarter notes, and Hocket works out its own bars. A new time signature
+    // then moves nothing in time, as SPEC §4.4 has it. Changing the Edit's
+    // would make Tracktion's audio thread put the playhead back on the beat it
+    // was on, as it does after a tempo change, and that would undo a wrap
+    // made in the same instant (updateLoop). A metronome needs the Edit's to
+    // be right: revisit this with one.
+    syncTempo();
 
     for (const auto& track : project.tracks)
         syncTrack (track.id);
@@ -141,8 +155,7 @@ EditSync::~EditSync()
 
 tracktion::TimeRange EditSync::loopRange() const
 {
-    const auto& project = bus.project();
-    return tracktionEdit->tempoSequence.toTime ({ tracktion::BeatPosition(), beatPosition (hocket::project::songEnd (project), project.meter) });
+    return tracktionEdit->tempoSequence.toTime ({ tracktion::BeatPosition(), beatPosition (hocket::project::songEnd (bus.project())) });
 }
 
 //==============================================================================
@@ -158,6 +171,8 @@ void EditSync::changed (const commands::Change& change)
 
         if constexpr (std::is_same_v<Kind, commands::NotesChanged>)
             syncFile (c.file);
+        else if constexpr (std::is_same_v<Kind, commands::TempoChanged>)
+            syncTempo();
         else if constexpr (requires { c.clipId; })
             syncClip (c.clipId);
         else if constexpr (std::is_same_v<Kind, commands::TrackAdded> || std::is_same_v<Kind, commands::TrackRemoved>
@@ -165,9 +180,11 @@ void EditSync::changed (const commands::Change& change)
                            || std::is_same_v<Kind, commands::InstrumentChanged>)
             syncTrack (c.trackId);
 
-        // A MixChanged is handled below, with every track's. The tempo and
-        // time signature reach the Edit in part 3 of Milestone 1's step 6. A
-        // drum map changes how clips are written, not what they play.
+        // A MixChanged is handled below, with every track's. A time signature
+        // moves nothing in time (the constructor says why the Edit's own stays
+        // 4/4); the @length it rewrites comes as a NotesChanged, and where the
+        // song now ends is handled below. A drum map changes how clips are
+        // written, not what they play.
     }, change);
 
     // One track's solo changes whether the others are heard, and so does
@@ -176,7 +193,8 @@ void EditSync::changed (const commands::Change& change)
     syncMix();
     clearTracktionUndo();
 
-    // Clips added, moved or removed, or a new @length, can move the end of the song.
+    // Clips added, moved or removed, a new @length or a new time signature
+    // can move the end of the song.
     updateLoop();
 }
 
@@ -193,11 +211,7 @@ void EditSync::updateLoop()
     // The transport hands a new loop range to the playhead on its timer, up to
     // 200 ms later (every tenth tick at 50 Hz), and until then plays on past
     // the song's new end. So hand it over now.
-    if (! transport.looping)
-        return;
-
-    auto* context = transport.getCurrentPlaybackContext();
-    auto* playHead = context != nullptr ? context->getNodePlayHead() : nullptr;
+    const auto [playHead, sampleRate] = loopingPlayHead();
 
     if (playHead == nullptr)
         return;
@@ -207,15 +221,90 @@ void EditSync::updateLoop()
     // The loop starts at 1.1 and is whole bars, so that's the same beat of
     // the bar, and the pulse carries on (Lee's decision, 2026-11-12).
     // Tracktion's own setLoopRange clamps the place to the loop's end, which
-    // wraps to 1.1, so the place is set here. It's set even when it hasn't
-    // moved, as Tracktion does, since the playhead counts loops from where
-    // its place was last set.
-    const auto loop = tracktion::toSamples (range, context->getSampleRate());
+    // wraps to 1.1, so the place is set here, while no audio block can start.
+    const auto loop = tracktion::toSamples (range, sampleRate);
+    const juce::ScopedLock audioLock (audioCallbackLock());
     const auto place = playHead->getPosition();
     const auto wrapped = place < loop.getEnd() ? place : loop.getStart() + (place - loop.getStart()) % std::max<std::int64_t> (1, loop.getLength());
 
+    // The playhead counts its place from where it was last set, by remainder
+    // of the loop's length, so the place is set even when it doesn't move,
+    // and before the loop changes. Not moving, it's set without telling
+    // Tracktion's players it jumped, or they'd end the notes sounding and
+    // strike them again. Wrapping, it did jump, and they're told: the notes
+    // sounding end, and those on at the new place start.
+    if (wrapped == place)
+        playHead->overridePosition (place);
+    else
+        playHead->setPosition (wrapped);
+
     playHead->setLoopRange (true, loop, false);
-    playHead->setPosition (wrapped);
+}
+
+void EditSync::syncTempo()
+{
+    auto& sequence = tracktionEdit->tempoSequence;
+    auto& tempo = *sequence.getTempo (0);
+    const auto bpm = bus.project().tempo;
+
+    if (tempo.getBpm() == bpm)
+        return;
+
+    {
+        // Tracktion's audio thread reads the Edit's tempo map and the
+        // playhead's loop directly, and the playhead counts its place in
+        // samples. So the playhead's place and loop change with the tempo,
+        // while no audio block can start: the playhead keeps its beat, so its
+        // place in the bar, and the loop's new length in samples holds the
+        // song. An audio block in between would wrap the place at the old
+        // loop's end, or clamp it there. Tracktion takes this lock itself to
+        // swap in a new tempo map; this holds it a few microseconds longer.
+        const juce::ScopedLock audioLock (audioCallbackLock());
+        const auto [playHead, sampleRate] = loopingPlayHead();
+        const auto beat = playHead != nullptr ? sequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate))
+                                              : tracktion::BeatPosition();
+
+        // Clips move below, by Hocket's positions, not by Tracktion's remap.
+        tempo.set (tempo.getStartBeat(), bpm, tempo.getCurve(), false);
+        sequence.updateTempoData();
+
+        // Without telling Tracktion's players it jumped, so held notes carry
+        // on. Tracktion's audio thread also moves the playhead when it sees
+        // the new tempo map, to keep the beat its last block ended on, so it
+        // lands here too. The loop first, since the place is clamped to it.
+        if (playHead != nullptr)
+        {
+            playHead->setLoopRange (true, tracktion::toSamples (loopRange(), sampleRate), false);
+            playHead->overridePosition (tracktion::toSamples (sequence.toTime (beat), sampleRate));
+        }
+    }
+
+    // Clips keep their beats, so they move in time. Tracktion's players keep
+    // the notes sounding, since what plays at the playhead's beat is the same.
+    const auto& project = bus.project();
+
+    for (const auto& [clipId, clip] : clips)
+        if (const auto* source = hocket::project::findClip (project, clipId))
+            placeClip (*clip, project, *source);
+
+    tracktionEdit->getTransport().setLoopRange (loopRange());
+}
+
+std::pair<tracktion::graph::PlayHead*, double> EditSync::loopingPlayHead() const
+{
+    auto& transport = tracktionEdit->getTransport();
+
+    if (! transport.looping)
+        return { nullptr, 0.0 };
+
+    auto* context = transport.getCurrentPlaybackContext();
+    auto* playHead = context != nullptr ? context->getNodePlayHead() : nullptr;
+    return { playHead, playHead != nullptr ? context->getSampleRate() : 0.0 };
+}
+
+juce::CriticalSection& EditSync::audioCallbackLock() const
+{
+    return tracktionEdit->engine.getDeviceManager().deviceManager.getAudioCallbackLock();
 }
 
 void EditSync::syncTrack (const std::string& trackId)
@@ -415,7 +504,7 @@ void EditSync::syncClip (const std::string& clipId)
     if (found != clips.end())
     {
         const auto movedTrack = found->second->getTrack() != track->second.track.get();
-        const auto movedStart = std::abs (found->second->getStartBeat().inBeats() - beatPosition (source->start, project.meter).inBeats()) > 1.0e-9;
+        const auto movedStart = std::abs (found->second->getStartBeat().inBeats() - beatPosition (source->start).inBeats()) > 1.0e-9;
 
         if (movedTrack || movedStart)
         {
@@ -426,9 +515,7 @@ void EditSync::syncClip (const std::string& clipId)
 
     if (found == clips.end())
     {
-        const tracktion::BeatRange beats { beatPosition (source->start, project.meter),
-                                           beatPosition (hocket::project::clipEnd (project, *source), project.meter) };
-        auto midiClip = track->second.track->insertMIDIClip (juceString (clipId), tracktionEdit->tempoSequence.toTime (beats), nullptr);
+        auto midiClip = track->second.track->insertMIDIClip (juceString (clipId), tracktionEdit->tempoSequence.toTime (clipBeats (project, *source)), nullptr);
 
         if (midiClip == nullptr)
             throw std::runtime_error ("Tracktion couldn't add a clip for " + clipId);

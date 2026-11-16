@@ -144,17 +144,18 @@ TEST_CASE ("an empty project loops one bar")
     CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (2.0));
 }
 
-TEST_CASE ("in 6/8, Tracktion's beats are eighths and its BPM counts quarter notes, as Hocket's do")
+TEST_CASE ("in 6/8, Tracktion's beats and BPM are quarter notes, as Hocket's tempo is, and the Edit stays in 4/4")
 {
-    // At 120 BPM, a 6/8 bar is six eighths of 0.25 s.
+    // At 120 BPM, a 6/8 bar is six eighths of 0.25 s. The Edit's time
+    // signature stays 4/4, so a new one never moves anything in time.
     const notes::Meter sixEight { 6, 8 };
     commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", sixEight.ticksPerBar(), "@length 2bars\n\n1.4 C2 1/8 v100\n2.6 G2 1/4 v90\n") }) },
                                           120.0, sixEight));
     engine::EditSync sync (testEngine(), bus);
     auto& edit = sync.edit();
 
-    CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 6);
-    CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 8);
+    CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 4);
+    CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 4);
     CHECK (edit.tempoSequence.getTempo (0)->getBpm() == 120.0);
 
     auto& clip = clipNamed (edit, "clp-bass");
@@ -164,10 +165,10 @@ TEST_CASE ("in 6/8, Tracktion's beats are eighths and its BPM counts quarter not
     REQUIRE (clip.getSequence().getNumNotes() == 2);
     const auto* first = clip.getSequence().getNotes()[0];
     const auto* second = clip.getSequence().getNotes()[1];
-    CHECK (first->getStartBeat().inBeats() == doctest::Approx (3.0));   // 1.4: three eighths in
-    CHECK (first->getLengthBeats().inBeats() == doctest::Approx (1.0)); // an eighth
-    CHECK (second->getStartBeat().inBeats() == doctest::Approx (11.0)); // 2.6
-    CHECK (second->getLengthBeats().inBeats() == doctest::Approx (2.0)); // a quarter is two eighths
+    CHECK (first->getStartBeat().inBeats() == doctest::Approx (1.5));    // 1.4: three eighths in
+    CHECK (first->getLengthBeats().inBeats() == doctest::Approx (0.5));  // an eighth
+    CHECK (second->getStartBeat().inBeats() == doctest::Approx (5.5));   // 2.6: eleven eighths in
+    CHECK (second->getLengthBeats().inBeats() == doctest::Approx (1.0)); // a quarter
 
     // The clip ends at 4.1, 4.5 s in.
     CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (4.5));

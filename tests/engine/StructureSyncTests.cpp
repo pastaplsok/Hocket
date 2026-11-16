@@ -1,6 +1,6 @@
 // Tracks, instruments and clips added, moved and removed by commands reach the
-// Edit, matched by ID, and undo takes them back (Milestone 1's step 5); so does
-// each track's mix (step 6).
+// Edit, matched by ID, and undo takes them back (Milestone 1's step 5); so do
+// each track's mix, the tempo and the time signature (step 6).
 
 #include "EngineTesting.h"
 #include "common/RandomCommands.h"
@@ -17,16 +17,31 @@ using namespace hocket::testing;
 
 namespace
 {
-    double beatsOf (notes::Ticks ticks, notes::Meter meter)
+    // Tracktion's beats are quarter notes in every time signature (EditSync.cpp).
+    double beatsOf (notes::Ticks ticks)
     {
-        return static_cast<double> (ticks) / static_cast<double> (meter.ticksPerBeat());
+        return static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote);
     }
 
-    // The Edit's tracks, plugins, clips and notes are the project's, in its order.
+    double secondsOf (notes::Ticks ticks, const project::Project& project)
+    {
+        return beatsOf (ticks) * 60.0 / project.tempo;
+    }
+
+    // The Edit's tempo, tracks, plugins, clips and notes are the project's, in its order.
     void checkEditMatches (engine::EditSync& sync, const project::Project& project)
     {
         auto& edit = sync.edit();
-        const auto meter = project.meter;
+
+        // One tempo, the song's; the time signature stays 4/4, so beats are quarter notes.
+        CAPTURE (project.tempo);
+        CAPTURE (project.meter.text());
+        REQUIRE (edit.tempoSequence.getNumTempos() == 1);
+        REQUIRE (edit.tempoSequence.getNumTimeSigs() == 1);
+        CHECK (edit.tempoSequence.getTempo (0)->getBpm() == project.tempo);
+        CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 4);
+        CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 4);
+
         const auto audioTracks = tracktion::getAudioTracks (edit);
         REQUIRE (static_cast<std::size_t> (audioTracks.size()) == project.tracks.size());
 
@@ -71,15 +86,17 @@ namespace
 
                 auto* midi = dynamic_cast<tracktion::MidiClip*> (*found);
                 REQUIRE (midi != nullptr);
-                CHECK (midi->getStartBeat().inBeats() == doctest::Approx (beatsOf (clip.start, meter)));
-                CHECK (midi->getEndBeat().inBeats() == doctest::Approx (beatsOf (project::clipEnd (project, clip), meter)));
+                CHECK (midi->getStartBeat().inBeats() == doctest::Approx (beatsOf (clip.start)));
+                CHECK (midi->getEndBeat().inBeats() == doctest::Approx (beatsOf (project::clipEnd (project, clip))));
+                CHECK (midi->getPosition().getStart().inSeconds() == doctest::Approx (secondsOf (clip.start, project)));
+                CHECK (midi->getPosition().getEnd().inSeconds() == doctest::Approx (secondsOf (project::clipEnd (project, clip), project)));
 
                 using Note = std::tuple<int, double, double, int>; // pitch, start, length, velocity
                 std::vector<Note> expected;
                 std::vector<Note> actual;
 
                 for (const auto& note : project::notesOf (project, clip).notes)
-                    expected.emplace_back (note.pitch, beatsOf (note.start, meter), beatsOf (note.length, meter), note.velocity);
+                    expected.emplace_back (note.pitch, beatsOf (note.start), beatsOf (note.length), note.velocity);
 
                 for (const auto* note : midi->getSequence().getNotes())
                     actual.emplace_back (note->getNoteNumber(), note->getStartBeat().inBeats(), note->getLengthBeats().inBeats(), note->getVelocity());
@@ -90,8 +107,7 @@ namespace
             }
         }
 
-        CHECK (sync.loopRange().getEnd().inSeconds()
-               == doctest::Approx (edit.tempoSequence.toTime (tracktion::BeatPosition::fromBeats (beatsOf (project::songEnd (project), meter))).inSeconds()));
+        CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (secondsOf (project::songEnd (project), project)));
         CHECK_FALSE (edit.getUndoManager().canUndo());
     }
 
@@ -215,6 +231,23 @@ TEST_CASE ("sync: volume, pan, mute and solo reach each track's volume plugin, a
     CHECK (bus.project() == start);
 }
 
+TEST_CASE ("sync: the tempo moves every clip to keep its beats, a time signature moves none, and undo takes them back")
+{
+    CommandBus bus (randomSequenceProject());
+    engine::EditSync sync (testEngine(), bus);
+    const auto before = randomSequenceProject();
+
+    run (bus, sync, SetTempo { 90.0, {} });
+    run (bus, sync, SetTempo { 141.5, {} });
+    run (bus, sync, SetTimeSignature { "2/4" });
+    run (bus, sync, SetTempo { 20.0, {} });
+    run (bus, sync, SetTimeSignature { "8/8" });
+    run (bus, sync, SetTempo { 300.0, {} });
+
+    undoAll (bus, sync);
+    CHECK (bus.project() == before);
+}
+
 TEST_CASE ("sync: random command sequences keep the Edit matching the model, through undo and redo")
 {
     int applied = 0;
@@ -240,8 +273,7 @@ TEST_CASE ("sync: random command sequences keep the Edit matching the model, thr
             }
             else
             {
-                // No tempo or time signature: they reach the Edit in step 6.
-                applied += bus.execute (randomCommand (rng, bus.project(), false), claude).ok ? 1 : 0;
+                applied += bus.execute (randomCommand (rng, bus.project()), claude).ok ? 1 : 0;
             }
 
             checkEditMatches (sync, bus.project());
