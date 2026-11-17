@@ -24,7 +24,7 @@ namespace hocket::project
     inline constexpr std::size_t maxTrackNameLength = 100; // bytes
     inline constexpr std::size_t maxKitNameLength = 64;    // bytes
     inline constexpr double minTempo = 20.0;               // quarter notes per minute
-    inline constexpr double maxTempo = 999.0;
+    inline constexpr double maxTempo = 300.0;              // Tracktion plays no faster (SPEC §4.4)
 
     // Lowercase letters and digits in words joined by single hyphens: "bass", "bass-verse-2".
     bool isHyphenatedName (std::string_view name);
@@ -62,7 +62,8 @@ namespace hocket::project
     // One line of text, 1 to maxTrackNameLength bytes (isOneLineText).
     std::optional<std::string> trackNameProblem (std::string_view name);
 
-    // minTempo to maxTempo quarter notes per minute.
+    // minTempo to maxTempo quarter notes per minute. Over the top, it says
+    // how to write a faster feel at half the tempo.
     std::optional<std::string> tempoProblem (double bpm);
 
     // For messages: "120", "97.5".

@@ -241,7 +241,18 @@ std::optional<std::string> tempoProblem (double bpm)
     if (bpm >= minTempo && bpm <= maxTempo)
         return {};
 
-    return formatTempo (bpm) + " is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120";
+    const auto range = "the tempo is " + formatTempo (minTempo) + " to " + formatTempo (maxTempo) + " BPM (quarter notes per minute), e.g. 120";
+
+    if (! (bpm > maxTempo))
+        return formatTempo (bpm) + " is out of range: " + range;
+
+    // Tracktion, which plays the song, goes no faster (Lee, 2026-11-16).
+    auto message = formatTempo (bpm) + " is too fast: " + range + ". A faster feel can be written at half the tempo with notes half as long";
+
+    if (std::isfinite (bpm) && bpm / 2 <= maxTempo)
+        message += ": " + formatTempo (bpm) + " BPM in quarter notes sounds the same as " + formatTempo (bpm / 2) + " BPM in eighth notes";
+
+    return message;
 }
 
 std::string formatTempo (double bpm)

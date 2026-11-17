@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.10** — 2026-11-12
+> Status: **Draft v0.11** — 2026-11-16
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -200,8 +200,8 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Strict:** every key shown is required. Unknown keys and duplicate keys are errors, so a typo is never silently ignored.
 - **Order:** `tracks` is in display order, `devices` in signal-chain order.
 - **Track names** are one line of text: 1 to 100 bytes of UTF-8, with no control characters (so no line breaks or tabs), since lists show one track per line. Otherwise they're free text.
-- **Tempo** is in quarter notes per minute, whatever the time signature: 20–999.
-- **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion counts beats the same way, with its default engine behaviour, so its BPM is quarter notes per minute too.)
+- **Tempo** is in quarter notes per minute, whatever the time signature: 20–300. Tracktion, which plays the song, goes no faster. A faster feel is written at half the tempo with notes half as long (400 BPM in quarter notes sounds the same as 200 BPM in eighth notes), and the error for a tempo over 300 says so.
+- **Time signature:** one for the whole song, `"<top>/<bottom>"`. The top number is 1–32; the bottom one is 2, 4, 8 or 16. **A beat is the bottom number's note**: a quarter in 4/4, an eighth in 6/8 and 7/8, a half in 3/2. Positions (§5) count these beats, and their third number counts sixteenths within the beat: 1–4 in x/4, 1–2 in x/8, 1–8 in x/2, and only 1 in x/16. Ticks are 960 per quarter note in every signature, and note lengths stay fractions of a whole note. (Tracktion's BPM is quarter notes per minute too. Hocket keeps the Tracktion Edit's own time signature at 4/4, so Tracktion's beats are quarter notes, and works out bars itself; anything that reads the signature or the bar from Tracktion, like a metronome or a hosted plugin (§8.2), needs that revisited first.)
   - **Changing it** keeps every clip and note at the same time. Since `@length` is in bars, the change is refused if any clip wouldn't then be a whole number of the new bars, or the song would pass 999 of them; the message lists those clips and lengths that would work. So 4/4 to 2/4 or 8/8 always works, and 4/4 to 3/4 works on an empty song or when the clips fit. When a change goes through and leaves clips starting off a bar line, the result lists them.
 - **Clips:** `start` is a song position in `.notes` position syntax (§5). `file` is `clips/<name>.notes`, with a lowercase, hyphenated name; a new clip's file is named after its ID (`clp-verse-2` → `clips/verse-2.notes`) unless the client names one. A clip's length comes from its `.notes` file (`@length`), never from `project.json`, so resizing a clip is a `write_clip` with a new `@length`. Clips on one track may not overlap. A song is at most 999 bars long: every clip ends by 1000.1, so a typo in a start can't make a loop thousands of bars long.
 - **Linked clips:** several clips may name the same `.notes` file, pattern-style as in FL Studio. They share its notes and its `@length`, so editing one edits them all (`write_clip` says which others changed). Hocket reads each file once and writes it once. A file linked into drum tracks must mean the same notes on each (§5.2).
@@ -489,6 +489,7 @@ Raw data remains available on explicit request (e.g. for a script).
 - Save/load/swap plugin state and presets.
 - **Out-of-process sandboxing** so a crashing plugin doesn't take down the DAW.
 - Latency reporting and compensation.
+- **The song's time signature and bar position.** Plugins read the tempo, time signature and position in bars from the host (an arpeggiator, a synced delay or LFO). The Tracktion Edit's own time signature is 4/4 for now, whatever the song's (§4.4), so hosting needs the song's to reach plugins first.
 
 ### 8.3 Test plugin set (all free/legal)
 Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova, MeldaProduction free bundle, Cardinal, Steinberg VST3 SDK example plugins. MiniMeters (already owned by Lee) as a commercial test case. Commercial plugins (incl. copy protection like iLok) tested via official demos. Serum 2 is the one planned purchase, once VST hosting exists.

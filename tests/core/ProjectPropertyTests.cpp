@@ -125,8 +125,8 @@ namespace
     Project randomProject (Rng& rng)
     {
         Project project;
-        project.tempo = randomInt (rng, 0, 1) == 0 ? randomInt (rng, 20, 999)
-                                                   : std::uniform_real_distribution<double> (20.0, 999.0) (rng);
+        project.tempo = randomInt (rng, 0, 1) == 0 ? randomInt (rng, 20, 300)
+                                                   : std::uniform_real_distribution<double> (20.0, 300.0) (rng);
         project.meter = randomMeter (rng);
         std::set<std::string> ids;
         int fileNumber = 0;

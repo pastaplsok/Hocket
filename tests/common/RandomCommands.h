@@ -171,7 +171,7 @@ namespace hocket::testing
 
         switch (randomInt (rng, songCommands ? 0 : 2, 15))
         {
-            case 0: return SetTempo { pick (rng, std::array<double, 6> { 60, 90, 120.5, 140, 10, 1000 }), gesture (rng) };
+            case 0: return SetTempo { pick (rng, std::array<double, 6> { 60, 90, 120.5, 140, 10, 400 }), gesture (rng) };
             case 1: return SetTimeSignature { pick (rng, std::array<std::string, 9> { "4/4", "2/4", "8/8", "3/4", "6/8", "12/8", "5/4", "4/2", "6/3" }) };
 
             case 2:

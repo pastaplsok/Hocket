@@ -134,8 +134,11 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus)
     // then moves nothing in time, as SPEC §4.4 has it. Changing the Edit's
     // would make Tracktion's audio thread put the playhead back on the beat it
     // was on, as it does after a tempo change, and that would undo a wrap
-    // made in the same instant (updateLoop). A metronome needs the Edit's to
-    // be right: revisit this with one.
+    // made in the same instant (updateLoop). Anything that reads the
+    // signature or the bar from Tracktion needs the Edit's to be right: a
+    // metronome, and from Phase 2 the VST3 plugins it hosts, which take the
+    // time signature and bar position from the host. Revisit this before
+    // either (PROGRESS.md, Loose ends).
     syncTempo();
 
     for (const auto& track : project.tracks)
@@ -258,7 +261,13 @@ void EditSync::syncTempo()
         // place in the bar, and the loop's new length in samples holds the
         // song. An audio block in between would wrap the place at the old
         // loop's end, or clamp it there. Tracktion takes this lock itself to
-        // swap in a new tempo map; this holds it a few microseconds longer.
+        // swap in a new tempo map; this holds it a few microseconds longer
+        // (CLAUDE.md: the one exception to the no-locks rule).
+        //
+        // The tempo setting changes under the lock too: once it has, the
+        // next call that reads the tempo map (toBeats, toTime) rebuilds the
+        // map first, so the beat is read before, and nothing may read the map
+        // between the two outside the lock.
         const juce::ScopedLock audioLock (audioCallbackLock());
         const auto [playHead, sampleRate] = loopingPlayHead();
         const auto beat = playHead != nullptr ? sequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate))

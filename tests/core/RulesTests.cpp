@@ -53,14 +53,28 @@ TEST_CASE ("a track's name says what's wrong with it")
     CHECK (contains (*trackNameProblem ("a\xff"), "; this one isn't valid UTF-8 text"));
 }
 
-TEST_CASE ("the tempo is 20 to 999 BPM, and the message shows the number given")
+TEST_CASE ("the tempo is 20 to 300 BPM, and the message shows the number given")
 {
     CHECK_FALSE (tempoProblem (20.0));
-    CHECK_FALSE (tempoProblem (999.0));
+    CHECK_FALSE (tempoProblem (300.0));
     CHECK_FALSE (tempoProblem (97.5));
 
-    CHECK (tempoProblem (1000.0) == "1000 is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120");
-    CHECK (contains (*tempoProblem (19.99), "19.99 is out of range"));
+    // Tracktion plays no faster, so a faster feel is written at half the tempo (Lee, 2026-11-16).
+    CHECK (tempoProblem (301.0) == "301 is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. A faster feel can be "
+                                   "written at half the tempo with notes half as long: 301 BPM in quarter notes sounds the same as "
+                                   "150.5 BPM in eighth notes");
+    CHECK (tempoProblem (600.0) == "600 is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. A faster feel can be "
+                                   "written at half the tempo with notes half as long: 600 BPM in quarter notes sounds the same as "
+                                   "300 BPM in eighth notes");
+
+    // Half is still too fast, so there's no example.
+    CHECK (tempoProblem (1000.0) == "1000 is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. A faster feel can be "
+                                    "written at half the tempo with notes half as long");
+    CHECK (tempoProblem (std::numeric_limits<double>::infinity())
+           == "inf is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. A faster feel can be "
+              "written at half the tempo with notes half as long");
+
+    CHECK (tempoProblem (19.99) == "19.99 is out of range: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120");
     CHECK (contains (*tempoProblem (-5.0), "-5 is out of range"));
     CHECK (tempoProblem (std::numeric_limits<double>::quiet_NaN()));
     CHECK (tempoProblem (std::numeric_limits<double>::infinity()));

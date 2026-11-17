@@ -98,10 +98,11 @@ TEST_CASE ("set the tempo: out of range is refused, and the same tempo changes n
     CommandBus bus (makeProject());
     ChangeLog log (bus);
 
-    CHECK (bus.execute (SetTempo { 1000 }, claude).message
-           == "set the tempo: 1000 is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120");
+    CHECK (bus.execute (SetTempo { 400 }, claude).message
+           == "set the tempo: 400 is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. A faster feel can be "
+              "written at half the tempo with notes half as long: 400 BPM in quarter notes sounds the same as 200 BPM in eighth notes");
 
-    for (const auto bpm : { 19.99, 999.5, -120.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity() })
+    for (const auto bpm : { 19.99, 300.5, 999.0, -120.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity() })
     {
         CAPTURE (bpm);
         CHECK_FALSE (bus.execute (SetTempo { bpm }, claude).ok);

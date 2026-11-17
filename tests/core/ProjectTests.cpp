@@ -352,7 +352,9 @@ TEST_CASE ("errors in project.json point at the value, say what's wrong, and sho
         { R"("hocket-project")", R"("daw-project")", R"("daw-project")", R"("format" must be "hocket-project")" },
         { R"("formatVersion": 0)", R"("formatVersion": 7)", "7,", "format version 7, but this build of Hocket reads only format version 0" },
         { R"("formatVersion": 0)", R"("formatVersion": "zero")", R"("zero")", R"("formatVersion" should be a whole number, e.g. 0)" },
-        { "97.5", "1000", "1000", R"(the project: "tempo": 1000 is out of range: the tempo is 20 to 999 BPM (quarter notes per minute), e.g. 120)" },
+        { "97.5", "300.25", "300.25", R"(the project: "tempo": 300.25 is too fast: the tempo is 20 to 300 BPM (quarter notes per minute), e.g. 120. )"
+                                      "A faster feel can be written at half the tempo with notes half as long: 300.25 BPM in quarter notes "
+                                      "sounds the same as 150.125 BPM in eighth notes" },
         { "97.5", "19.5", "19.5", R"("tempo": 19.5 is out of range)" },
         { "97.5", R"("fast")", R"("fast")", R"("tempo" should be a number of quarter notes per minute (BPM), e.g. 120)" },
         { R"("4/4")", R"("6/3")", R"("6/3")", "the project: '6/3' isn't a time signature Hocket supports: the bottom number is 3. The top number is 1 to 32 "
