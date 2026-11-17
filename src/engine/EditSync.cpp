@@ -14,6 +14,9 @@ namespace hocket::engine
 {
 namespace
 {
+    // How often, with loop off, playback checks whether it has reached the end.
+    constexpr int endCheckIntervalMs = 5;
+
     juce::String juceString (const std::string& utf8)
     {
         return juce::String::fromUTF8 (utf8.data(), static_cast<int> (utf8.size()));
@@ -158,7 +161,13 @@ EditSync::~EditSync()
 
 tracktion::TimeRange EditSync::loopRange() const
 {
-    return tracktionEdit->tempoSequence.toTime ({ tracktion::BeatPosition(), beatPosition (hocket::project::songEnd (bus.project())) });
+    const auto range = commands::playRange (bus.project(), bus.transportSettings());
+    return tracktionEdit->tempoSequence.toTime ({ beatPosition (range.start), beatPosition (range.end) });
+}
+
+tracktion::TimePosition EditSync::timeOf (notes::Ticks position) const
+{
+    return tracktionEdit->tempoSequence.toTime (beatPosition (position));
 }
 
 //==============================================================================
@@ -205,43 +214,53 @@ void EditSync::updateLoop()
 {
     auto& transport = tracktionEdit->getTransport();
     const auto range = loopRange();
+    const auto looping = bus.transportSettings().looping;
 
-    if (transport.getLoopRange() == range)
+    if (transport.getLoopRange() == range && transport.looping.get() == looping)
         return;
 
+    // The transport's timer hands these to the playhead every tenth tick at
+    // 50 Hz, so they must agree with what's handed over below.
     transport.setLoopRange (range);
+    transport.looping = looping;
 
-    // The transport hands a new loop range to the playhead on its timer, up to
-    // 200 ms later (every tenth tick at 50 Hz), and until then plays on past
-    // the song's new end. So hand it over now.
-    const auto [playHead, sampleRate] = loopingPlayHead();
+    // Until then it plays on past the old end, so hand them over now.
+    const auto [playHead, sampleRate] = currentPlayHead();
 
     if (playHead == nullptr)
         return;
 
-    // When the song now ends before the playhead, it wraps as if the loop had
-    // always been this long: the place within the new loop, by remainder.
-    // The loop starts at 1.1 and is whole bars, so that's the same beat of
-    // the bar, and the pulse carries on (Lee's decision, 2026-11-12).
-    // Tracktion's own setLoopRange clamps the place to the loop's end, which
-    // wraps to 1.1, so the place is set here, while no audio block can start.
+    // When the playhead is now outside what plays (the song ended before it,
+    // or a loop region was set elsewhere), it wraps as if the loop had always
+    // been this one: the place within it, by remainder, counted from its
+    // start. A loop of whole bars keeps the same beat of the bar, and the
+    // pulse carries on (Lee's decision, 2026-11-12; SPEC §3.3). Tracktion's
+    // own setLoopRange clamps the place to the loop, so the place is set
+    // here, while no audio block can start. With loop off, the playhead plays
+    // on from where it is, and timerCallback stops it at the end.
     const auto loop = tracktion::toSamples (range, sampleRate);
     const juce::ScopedLock audioLock (audioCallbackLock());
     const auto place = playHead->getPosition();
-    const auto wrapped = place < loop.getEnd() ? place : loop.getStart() + (place - loop.getStart()) % std::max<std::int64_t> (1, loop.getLength());
+    const auto wrapped = ! looping || loop.contains (place)
+                           ? place
+                           : loop.getStart() + juce::negativeAwareModulo (place - loop.getStart(), std::max<std::int64_t> (1, loop.getLength()));
 
     // The playhead counts its place from where it was last set, by remainder
-    // of the loop's length, so the place is set even when it doesn't move,
-    // and before the loop changes. Not moving, it's set without telling
-    // Tracktion's players it jumped, or they'd end the notes sounding and
-    // strike them again. Wrapping, it did jump, and they're told: the notes
-    // sounding end, and those on at the new place start.
+    // of the loop's length, so the place is set even when it doesn't move:
+    // with looping off, so the old loop doesn't clamp it, and before the new
+    // loop is on. Not moving, it's set without telling Tracktion's players it
+    // jumped, or they'd end the notes sounding and strike them again.
+    // Wrapping, it did jump, and they're told: the notes sounding end, and
+    // those on at the new place start.
+    playHead->setLoopRange (false, loop, false);
+
     if (wrapped == place)
         playHead->overridePosition (place);
     else
         playHead->setPosition (wrapped);
 
-    playHead->setLoopRange (true, loop, false);
+    if (looping)
+        playHead->setLoopRange (true, loop, false);
 }
 
 void EditSync::syncTempo()
@@ -269,7 +288,7 @@ void EditSync::syncTempo()
         // map first, so the beat is read before, and nothing may read the map
         // between the two outside the lock.
         const juce::ScopedLock audioLock (audioCallbackLock());
-        const auto [playHead, sampleRate] = loopingPlayHead();
+        const auto [playHead, sampleRate] = currentPlayHead();
         const auto beat = playHead != nullptr ? sequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate))
                                               : tracktion::BeatPosition();
 
@@ -280,10 +299,13 @@ void EditSync::syncTempo()
         // Without telling Tracktion's players it jumped, so held notes carry
         // on. Tracktion's audio thread also moves the playhead when it sees
         // the new tempo map, to keep the beat its last block ended on, so it
-        // lands here too. The loop first, since the place is clamped to it.
+        // lands here too. The loop first, since the place is clamped to it;
+        // with loop off there's none, and timerCallback stops at the end.
         if (playHead != nullptr)
         {
-            playHead->setLoopRange (true, tracktion::toSamples (loopRange(), sampleRate), false);
+            if (playHead->isLooping())
+                playHead->setLoopRange (true, tracktion::toSamples (loopRange(), sampleRate), false);
+
             playHead->overridePosition (tracktion::toSamples (sequence.toTime (beat), sampleRate));
         }
     }
@@ -299,14 +321,9 @@ void EditSync::syncTempo()
     tracktionEdit->getTransport().setLoopRange (loopRange());
 }
 
-std::pair<tracktion::graph::PlayHead*, double> EditSync::loopingPlayHead() const
+std::pair<tracktion::graph::PlayHead*, double> EditSync::currentPlayHead() const
 {
-    auto& transport = tracktionEdit->getTransport();
-
-    if (! transport.looping)
-        return { nullptr, 0.0 };
-
-    auto* context = transport.getCurrentPlaybackContext();
+    auto* context = tracktionEdit->getTransport().getCurrentPlaybackContext();
     auto* playHead = context != nullptr ? context->getNodePlayHead() : nullptr;
     return { playHead, playHead != nullptr ? context->getSampleRate() : 0.0 };
 }
@@ -573,34 +590,33 @@ void EditSync::clearTracktionUndo()
 }
 
 //==============================================================================
-commands::Result EditSync::play()
+void EditSync::play()
 {
     auto& transport = tracktionEdit->getTransport();
+    const auto& settings = bus.transportSettings();
+    const auto start = timeOf (commands::startPosition (bus.project(), settings));
     playRequested = true;
 
-    if (transport.isPlaying())
-        return { true, "already playing" };
-
-    const auto range = loopRange();
-    transport.setLoopRange (range);
-    transport.looping = true;
-    transport.setPosition (range.getStart());
+    transport.setLoopRange (loopRange());
+    transport.looping = settings.looping;
+    transport.setPosition (start);
     transport.play (false);
 
-    const auto& project = bus.project();
-    return { true, "playing " + notes::formatPosition (0, project.meter) + " to " + notes::formatPosition (hocket::project::songEnd (project), project.meter) + " on a loop" };
+    // Tracktion starts a loop at its start when the place is in its last
+    // 0.1 s, and a seek can put it there.
+    if (transport.getPosition() != start)
+        transport.setPosition (start);
+
+    // Loop off: play runs to the end, and stops (SPEC §3.1).
+    if (! settings.looping)
+        startTimer (endCheckIntervalMs);
 }
 
-commands::Result EditSync::stop()
+void EditSync::stop()
 {
-    auto& transport = tracktionEdit->getTransport();
     playRequested = false;
-
-    if (! transport.isPlaying())
-        return { true, "already stopped" };
-
-    transport.stop (false, false);
-    return { true, "stopped" };
+    stopTimer();
+    tracktionEdit->getTransport().stop (false, false);
 }
 
 bool EditSync::isPlaying() const
@@ -612,5 +628,59 @@ bool EditSync::isPlaying() const
 bool EditSync::stoppedByItself() const
 {
     return playRequested && ! isPlaying();
+}
+
+notes::Ticks EditSync::playheadPosition() const
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (playHead == nullptr)
+        return commands::startPosition (bus.project(), bus.transportSettings());
+
+    const auto beats = tracktionEdit->tempoSequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate));
+    return std::max<notes::Ticks> (0, std::llround (beats.inBeats() * static_cast<double> (notes::ticksPerQuarterNote)));
+}
+
+void EditSync::jumpTo (notes::Ticks position)
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (playHead == nullptr)
+        return;
+
+    // A jump: Tracktion's players end the notes sounding, and strike those on
+    // at the new place. The bus has put it inside what plays, so the loop
+    // doesn't clamp it.
+    playHead->setPosition (tracktion::toSamples (timeOf (position), sampleRate));
+}
+
+void EditSync::loopChanged()
+{
+    updateLoop();
+
+    if (isPlaying() && ! bus.transportSettings().looping)
+        startTimer (endCheckIntervalMs);
+}
+
+void EditSync::timerCallback()
+{
+    auto& transport = tracktionEdit->getTransport();
+
+    if (! transport.isPlaying() || bus.transportSettings().looping)
+    {
+        stopTimer();
+        return;
+    }
+
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (playHead == nullptr || playHead->getPosition() < tracktion::toSamples (loopRange().getEnd(), sampleRate))
+        return;
+
+    // Asked for, so not a stop by itself. By now the playhead may be a block
+    // or two past the end (Loose ends).
+    stopTimer();
+    playRequested = false;
+    transport.stop (false, false);
 }
 }

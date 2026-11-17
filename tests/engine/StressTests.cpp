@@ -591,3 +591,66 @@ TEST_CASE ("stress: an instrument added and removed 20 a second during playback"
 
     checkHeldNotes (run, 100);
 }
+
+TEST_CASE ("stress: with loop off, play stops at the loop region's end, a little late")
+{
+    // E3 through bar 3, the loop region, and a short G3 at 4.1, just after
+    // it. With loop off, a message-thread timer stops playback once the
+    // playhead passes the end, so it plays on past it by however late that
+    // is, and G3 is struck if it's late at all (PROGRESS.md, Loose ends).
+    // This measures how late, in real time; hocket-headless's message thread
+    // may be slower than this test's, which asks Windows for 1 ms timers.
+    constexpr double tempo = 240.0;
+    constexpr int bar240 = 44100; // a bar at 240 BPM, in samples
+    constexpr int g3 = 55;
+    constexpr int runs = 5;
+
+    std::vector<double> lateMs;
+    int struck = 0;
+
+    for (int run = 0; run < runs; ++run)
+    {
+        CAPTURE (run);
+        FakeAudioDevice device;
+        commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass",
+                                                            {
+                                                                makeClip ("clp-three", 2 * bar, "@length 1bar\n\n1.1 E3 1/1 v100\n"),
+                                                                makeClip ("clp-four", 3 * bar, "@length 1bar\n\n1.1 G3 1/8 v100\n"),
+                                                            }) },
+                                               tempo));
+        engine::EditSync sync (testEngine(), bus);
+        auto& recorder = MidiRecorder::addTo (sync.edit());
+        REQUIRE (bus.execute (commands::SetLoopRegion { "3.1", "4.1" }, lee).ok);
+        REQUIRE (bus.execute (commands::SetLooping { false }, lee).ok);
+        REQUIRE (timedPlay (bus, lee).ok);
+
+        AudioThread audio (device, 4.0);
+        runMessagesUntil ([&] { return bus.isPlaying() == false || audio.blocksPlayed() * blockSize > 3 * bar240; });
+        audio.stopAfter (audio.blocksPlayed() + 4);
+        runMessagesUntil ([&audio] { return audio.isDone(); });
+
+        CHECK (bus.isPlaying() == false);
+        CHECK_FALSE (sync.stoppedByItself());
+
+        // The stop ends every note at once; play did too, at the start.
+        const auto events = recorder.recorded();
+        const auto stop = std::ranges::find_if (events, [] (const MidiRecorder::Event& e) { return e.note < 0 && e.sample > bar240 / 2; });
+        REQUIRE (stop != events.end());
+        lateMs.push_back (static_cast<double> (stop->sample - bar240) * 1000.0 / FakeAudioDevice::sampleRate);
+        struck += std::ranges::any_of (events, [] (const MidiRecorder::Event& e) { return e.note == g3 && e.on; }) ? 1 : 0;
+    }
+
+    std::ranges::sort (lateMs);
+    std::ostringstream late;
+    late.precision (3);
+
+    for (const auto ms : lateMs)
+        late << ms << " ms ";
+
+    MESSAGE ("loop off: stopped after the region's end by " << late.str() << "(a block is " << blockSeconds * 1000.0 << " ms); "
+             << "the note just after it was struck in " << struck << " of " << runs << " runs");
+
+    // Late, but within a few blocks.
+    CHECK (lateMs.front() >= 0.0);
+    CHECK (lateMs.back() < 50.0);
+}

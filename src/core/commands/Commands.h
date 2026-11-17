@@ -176,9 +176,14 @@ namespace hocket::commands
     };
 
     //==============================================================================
-    // Transport commands (SPEC §3.1). They don't change the project, so they're
-    // never validated against it, never enter the history, and don't split an
-    // open transaction.
+    // Transport commands (SPEC §3.1). They don't change the project, so they
+    // never enter the history, can't be undone, and don't split an open
+    // transaction; their results say what the setting was before. Their
+    // settings last the session (commands/Transport.h).
+
+    // Plays the loop region, or the whole song: on a loop, or once with loop
+    // off. It starts at the last seek's position when that's in what plays,
+    // otherwise at the start.
     struct Play
     {
     };
@@ -187,8 +192,40 @@ namespace hocket::commands
     {
     };
 
+    // A song position, "9.1". Play starts there from now on; while playing,
+    // the playhead also jumps there. Past the end of the song is refused,
+    // unless it's in the loop region.
+    struct Seek
+    {
+        std::string position;
+    };
+
+    // Play plays from start up to end instead of the whole song, for the rest
+    // of the session. It may run past the song's last clip, but not past bar 999.
+    struct SetLoopRegion
+    {
+        std::string start; // "5.1"
+        std::string end;   // "9.1"
+    };
+
+    // Back to the whole song.
+    struct ClearLoopRegion
+    {
+    };
+
+    // On, play loops; off, it plays to the end of the song (or the loop
+    // region) once, and stops.
+    struct SetLooping
+    {
+        bool on = true;
+    };
+
     using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, SetInstrument,
-                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, Play, Stop>;
+                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, Play, Stop, Seek, SetLoopRegion, ClearLoopRegion,
+                                 SetLooping>;
+
+    // Play, Stop, Seek, SetLoopRegion, ClearLoopRegion or SetLooping.
+    bool isTransportCommand (const Command&);
 
     // Who sends a command (SPEC §3.1). Two authors are the same when their names
     // and sessions match, so two Claude sessions are different authors, and a

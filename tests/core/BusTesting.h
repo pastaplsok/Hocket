@@ -86,4 +86,38 @@ namespace hocket::testing
     {
         return text.find (part) != std::string::npos;
     }
+
+    // A transport that records what it's asked to do, with a playhead a test
+    // puts where it likes.
+    struct FakeTransport final : commands::Transport
+    {
+        void play() override
+        {
+            calls.push_back ("play");
+            playing = true;
+        }
+
+        void stop() override
+        {
+            calls.push_back ("stop");
+            playing = false;
+        }
+
+        bool isPlaying() const override { return playing; }
+        notes::Ticks playheadPosition() const override { return playhead; }
+
+        void jumpTo (notes::Ticks position) override
+        {
+            calls.push_back ("jump to " + std::to_string (position));
+            playhead = position;
+        }
+
+        void loopChanged() override { calls.push_back ("loop changed"); }
+
+        std::vector<std::string> take() { return std::exchange (calls, {}); }
+
+        std::vector<std::string> calls;
+        bool playing = false;
+        notes::Ticks playhead = 0;
+    };
 }

@@ -11,7 +11,8 @@
 // change, since one track's solo silences the others. A tempo change during
 // playback keeps the playhead's place in the bar, and the notes sounding.
 //
-// It's also the bus's transport. Play loops the whole song.
+// It's also the bus's transport (SPEC §3.1), following the bus's transport
+// settings: play plays the loop region or the whole song, on a loop or once.
 //
 // Message thread only, like the bus.
 
@@ -27,7 +28,8 @@
 
 namespace hocket::engine
 {
-    class EditSync final : private commands::Transport
+    class EditSync final : private commands::Transport,
+                           private juce::Timer
     {
     public:
         // Builds the Edit, then registers with the bus as a listener and as its
@@ -40,7 +42,8 @@ namespace hocket::engine
 
         tracktion::Edit& edit() { return *tracktionEdit; }
 
-        // What play loops: from the song start to the end of the last clip,
+        // What play plays, on a loop or once (commands::playRange): the loop
+        // region, or from the song's start to the end of its last clip,
         // rounded up to a bar line, and at least one bar.
         tracktion::TimeRange loopRange() const;
 
@@ -90,12 +93,15 @@ namespace hocket::engine
         // The Tracktion track a Hocket track at this place in the display order goes after.
         tracktion::Track* trackBefore (std::size_t index) const;
 
-        // Sets the loop to loopRange(), and hands it to the playhead at once.
+        // Sets the loop to loopRange(), and looping on or off as the bus's
+        // transport settings say, and hands both to the playhead at once.
         void updateLoop();
 
-        // The playhead while the transport loops (as play() sets it to), and
-        // the sample rate it counts in; none before the first play.
-        std::pair<tracktion::graph::PlayHead*, double> loopingPlayHead() const;
+        // The playhead and the sample rate it counts in; none before the
+        // first play.
+        std::pair<tracktion::graph::PlayHead*, double> currentPlayHead() const;
+
+        tracktion::TimePosition timeOf (notes::Ticks) const;
 
         // JUCE's lock around each audio block. Held on the message thread,
         // only for a few microseconds, so a change to the playhead and what
@@ -104,8 +110,14 @@ namespace hocket::engine
 
         void clearTracktionUndo();
 
-        commands::Result play() override;
-        commands::Result stop() override;
+        void play() override;
+        void stop() override;
         bool isPlaying() const override;
+        notes::Ticks playheadPosition() const override;
+        void jumpTo (notes::Ticks position) override;
+        void loopChanged() override;
+
+        // With loop off, stops playback once the playhead reaches the end.
+        void timerCallback() override;
     };
 }

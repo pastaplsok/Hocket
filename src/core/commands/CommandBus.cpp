@@ -54,7 +54,7 @@ Result CommandBus::execute (const Command& command, const Author& author)
     if (author.name.empty())
         return { false, "commands need an author, e.g. \"Lee\" or \"Claude\"" };
 
-    if (std::holds_alternative<Play> (command) || std::holds_alternative<Stop> (command))
+    if (isTransportCommand (command))
         return runTransportCommand (command);
 
     auto planned = plan (command);
@@ -133,20 +133,20 @@ Result CommandBus::execute (const Command& command, const Author& author)
 
 Result CommandBus::runTransportCommand (const Command& command)
 {
-    const auto name = std::holds_alternative<Play> (command) ? "play" : "stop";
-
-    if (transport == nullptr)
-        return { false, std::string (name) + ": there's no audio engine running, so playback can't be started or stopped here" };
-
-    return std::holds_alternative<Play> (command) ? transport->play() : transport->stop();
+    return commands::runTransportCommand (command, currentProject, transportState, transport);
 }
 
 edits::Plan CommandBus::plan (const Command& command) const
 {
     return std::visit (Overloaded {
                            [this] (const auto& c) { return planning::plan (currentProject, c); },
-                           [] (const Play&) { return edits::Plan {}; }, // transport commands never get here
+                           // Transport commands never get here.
+                           [] (const Play&) { return edits::Plan {}; },
                            [] (const Stop&) { return edits::Plan {}; },
+                           [] (const Seek&) { return edits::Plan {}; },
+                           [] (const SetLoopRegion&) { return edits::Plan {}; },
+                           [] (const ClearLoopRegion&) { return edits::Plan {}; },
+                           [] (const SetLooping&) { return edits::Plan {}; },
                        },
                        command);
 }

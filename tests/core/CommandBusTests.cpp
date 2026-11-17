@@ -688,21 +688,22 @@ namespace
     // Records the transport commands it's given.
     struct FakeTransport final : Transport
     {
-        Result play() override
+        void play() override
         {
             calls.push_back ("play");
             playing = true;
-            return { true, "playing" };
         }
 
-        Result stop() override
+        void stop() override
         {
             calls.push_back ("stop");
             playing = false;
-            return { true, "stopped" };
         }
 
         bool isPlaying() const override { return playing; }
+        notes::Ticks playheadPosition() const override { return 0; }
+        void jumpTo (notes::Ticks) override { calls.push_back ("jump"); }
+        void loopChanged() override { calls.push_back ("loop changed"); }
 
         std::vector<std::string> calls;
         bool playing = false;
@@ -719,11 +720,15 @@ TEST_CASE ("transport commands go to the transport and never enter the history")
     ChangeLog log (bus);
 
     CHECK (bus.isPlaying() == false);
-    CHECK (bus.execute (Play {}, claude).message == "playing");
+    CHECK (bus.execute (Play {}, claude).message == "playing 1.1 to 6.1 on a loop");
     CHECK (bus.isPlaying() == true);
     CHECK (bus.execute (Stop {}, lee).message == "stopped");
+    CHECK (bus.execute (Seek { "3.1" }, lee).ok);
+    CHECK (bus.execute (SetLoopRegion { "2.1", "4.1" }, lee).ok);
+    CHECK (bus.execute (ClearLoopRegion {}, lee).ok);
+    CHECK (bus.execute (SetLooping { false }, claude).ok);
 
-    CHECK (transport.calls == std::vector<std::string> { "play", "stop" });
+    CHECK (transport.calls == std::vector<std::string> { "play", "stop", "loop changed", "loop changed", "loop changed" });
     CHECK (bus.history().empty());
     CHECK (log.changes.empty());
     CHECK_FALSE (bus.undo (lee, UndoScope::anyAuthor).ok);
@@ -750,6 +755,12 @@ TEST_CASE ("transport commands fail clearly when there's no engine, and still ne
     const auto result = bus.execute (Play {}, claude);
     CHECK_FALSE (result.ok);
     CHECK (result.message == "play: there's no audio engine running, so playback can't be started or stopped here");
+
+    const auto seek = bus.execute (Seek { "3.1" }, claude);
+    CHECK_FALSE (seek.ok);
+    CHECK (seek.message == "seek: there's no audio engine running, so there's no transport here");
+    CHECK (bus.execute (SetLooping { false }, claude).message == "turn loop off: there's no audio engine running, so there's no transport here");
+    CHECK (bus.transportSettings() == TransportSettings {});
 
     FakeTransport transport;
     bus.setTransport (&transport);

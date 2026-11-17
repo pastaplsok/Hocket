@@ -10,6 +10,7 @@
 #include "core/commands/Changes.h"
 #include "core/commands/Commands.h"
 #include "core/commands/Edits.h"
+#include "core/commands/Transport.h"
 #include "core/project/Project.h"
 
 #include <functional>
@@ -21,18 +22,6 @@
 
 namespace hocket::commands
 {
-    // Carries out transport commands for the bus. The engine provides one; without
-    // it, transport commands fail.
-    class Transport
-    {
-    public:
-        virtual ~Transport() = default;
-
-        virtual Result play() = 0;
-        virtual Result stop() = 0;
-        virtual bool isPlaying() const = 0;
-    };
-
     struct HistoryEntry
     {
         int id = 0;              // stable: "#7"
@@ -106,6 +95,10 @@ namespace hocket::commands
         // Whether the transport is playing; nullopt when there's no transport.
         std::optional<bool> isPlaying() const;
 
+        // The loop region, looping, and the last seek's position: the
+        // session's, changed only by transport commands (SPEC §3.1).
+        const TransportSettings& transportSettings() const { return transportState; }
+
     private:
         using Edit = edits::Edit;
 
@@ -152,6 +145,7 @@ namespace hocket::commands
         std::vector<std::pair<int, std::function<void (const Change&)>>> listeners;
         int nextListenerId = 1;
         Transport* transport = nullptr;
+        TransportSettings transportState;
 
         Result runTransportCommand (const Command&);
         edits::Plan plan (const Command&) const;

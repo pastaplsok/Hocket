@@ -351,9 +351,12 @@ TEST_CASE ("get_project_overview says whether the song is playing")
 {
     struct FakeTransport final : commands::Transport
     {
-        commands::Result play() override { playing = true; return { true, "playing" }; }
-        commands::Result stop() override { playing = false; return { true, "stopped" }; }
+        void play() override { playing = true; }
+        void stop() override { playing = false; }
         bool isPlaying() const override { return playing; }
+        notes::Ticks playheadPosition() const override { return 0; }
+        void jumpTo (notes::Ticks) override {}
+        void loopChanged() override {}
 
         bool playing = false;
     };
