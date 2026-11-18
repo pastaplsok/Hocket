@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.11** — 2026-11-16
+> Status: **Draft v0.12** — 2026-11-17
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -82,8 +82,8 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
   - Since they can't be undone, their results say what the previous value was ("seeked to 9.1, from 3.2", "loop region 5.1 to 9.1 (4 bars), was the whole song").
   - Their positions are kept in ticks, so a tempo or time-signature change leaves them at the same place in the music, as it does clips.
   - **Seek** takes a song position ("9.1"). Play starts there from then on, until the next seek; stop doesn't move it, so play, stop, play starts at the same place each time. While playing, the playhead also jumps there: the notes sounding end, and those on at the new place are struck. A position at or past the song's end is refused, unless it's in the loop region.
-  - **The loop region** lasts the session: it's transport state, not saved in the project. It may run past the song's last clip (to loop bars that are about to be written or recorded), but not past bar 999, and it's at least a sixteenth note long. With one set, play loops it; without, play loops the whole song. When one is set and the playhead is outside it, the playhead wraps into it as in §3.3: counted from the region's start, which keeps its place in the bar when the region is whole bars. When stopped, play starts at the region's start, unless the last seek is inside it.
-  - **Loop off:** play runs to the end of the song (or the region) and stops.
+  - **The loop region** lasts the session: it's transport state, not saved in the project. It may run past the song's last clip (to loop bars that are about to be written or recorded), but not past bar 999, and it's at least a sixteenth note long. With one set, play loops it; without, play loops the whole song. When one is set and the playhead is outside it, the playhead wraps into it as in §3.3, with loop on or off: counted from the region's start, which keeps its place in the bar when the region is whole bars. When stopped, play starts at the region's start, unless the last seek is inside it.
+  - **Loop off:** play runs to the end of the song (or the region) and stops. Nothing after the end is heard, though a region's end is followed by more of the song: the notes sounding there end at it and ring out, and none after it starts, even if the stop itself comes a few milliseconds later.
 
 ### 3.2 Real-time safety
 - The audio thread is never touched directly by any client.
@@ -104,6 +104,7 @@ Keeping the Edit in sync with our model is the area most likely to produce early
 - Requirement: property/fuzz tests on the serializer.
 - When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place is struck there.
 - A tempo change during playback keeps the playhead on its beat, so its place in the bar, and the notes sounding carry on. A new time signature keeps the playhead at the same time, as it keeps every clip and note (§4.4).
+- While a loop region plays once (loop off), the Edit's clips end at the region's end, and those that start at or after it are left out, so nothing after it is heard before the transport stops (§3.1). Every way out of playing once (reaching the end, stop, loop on, a new region or none) gives the clips their own ends back. The sync tests compare the Edit with the model cut off in the same place, worked out on their own.
 
 **What Milestone 0 found in Tracktion.** Its stress tests found two Tracktion bugs that only show when a clip changes many times a second during playback. Both were invisible at ordinary editing speed, which is exactly the speed an AI client doesn't keep to.
 - Notes left on for good: a MIDI clip that uses Tracktion's proxy sequence (the default) keeps no record of sounding notes when its graph is rebuilt. Hocket's clips don't use the proxy.

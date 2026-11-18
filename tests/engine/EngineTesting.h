@@ -160,6 +160,10 @@ namespace hocket::testing
             auto plugin = edit.getPluginCache().createNewPlugin (xmlTypeName, {});
             REQUIRE ((registered && plugin != nullptr));
             tracktion::getAudioTracks (edit)[trackIndex]->pluginList.insertPlugin (plugin, 0, nullptr);
+
+            // Creating it records an undo step, which EditSync would clear
+            // after a change of its own; checkEditMatches expects none.
+            edit.getUndoManager().clearUndoHistory();
             return *dynamic_cast<MidiRecorder*> (plugin.get());
         }
 
@@ -286,6 +290,15 @@ namespace hocket::testing
 
     // Whether two gains are the same to within a thousandth of a dB, or both silence.
     bool sameGain (double a, double b);
+
+    // The Edit is the bus's project: one tempo, the song's, with the Edit's
+    // time signature at 4/4; the tracks in order, their plugins and mix; the
+    // clips, in beats and seconds, and their notes; what play plays; and
+    // nothing in Tracktion's undo. While the transport plays once (loop off),
+    // every clip ends by the end of what plays, and one that starts at or
+    // after it isn't there (SPEC §3.1). That's worked out here from the bus,
+    // not asked of EditSync, so it can't hide a mismatch.
+    void checkEditMatches (engine::EditSync&, const commands::CommandBus&);
 
     // The notes the synth is left holding after these events, by JUCE's rules:
     // a note-on for a note already on retriggers it, and a note-off for one

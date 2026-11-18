@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 #include <stdexcept>
 
@@ -78,24 +79,29 @@ namespace
         return { tracktion::gainToVolumeFaderPosition (static_cast<float> (gain)), static_cast<float> (pan) };
     }
 
-    tracktion::BeatRange clipBeats (const project::Project& project, const project::Clip& clip)
+    // Where the clip plays, in the Edit's beats: from its start to its end, or
+    // to `endBy` if that comes first (EditSync::clipsEndBy). LoopingMidiNode
+    // ends the notes sounding at a clip's end and plays nothing after it.
+    tracktion::BeatRange clipBeats (const project::Project& project, const project::Clip& clip, std::optional<notes::Ticks> endBy)
     {
-        return { beatPosition (clip.start), beatPosition (hocket::project::clipEnd (project, clip)) };
+        const auto end = hocket::project::clipEnd (project, clip);
+        return { beatPosition (clip.start), beatPosition (endBy ? std::min (end, *endBy) : end) };
     }
 
     // Puts the Tracktion clip where the model's is, in time at the Edit's tempo.
-    void placeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip)
+    void placeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip, std::optional<notes::Ticks> endBy)
     {
-        target.setPosition ({ target.edit.tempoSequence.toTime (clipBeats (project, clip)) });
+        target.setPosition ({ target.edit.tempoSequence.toTime (clipBeats (project, clip, endBy)) });
     }
 
     // Makes the Tracktion clip match the model's: position, length and notes.
-    void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip)
+    void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip, std::optional<notes::Ticks> endBy)
     {
-        placeClip (target, project, clip);
+        placeClip (target, project, clip, endBy);
 
         // Undo is Hocket's job (SPEC §3.3), so no UndoManager. Notes that run past
-        // the clip end are cut off there by Tracktion, as SPEC §5.4 says.
+        // the clip end are cut off there by Tracktion, as SPEC §5.4 says, and
+        // so are those past `endBy`.
         auto& sequence = target.getSequence();
         sequence.clear (nullptr);
 
@@ -206,11 +212,12 @@ void EditSync::changed (const commands::Change& change)
     clearTracktionUndo();
 
     // Clips added, moved or removed, a new @length or a new time signature
-    // can move the end of the song.
-    updateLoop();
+    // can move the end of the song. A loop region, and so clipsEndBy, stays
+    // where it is in the music.
+    updateLoop (Outside::wrapWhileLooping);
 }
 
-void EditSync::updateLoop()
+void EditSync::updateLoop (Outside outside)
 {
     auto& transport = tracktionEdit->getTransport();
     const auto range = loopRange();
@@ -236,12 +243,15 @@ void EditSync::updateLoop()
     // start. A loop of whole bars keeps the same beat of the bar, and the
     // pulse carries on (Lee's decision, 2026-11-12; SPEC §3.3). Tracktion's
     // own setLoopRange clamps the place to the loop, so the place is set
-    // here, while no audio block can start. With loop off, the playhead plays
-    // on from where it is, and timerCallback stops it at the end.
+    // here, while no audio block can start. A new loop region wraps it with
+    // loop off too, as the bus has reported (SPEC §3.1); but with loop off,
+    // a song that now ends before the playhead has been played to its end,
+    // so the playhead plays on from where it is, and timerCallback stops it.
     const auto loop = tracktion::toSamples (range, sampleRate);
+    const auto wrap = looping || outside == Outside::wrap;
     const juce::ScopedLock audioLock (audioCallbackLock());
     const auto place = playHead->getPosition();
-    const auto wrapped = ! looping || loop.contains (place)
+    const auto wrapped = ! wrap || loop.contains (place)
                            ? place
                            : loop.getStart() + juce::negativeAwareModulo (place - loop.getStart(), std::max<std::int64_t> (1, loop.getLength()));
 
@@ -316,7 +326,7 @@ void EditSync::syncTempo()
 
     for (const auto& [clipId, clip] : clips)
         if (const auto* source = hocket::project::findClip (project, clipId))
-            placeClip (*clip, project, *source);
+            placeClip (*clip, project, *source, clipsEndBy);
 
     tracktionEdit->getTransport().setLoopRange (loopRange());
 }
@@ -504,7 +514,8 @@ void EditSync::syncClip (const std::string& clipId)
     const hocket::project::Track* sourceTrack = nullptr;
     const auto* source = hocket::project::findClip (project, clipId, &sourceTrack);
 
-    if (source == nullptr)
+    // Gone, or, while a loop region plays once, starting at or after its end.
+    if (source == nullptr || (clipsEndBy && source->start >= *clipsEndBy))
     {
         removeClip (clipId);
         return;
@@ -541,7 +552,7 @@ void EditSync::syncClip (const std::string& clipId)
 
     if (found == clips.end())
     {
-        auto midiClip = track->second.track->insertMIDIClip (juceString (clipId), tracktionEdit->tempoSequence.toTime (clipBeats (project, *source)), nullptr);
+        auto midiClip = track->second.track->insertMIDIClip (juceString (clipId), tracktionEdit->tempoSequence.toTime (clipBeats (project, *source, clipsEndBy)), nullptr);
 
         if (midiClip == nullptr)
             throw std::runtime_error ("Tracktion couldn't add a clip for " + clipId);
@@ -559,7 +570,7 @@ void EditSync::syncClip (const std::string& clipId)
         found = clips.emplace (clipId, midiClip).first;
     }
 
-    writeClip (*found->second, project, *source);
+    writeClip (*found->second, project, *source, clipsEndBy);
 }
 
 void EditSync::removeClip (const std::string& clipId)
@@ -597,6 +608,11 @@ void EditSync::play()
     const auto start = timeOf (commands::startPosition (bus.project(), settings));
     playRequested = true;
 
+    // A loop region played once: its end is followed by more of the song,
+    // which mustn't be heard while the stop comes. Before play, which starts
+    // with the graph Tracktion has.
+    setClipsEnd (playOnceEnd());
+
     transport.setLoopRange (loopRange());
     transport.looping = settings.looping;
     transport.setPosition (start);
@@ -617,6 +633,9 @@ void EditSync::stop()
     playRequested = false;
     stopTimer();
     tracktionEdit->getTransport().stop (false, false);
+
+    // Stopped first, so the clips past the region's end come back unheard.
+    setClipsEnd ({});
 }
 
 bool EditSync::isPlaying() const
@@ -656,17 +675,70 @@ void EditSync::jumpTo (notes::Ticks position)
 
 void EditSync::loopChanged()
 {
-    updateLoop();
+    const auto playingOnce = isPlaying() && ! bus.transportSettings().looping;
 
-    if (isPlaying() && ! bus.transportSettings().looping)
+    // Played once, the clips end at the new end before the playhead can get
+    // there, or wraps into a new region. Looping, they get their ends back
+    // once the playhead loops, so what's past the end is never reached.
+    if (playingOnce)
+        setClipsEnd (playOnceEnd());
+
+    updateLoop (Outside::wrap);
+
+    if (playingOnce)
         startTimer (endCheckIntervalMs);
+    else
+        setClipsEnd ({});
+}
+
+std::optional<notes::Ticks> EditSync::playOnceEnd() const
+{
+    const auto& settings = bus.transportSettings();
+
+    if (settings.looping || ! settings.loopRegion)
+        return {};
+
+    return settings.loopRegion->end;
+}
+
+void EditSync::setClipsEnd (std::optional<notes::Ticks> end)
+{
+    if (end == clipsEndBy)
+        return;
+
+    // A clip that ends by both ends is the same either way.
+    constexpr auto never = std::numeric_limits<notes::Ticks>::max();
+    const auto unchangedUpTo = std::min (end.value_or (never), clipsEndBy.value_or (never));
+    clipsEndBy = end;
+
+    const auto& project = bus.project();
+
+    for (const auto& track : project.tracks)
+        for (const auto& clip : track.clips)
+            if (hocket::project::clipEnd (project, clip) > unchangedUpTo)
+                syncClip (clip.id);
+
+    clearTracktionUndo();
+
+    // Tracktion rebuilds its graph on a 1 ms timer, but play starts with the
+    // graph it has, and while playing the playhead may be close to the end.
+    tracktionEdit->dispatchPendingUpdatesSynchronously();
 }
 
 void EditSync::timerCallback()
 {
     auto& transport = tracktionEdit->getTransport();
 
-    if (! transport.isPlaying() || bus.transportSettings().looping)
+    // Stopped by itself (stoppedByItself): the clips get their ends back.
+    if (! transport.isPlaying())
+    {
+        stopTimer();
+        setClipsEnd ({});
+        return;
+    }
+
+    // Loop on again: loopChanged has given them back.
+    if (bus.transportSettings().looping)
     {
         stopTimer();
         return;
@@ -678,9 +750,11 @@ void EditSync::timerCallback()
         return;
 
     // Asked for, so not a stop by itself. By now the playhead may be a block
-    // or two past the end (Loose ends).
+    // or two past the end, but the clips end there (clipsEndBy), so nothing
+    // after it was heard.
     stopTimer();
     playRequested = false;
     transport.stop (false, false);
+    setClipsEnd ({});
 }
 }

@@ -13,6 +13,8 @@
 //
 // It's also the bus's transport (SPEC §3.1), following the bus's transport
 // settings: play plays the loop region or the whole song, on a loop or once.
+// While a loop region plays once, the Edit's clips end at the region's end
+// (clipsEndBy), so nothing after it is heard; otherwise the Edit is the model.
 //
 // Message thread only, like the bus.
 
@@ -23,6 +25,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -69,6 +72,13 @@ namespace hocket::engine
         int listenerId = 0;
         bool playRequested = false; // by the last transport command
 
+        // While a loop region plays once (loop off), its end, where the
+        // Edit's clips end: the notes sounding there end on time and ring
+        // out, and nothing after it starts before timerCallback's stop, which
+        // comes a little late. A clip that starts at or after it isn't in the
+        // Edit. None otherwise, and then the Edit's clips are the model's.
+        std::optional<notes::Ticks> clipsEndBy;
+
         void changed (const commands::Change&);
 
         // Each brings one thing in the Edit in line with the model: makes it,
@@ -93,9 +103,29 @@ namespace hocket::engine
         // The Tracktion track a Hocket track at this place in the display order goes after.
         tracktion::Track* trackBefore (std::size_t index) const;
 
+        // What a playhead outside the loop does: wraps into it, or, with loop
+        // off, plays on (and timerCallback stops it at the end).
+        enum class Outside
+        {
+            wrap,             // a new loop region, or looping on or off (SPEC §3.1)
+            wrapWhileLooping, // the song's end moved: played once, it has ended
+        };
+
         // Sets the loop to loopRange(), and looping on or off as the bus's
         // transport settings say, and hands both to the playhead at once.
-        void updateLoop();
+        void updateLoop (Outside);
+
+        // Where the Edit's clips end while playing: the loop region's end
+        // when loop is off. None while looping, or with no region, since
+        // nothing follows the song's own end.
+        std::optional<notes::Ticks> playOnceEnd() const;
+
+        // Cuts the Edit's clips short at `end`, leaving out those that start
+        // at or after it, or with none gives them back their own ends. Only
+        // clips that reach past either end are synced, and Tracktion's graph
+        // is rebuilt at once: play starts with the graph it has, and while
+        // playing, the playhead mustn't reach the end first.
+        void setClipsEnd (std::optional<notes::Ticks> end);
 
         // The playhead and the sample rate it counts in; none before the
         // first play.
@@ -117,7 +147,8 @@ namespace hocket::engine
         void jumpTo (notes::Ticks position) override;
         void loopChanged() override;
 
-        // With loop off, stops playback once the playhead reaches the end.
+        // With loop off, stops playback once the playhead reaches the end,
+        // and gives the clips their ends back after any stop.
         void timerCallback() override;
     };
 }

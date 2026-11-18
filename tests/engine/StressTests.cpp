@@ -592,34 +592,35 @@ TEST_CASE ("stress: an instrument added and removed 20 a second during playback"
     checkHeldNotes (run, 100);
 }
 
-TEST_CASE ("stress: with loop off, play stops at the loop region's end, a little late")
+TEST_CASE ("stress: a loop region played once, in real time: the note across its end ends there and rings out, none after it is struck, and the stop comes a little late")
 {
-    // E3 through bar 3, the loop region, and a short G3 at 4.1, just after
-    // it. With loop off, a message-thread timer stops playback once the
-    // playhead passes the end, so it plays on past it by however late that
-    // is, and G3 is struck if it's late at all (PROGRESS.md, Loose ends).
-    // This measures how late, in real time; hocket-headless's message thread
-    // may be slower than this test's, which asks Windows for 1 ms timers.
+    // At 240 BPM; the loop region is bar 3. The bass's clip from 3.1 has E3
+    // from 3.3 across the region's end to 4.3, and G3 at 4.1; the lead has A3
+    // at 4.1. With loop off, a message-thread timer stops playback once the
+    // playhead passes the end, a little late. Until then the Edit's clips end
+    // at the region's end (Lee's decision, 2026-11-17), so E3 ends there on
+    // time, and neither G3 nor A3 is struck, however late the stop. Before
+    // that, the next note was struck in every run. This also measures how
+    // late the stop is, in real time; hocket-headless's message thread may be
+    // slower than this test's, which asks Windows for 1 ms timers.
     constexpr double tempo = 240.0;
     constexpr int bar240 = 44100; // a bar at 240 BPM, in samples
-    constexpr int g3 = 55;
+    constexpr int e3 = 52;
     constexpr int runs = 5;
 
     std::vector<double> lateMs;
-    int struck = 0;
+    std::vector<double> e3OffMs;
 
     for (int run = 0; run < runs; ++run)
     {
         CAPTURE (run);
         FakeAudioDevice device;
-        commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass",
-                                                            {
-                                                                makeClip ("clp-three", 2 * bar, "@length 1bar\n\n1.1 E3 1/1 v100\n"),
-                                                                makeClip ("clp-four", 3 * bar, "@length 1bar\n\n1.1 G3 1/8 v100\n"),
-                                                            }) },
+        commands::CommandBus bus (makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-across", 2 * bar, "@length 2bars\n\n1.3 E3 1/1 v100\n2.1 G3 1/8 v100\n") }),
+                                                 makeTrack ("trk-lead", "Lead", { makeClip ("clp-after", 3 * bar, "@length 1bar\n\n1.1 A3 1/8 v100\n") }) },
                                                tempo));
         engine::EditSync sync (testEngine(), bus);
-        auto& recorder = MidiRecorder::addTo (sync.edit());
+        auto& bass = MidiRecorder::addTo (sync.edit(), 0);
+        auto& lead = MidiRecorder::addTo (sync.edit(), 1);
         REQUIRE (bus.execute (commands::SetLoopRegion { "3.1", "4.1" }, lee).ok);
         REQUIRE (bus.execute (commands::SetLooping { false }, lee).ok);
         REQUIRE (timedPlay (bus, lee).ok);
@@ -631,24 +632,44 @@ TEST_CASE ("stress: with loop off, play stops at the loop region's end, a little
 
         CHECK (bus.isPlaying() == false);
         CHECK_FALSE (sync.stoppedByItself());
+        checkEditMatches (sync, bus); // the clips are whole again
 
         // The stop ends every note at once; play did too, at the start.
-        const auto events = recorder.recorded();
+        const auto events = bass.recorded();
+        INFO (historyOf (e3, events));
         const auto stop = std::ranges::find_if (events, [] (const MidiRecorder::Event& e) { return e.note < 0 && e.sample > bar240 / 2; });
         REQUIRE (stop != events.end());
         lateMs.push_back (static_cast<double> (stop->sample - bar240) * 1000.0 / FakeAudioDevice::sampleRate);
-        struck += std::ranges::any_of (events, [] (const MidiRecorder::Event& e) { return e.note == g3 && e.on; }) ? 1 : 0;
+
+        // E3 ends at the region's end, within a block, before the stop.
+        const auto e3Off = std::ranges::find_if (events, [] (const MidiRecorder::Event& e) { return e.note == e3 && ! e.on; });
+        REQUIRE (e3Off != events.end());
+        e3OffMs.push_back (static_cast<double> (e3Off->sample - bar240) * 1000.0 / FakeAudioDevice::sampleRate);
+        CHECK (std::abs (e3Off->sample - bar240) <= blockSize);
+
+        // Nothing after the end is struck, on either track.
+        const auto struckAfterEnd = [] (const MidiRecorder::Event& e) { return e.note >= 0 && e.on && e.sample >= bar240; };
+        CHECK (std::ranges::none_of (events, struckAfterEnd));
+        CHECK (std::ranges::none_of (lead.recorded(), [] (const MidiRecorder::Event& e) { return e.note >= 0 && e.on; }));
+
+        // And E3 rings out after its note-off.
+        CHECK (peakBetween (audio.output(), bar240, bar240 + blockSize) > 0.01f);
     }
 
-    std::ranges::sort (lateMs);
-    std::ostringstream late;
-    late.precision (3);
+    const auto describeMs = [] (std::vector<double> values)
+    {
+        std::ranges::sort (values);
+        std::ostringstream text;
+        text.precision (3);
 
-    for (const auto ms : lateMs)
-        late << ms << " ms ";
+        for (const auto ms : values)
+            text << ms << " ms ";
 
-    MESSAGE ("loop off: stopped after the region's end by " << late.str() << "(a block is " << blockSeconds * 1000.0 << " ms); "
-             << "the note just after it was struck in " << struck << " of " << runs << " runs");
+        return text.str();
+    };
+
+    MESSAGE ("loop region played once: E3 ended at " << describeMs (e3OffMs) << "from the region's end; the stop came after it by " << describeMs (lateMs)
+                                                       << "(a block is " << blockSeconds * 1000.0 << " ms)");
 
     // Late, but within a few blocks.
     CHECK (lateMs.front() >= 0.0);

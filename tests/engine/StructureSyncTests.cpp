@@ -1,6 +1,7 @@
 // Tracks, instruments and clips added, moved and removed by commands reach the
 // Edit, matched by ID, and undo takes them back (Milestone 1's step 5); so do
-// each track's mix, the tempo and the time signature (step 6).
+// each track's mix, the tempo and the time signature (step 6). While a loop
+// region plays once, the Edit's clips end at its end (step 6, part 4).
 
 #include "EngineTesting.h"
 #include "common/RandomCommands.h"
@@ -17,106 +18,12 @@ using namespace hocket::testing;
 
 namespace
 {
-    // Tracktion's beats are quarter notes in every time signature (EditSync.cpp).
-    double beatsOf (notes::Ticks ticks)
-    {
-        return static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote);
-    }
-
-    double secondsOf (notes::Ticks ticks, const project::Project& project)
-    {
-        return beatsOf (ticks) * 60.0 / project.tempo;
-    }
-
-    // The Edit's tempo, tracks, plugins, clips and notes are the project's, in its order.
-    void checkEditMatches (engine::EditSync& sync, const project::Project& project)
-    {
-        auto& edit = sync.edit();
-
-        // One tempo, the song's; the time signature stays 4/4, so beats are quarter notes.
-        CAPTURE (project.tempo);
-        CAPTURE (project.meter.text());
-        REQUIRE (edit.tempoSequence.getNumTempos() == 1);
-        REQUIRE (edit.tempoSequence.getNumTimeSigs() == 1);
-        CHECK (edit.tempoSequence.getTempo (0)->getBpm() == project.tempo);
-        CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 4);
-        CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 4);
-
-        const auto audioTracks = tracktion::getAudioTracks (edit);
-        REQUIRE (static_cast<std::size_t> (audioTracks.size()) == project.tracks.size());
-
-        for (std::size_t i = 0; i < project.tracks.size(); ++i)
-        {
-            const auto& source = project.tracks[i];
-            auto& track = *audioTracks[static_cast<int> (i)];
-            CAPTURE (source.id);
-            CHECK (track.getName() == juce::String::fromUTF8 (source.name.c_str()));
-
-            // A 4OSC for each hocket:synth, first in the chain; nothing for a drum sampler yet.
-            const auto synths = std::ranges::count_if (source.devices, [] (const project::Device& d) { return d.type == project::DeviceType::synth; });
-            CHECK (track.pluginList.getPluginsOfType<tracktion::FourOscPlugin>().size() == static_cast<int> (synths));
-
-            if (synths > 0)
-                CHECK (dynamic_cast<tracktion::FourOscPlugin*> (track.pluginList[0]) != nullptr);
-
-            // The mix, by Tracktion's own sums, is SPEC §4.4's, and isn't automated.
-            auto* volume = track.getVolumePlugin();
-            REQUIRE (volume != nullptr);
-            CHECK (volume->getPanLaw() == tracktion::PanLawLinear);
-            CHECK_FALSE (volume->volParam->hasAutomationPoints());
-            CHECK_FALSE (volume->panParam->hasAutomationPoints());
-
-            const auto specified = specifiedGains (project, source);
-            const auto mixed = volumePluginGains (*volume);
-            CAPTURE (source.volume);
-            CAPTURE (source.pan);
-            CAPTURE (source.mute);
-            CAPTURE (source.solo);
-            CHECK_MESSAGE (sameGain (mixed.left, specified.left), "left " << mixed.left << ", should be " << specified.left);
-            CHECK_MESSAGE (sameGain (mixed.right, specified.right), "right " << mixed.right << ", should be " << specified.right);
-
-            const auto trackClips = track.getClips();
-            REQUIRE (static_cast<std::size_t> (trackClips.size()) == source.clips.size());
-
-            for (const auto& clip : source.clips)
-            {
-                CAPTURE (clip.id);
-                const auto found = std::ranges::find_if (trackClips, [&clip] (tracktion::Clip* c) { return c->getName() == juce::String (clip.id); });
-                REQUIRE (found != trackClips.end());
-
-                auto* midi = dynamic_cast<tracktion::MidiClip*> (*found);
-                REQUIRE (midi != nullptr);
-                CHECK (midi->getStartBeat().inBeats() == doctest::Approx (beatsOf (clip.start)));
-                CHECK (midi->getEndBeat().inBeats() == doctest::Approx (beatsOf (project::clipEnd (project, clip))));
-                CHECK (midi->getPosition().getStart().inSeconds() == doctest::Approx (secondsOf (clip.start, project)));
-                CHECK (midi->getPosition().getEnd().inSeconds() == doctest::Approx (secondsOf (project::clipEnd (project, clip), project)));
-
-                using Note = std::tuple<int, double, double, int>; // pitch, start, length, velocity
-                std::vector<Note> expected;
-                std::vector<Note> actual;
-
-                for (const auto& note : project::notesOf (project, clip).notes)
-                    expected.emplace_back (note.pitch, beatsOf (note.start), beatsOf (note.length), note.velocity);
-
-                for (const auto* note : midi->getSequence().getNotes())
-                    actual.emplace_back (note->getNoteNumber(), note->getStartBeat().inBeats(), note->getLengthBeats().inBeats(), note->getVelocity());
-
-                std::ranges::sort (expected);
-                std::ranges::sort (actual);
-                CHECK (actual == expected);
-            }
-        }
-
-        CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (secondsOf (project::songEnd (project), project)));
-        CHECK_FALSE (edit.getUndoManager().canUndo());
-    }
-
     void run (CommandBus& bus, engine::EditSync& sync, const Command& command)
     {
         const auto result = bus.execute (command, claude);
         INFO (result.message);
         REQUIRE (result.ok);
-        checkEditMatches (sync, bus.project());
+        checkEditMatches (sync, bus);
     }
 
     void undoAll (CommandBus& bus, engine::EditSync& sync)
@@ -124,7 +31,7 @@ namespace
         while (! bus.history().empty())
         {
             REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
-            checkEditMatches (sync, bus.project());
+            checkEditMatches (sync, bus);
         }
     }
 }
@@ -133,7 +40,7 @@ TEST_CASE ("sync: tracks added, removed, moved and renamed reach the Edit, and u
 {
     CommandBus bus (randomSequenceProject());
     engine::EditSync sync (testEngine(), bus);
-    checkEditMatches (sync, bus.project());
+    checkEditMatches (sync, bus);
 
     run (bus, sync, AddTrack { "midi", "Keys", {}, { "trk-lead", {} }, Instrument { "hocket:synth", {} } });
     run (bus, sync, AddTrack { "midi", "First", {}, { "trk-bass", {} }, {} });
@@ -152,7 +59,7 @@ TEST_CASE ("sync: tracks added, removed, moved and renamed reach the Edit, and u
     for (int i = 0; i < 10; ++i)
     {
         REQUIRE (bus.redo (lee).ok);
-        checkEditMatches (sync, bus.project());
+        checkEditMatches (sync, bus);
     }
 }
 
@@ -202,7 +109,7 @@ TEST_CASE ("sync: volume, pan, mute and solo reach each track's volume plugin, a
     start.tracks[1].pan = 30;
     CommandBus bus (start);
     engine::EditSync sync (testEngine(), bus);
-    checkEditMatches (sync, bus.project());
+    checkEditMatches (sync, bus);
 
     const auto setMix = [&] (std::string track, std::optional<std::string> volume, std::optional<std::string> pan,
                              std::optional<bool> mute = {}, std::optional<bool> solo = {})
@@ -276,7 +183,7 @@ TEST_CASE ("sync: random command sequences keep the Edit matching the model, thr
                 applied += bus.execute (randomCommand (rng, bus.project()), claude).ok ? 1 : 0;
             }
 
-            checkEditMatches (sync, bus.project());
+            checkEditMatches (sync, bus);
         }
 
         const auto entries = bus.history().size();
@@ -285,9 +192,109 @@ TEST_CASE ("sync: random command sequences keep the Edit matching the model, thr
         for (std::size_t i = 0; i < entries; ++i)
             REQUIRE (bus.redo (lee).ok);
 
-        checkEditMatches (sync, bus.project());
+        checkEditMatches (sync, bus);
     }
 
     MESSAGE ("commands applied: " << applied);
     CHECK (applied >= 200);
+}
+
+namespace
+{
+    // Transport commands, mostly valid: a loop region of one to four bars (now
+    // and then not whole bars), loop on and off (more often off), a seek,
+    // stop and play.
+    Command randomTransportCommand (Rng& rng)
+    {
+        switch (randomInt (rng, 0, 6))
+        {
+            case 0:
+            case 1:
+            {
+                const auto start = randomInt (rng, 1, 14);
+                const auto end = start + randomInt (rng, 1, 4);
+                return SetLoopRegion { std::to_string (start) + ".1", std::to_string (end) + (chance (rng, 20) ? ".2" : ".1") };
+            }
+            case 2: return ClearLoopRegion {};
+            case 3: return SetLooping { chance (rng, 40) };
+            case 4: return Seek { std::to_string (randomInt (rng, 1, 16)) + ".1" };
+            case 5: return Stop {};
+            default: return Play {};
+        }
+    }
+}
+
+TEST_CASE ("sync: random commands during playback, with the loop region and looping changing, keep the Edit matching the model, cut short while a region plays once")
+{
+    int checkedCutShort = 0; // clips checked while a region played once, reaching past its end
+    int stoppedAtTheEnd = 0; // by the end check, after playing on
+    int transportApplied = 0;
+
+    for (std::uint32_t seed = 1; seed <= 6; ++seed)
+    {
+        CAPTURE (seed);
+        Rng rng { seed };
+        FakeAudioDevice device;
+        CommandBus bus (randomSequenceProject());
+        engine::EditSync sync (testEngine(), bus);
+
+        // Fast, so plays reach their end often (until a random tempo).
+        REQUIRE (bus.execute (SetTempo { 300.0, {} }, lee).ok);
+        REQUIRE (bus.execute (SetLoopRegion { "3.1", "5.1" }, lee).ok);
+        REQUIRE (bus.execute (SetLooping { false }, lee).ok);
+        REQUIRE (timedPlay (bus, lee).ok);
+
+        for (int step = 0; step < 40; ++step)
+        {
+            CAPTURE (step);
+
+            if (bus.isPlaying() == false && chance (rng, 50))
+            {
+                REQUIRE (bus.execute (Play {}, lee).ok); // mostly playing, so most steps are made during playback
+            }
+            else if (chance (rng, 25))
+            {
+                transportApplied += bus.execute (randomTransportCommand (rng), lee).ok ? 1 : 0;
+            }
+            else if (chance (rng, 10))
+            {
+                (void) bus.undo (lee, UndoScope::anyAuthor);
+            }
+            else if (chance (rng, 5))
+            {
+                (void) bus.redo (lee);
+            }
+            else
+            {
+                (void) bus.execute (randomCommand (rng, bus.project()), claude);
+            }
+
+            checkEditMatches (sync, bus);
+
+            // The playhead moves on, and now and then the message loop runs,
+            // where the end check may stop it at the end.
+            const auto playing = bus.isPlaying() == true;
+            device.play (randomInt (rng, 0, 80) * FakeAudioDevice::blockSize);
+
+            if (chance (rng, 50))
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (8);
+
+            stoppedAtTheEnd += playing && bus.isPlaying() == false ? 1 : 0;
+            checkEditMatches (sync, bus);
+
+            const auto& settings = bus.transportSettings();
+            const auto& project = bus.project();
+
+            if (bus.isPlaying() == true && ! settings.looping && settings.loopRegion)
+                for (const auto& track : project.tracks)
+                    for (const auto& clip : track.clips)
+                        checkedCutShort += project::clipEnd (project, clip) > settings.loopRegion->end ? 1 : 0;
+        }
+    }
+
+    MESSAGE ("transport commands applied: " << transportApplied << "; clips checked cut short or left out: " << checkedCutShort
+                                            << "; plays that reached the end and stopped: " << stoppedAtTheEnd);
+    CHECK (transportApplied >= 25);
+    CHECK (checkedCutShort >= 70);
+    CHECK (stoppedAtTheEnd >= 4);
 }

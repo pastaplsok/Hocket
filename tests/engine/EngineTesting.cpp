@@ -7,6 +7,11 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
+#include <string_view>
+#include <tuple>
+#include <typeinfo>
+#include <vector>
 
 namespace hocket::testing
 {
@@ -82,6 +87,141 @@ bool sameGain (double a, double b)
         return a == b;
 
     return std::abs (20.0 * std::log10 (a / b)) < 0.001;
+}
+
+//==============================================================================
+namespace
+{
+    // Tracktion's beats are quarter notes in every time signature (EditSync.cpp).
+    double beatsOf (notes::Ticks ticks)
+    {
+        return static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote);
+    }
+
+    double secondsOf (notes::Ticks ticks, const project::Project& project)
+    {
+        return beatsOf (ticks) * 60.0 / project.tempo;
+    }
+}
+
+void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
+{
+    auto& edit = sync.edit();
+    const auto& project = bus.project();
+    const auto& settings = bus.transportSettings();
+    const auto played = commands::playRange (project, settings);
+
+    // Played once, the clips end by the end of what plays: a loop region's,
+    // or the song's, which no clip passes anyway.
+    const auto playingOnce = bus.isPlaying() == true && ! settings.looping;
+    const auto clipsEndBy = playingOnce ? played.end : std::numeric_limits<notes::Ticks>::max();
+    CAPTURE (playingOnce);
+    CAPTURE (played.start);
+    CAPTURE (played.end);
+
+    // One tempo, the song's; the time signature stays 4/4, so beats are quarter notes.
+    CAPTURE (project.tempo);
+    CAPTURE (project.meter.text());
+    REQUIRE (edit.tempoSequence.getNumTempos() == 1);
+    REQUIRE (edit.tempoSequence.getNumTimeSigs() == 1);
+    CHECK (edit.tempoSequence.getTempo (0)->getBpm() == project.tempo);
+    CHECK (edit.tempoSequence.getTimeSig (0)->numerator == 4);
+    CHECK (edit.tempoSequence.getTimeSig (0)->denominator == 4);
+
+    const auto audioTracks = tracktion::getAudioTracks (edit);
+    REQUIRE (static_cast<std::size_t> (audioTracks.size()) == project.tracks.size());
+
+    for (std::size_t i = 0; i < project.tracks.size(); ++i)
+    {
+        const auto& source = project.tracks[i];
+        auto& track = *audioTracks[static_cast<int> (i)];
+        CAPTURE (source.id);
+        CHECK (track.getName() == juce::String::fromUTF8 (source.name.c_str()));
+
+        // A 4OSC for each hocket:synth, first in the chain but for a test's
+        // MidiRecorder; nothing for a drum sampler yet.
+        const auto synths = std::ranges::count_if (source.devices, [] (const project::Device& d) { return d.type == project::DeviceType::synth; });
+        CHECK (track.pluginList.getPluginsOfType<tracktion::FourOscPlugin>().size() == static_cast<int> (synths));
+        int first = 0;
+
+        while (first < track.pluginList.size() && dynamic_cast<MidiRecorder*> (track.pluginList[first]) != nullptr)
+            ++first;
+
+        if (synths > 0)
+            CHECK (dynamic_cast<tracktion::FourOscPlugin*> (track.pluginList[first]) != nullptr);
+
+        // The mix, by Tracktion's own sums, is SPEC §4.4's, and isn't automated.
+        auto* volume = track.getVolumePlugin();
+        REQUIRE (volume != nullptr);
+        CHECK (volume->getPanLaw() == tracktion::PanLawLinear);
+        CHECK_FALSE (volume->volParam->hasAutomationPoints());
+        CHECK_FALSE (volume->panParam->hasAutomationPoints());
+
+        const auto specified = specifiedGains (project, source);
+        const auto mixed = volumePluginGains (*volume);
+        CAPTURE (source.volume);
+        CAPTURE (source.pan);
+        CAPTURE (source.mute);
+        CAPTURE (source.solo);
+        CHECK_MESSAGE (sameGain (mixed.left, specified.left), "left " << mixed.left << ", should be " << specified.left);
+        CHECK_MESSAGE (sameGain (mixed.right, specified.right), "right " << mixed.right << ", should be " << specified.right);
+
+        // Every clip that starts before the end, and no other.
+        std::vector<const project::Clip*> expectedClips;
+
+        for (const auto& clip : source.clips)
+            if (clip.start < clipsEndBy)
+                expectedClips.push_back (&clip);
+
+        const auto trackClips = track.getClips();
+        REQUIRE (static_cast<std::size_t> (trackClips.size()) == expectedClips.size());
+
+        for (const auto* clip : expectedClips)
+        {
+            CAPTURE (clip->id);
+            const auto found = std::ranges::find_if (trackClips, [clip] (tracktion::Clip* c) { return c->getName() == juce::String (clip->id); });
+            REQUIRE (found != trackClips.end());
+
+            auto* midi = dynamic_cast<tracktion::MidiClip*> (*found);
+            REQUIRE (midi != nullptr);
+            const auto end = std::min (project::clipEnd (project, *clip), clipsEndBy);
+            CHECK (midi->getStartBeat().inBeats() == doctest::Approx (beatsOf (clip->start)));
+            CHECK (midi->getEndBeat().inBeats() == doctest::Approx (beatsOf (end)));
+            CHECK (midi->getPosition().getStart().inSeconds() == doctest::Approx (secondsOf (clip->start, project)));
+            CHECK (midi->getPosition().getEnd().inSeconds() == doctest::Approx (secondsOf (end, project)));
+
+            // Every note, even those past the end, which the clip's end cuts off.
+            using Note = std::tuple<int, double, double, int>; // pitch, start, length, velocity
+            std::vector<Note> expected;
+            std::vector<Note> actual;
+
+            for (const auto& note : project::notesOf (project, *clip).notes)
+                expected.emplace_back (note.pitch, beatsOf (note.start), beatsOf (note.length), note.velocity);
+
+            for (const auto* note : midi->getSequence().getNotes())
+                actual.emplace_back (note->getNoteNumber(), note->getStartBeat().inBeats(), note->getLengthBeats().inBeats(), note->getVelocity());
+
+            std::ranges::sort (expected);
+            std::ranges::sort (actual);
+            CHECK (actual == expected);
+        }
+    }
+
+    CHECK (sync.loopRange().getStart().inSeconds() == doctest::Approx (secondsOf (played.start, project)));
+    CHECK (sync.loopRange().getEnd().inSeconds() == doctest::Approx (secondsOf (played.end, project)));
+
+    // Nothing of EditSync's in Tracktion's undo, which it clears after every
+    // change it makes. But Tracktion records moves of its own there later: on
+    // the message loop, after clips are added, moved or resized, it sorts each
+    // track's clips by start (ClipOwner's async update). So a test that ran
+    // the message loop may find child moves there, and nothing else.
+    juce::Array<const juce::UndoableAction*> actions;
+    edit.getUndoManager().getActionsInCurrentTransaction (actions);
+    const auto notSorting = std::ranges::count_if (actions, [] (const juce::UndoableAction* action)
+    {
+        return std::string_view (typeid (*action).name()).find ("MoveChildAction") == std::string_view::npos;
+    });
+    CHECK_MESSAGE (notSorting == 0, "Tracktion's undo holds " << notSorting << " change(s) other than its own sort of clips");
 }
 
 //==============================================================================
