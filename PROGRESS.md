@@ -29,10 +29,11 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 4 | Commands for the song's structure, with undo and gesture coalescing | Done (2026-11-12) |
 | 5 | Sync: tracks and clips added, moved and removed during playback | Done (2026-11-12) |
 | 6 | Sync: mix settings, tempo, time signature; transport commands for seek and the loop region, and a master level for `--play` | Done (2026-11-17), but for a live check at Lee's desk (part 1) |
-| 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Next |
+| 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Next: plan proposed to Lee (2026-11-17) |
 | 8 | The first bundled drum kit | Not started |
 | 9 | Saving, the recovery copy, and changes made outside Hocket | Not started |
 | 10 | MCP tools for all of it | Not started |
+| – | Bug sweep, before step 11 | Not started |
 | 11 | Demo song, acceptance run, SPEC updates | Not started |
 
 **Milestone 1 is done when:**
@@ -246,9 +247,9 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
      - **The audio callback lock:** `EditSync` now takes it only through `AudioLock`, which times each hold (`longestAudioLockHold()`); reading the clock is all it adds while held (CLAUDE.md lists it). Measured on 2026-11-17: about 30 µs as a rule (median 24–37 µs, 95th percentile 51–87 µs), and the longest of a run's 100 changes 0.19 to 0.66 ms over 7 runs, with the slowest blocks 0.4 to 1.4 ms of their 5.8 ms. Nearly all of it is Tracktion's `TempoSetting::set`, which records an undo action and notifies every listener on the Edit's tree, synchronously (median about 20–35 µs, with a long tail). The test checks that the longest hold and the slowest block together fit in a block.
      - **Fixed with it:** `syncTempo` worked out the song's end, which looks at every clip, while holding the lock, so the hold grew with the song: setting the loop took 32–37 µs on the 16-track song instead of about 1 µs. It's worked out before taking the lock now, as CLAUDE.md already said.
      - **For Lee:** part 3 said the hold was a few microseconds; it's tens, with a tail into tenths of a millisecond. The comments now say what was measured. That's well inside a block at the buffer sizes in use (256 to 1024 samples), and tempo changes come at most 20 a second. Loose ends has what could shorten it.
-- **Waiting on Lee (asked 2026-11-17):**
-  - The audio callback lock's hold during a tempo change: leave it as measured, or try changing the tempo setting before taking the lock (Loose ends has how, and the risk). Claude's suggestion: leave it until buffers smaller than 256 samples matter.
-  - Whether SPEC should say that, with loop off, a change that ends the song before the playhead (the last clip removed, say) stops playback rather than wrapping. That's what `EditSync` does (`Outside::wrapWhileLooping`), and has since part 4; SPEC §3.3's wrap rule doesn't say it applies only while looping.
+- **Lee's decisions on what part 5 left (2026-11-17):**
+  - **The audio callback lock's hold during a tempo change stays as measured**, and reading the clock under it is fine. Loose ends keeps the note on what could shorten it, for when buffers smaller than 256 samples matter.
+  - **With loop off, a change that ends the song before the playhead stops playback**, rather than wrapping, as `EditSync` has done since part 4 (`Outside::wrapWhileLooping`). SPEC v0.13, §3.3, says so. Step 10: a command's result says when it stopped playback or moved the playhead.
 
 **7. Hocket's drum sampler, and how kits work** (SPEC §8.1, §8.4)
 - Hocket's first device, a Tracktion plugin type of its own (`PluginManager::createBuiltInType`). It sets the pattern the synth and effects follow in Milestones 4 and 5.
@@ -279,11 +280,15 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 **10. MCP tools for all of it** (SPEC §6.4)
 - Tools for steps 4 and 9: tracks, clip placement, tempo and time signature, transport with seek and loop, and `save`. Also `patch_clip` and `history`'s author filter. The overview already shows mix settings, links, drum maps and kits.
 - Results carry what the commands say: the IDs Hocket made, clips a time-signature change left off a bar line, kit pieces added or not on assignment, and what a track's kit can't play (step 7). Resizing stays `write_clip` with a new `@length`; its description should say so.
+- **A command's result says when it stopped playback or moved the playhead** (Lee, 2026-11-17): with loop off, a change that ends the song before the playhead stops playback (SPEC §3.3); while looping, it wraps the playhead. The engine does both now, but no result mentions it.
 - The set is designed at the start of the step, small and expressive as SPEC §6.4 asks, and written into §6.4.
 - **The transport, for the model:** the tools send step 6's transport commands. The overview says what play plays (the loop region or the whole song), whether loop is on, and where play starts; the `transport` tool's description stops saying play always loops the whole song.
 - **Clipping, for the model** (Lee, 2026-11-16): a way for Claude to read the output peak and the count of samples over full scale since play started, so a model can tell when the mix clips. `MasterOutput` keeps both already (part 1 of step 6), counted from when `--play` opens the device; whether a transport play starts the count again is for this step to settle.
 - Descriptions, results and errors are written for an LLM reader. The fingerprint changes, so `hocket-mcp` must be installed again (CLAUDE.md).
 - API tests for each tool; the bridge's and stress client's tests updated.
+
+**Bug sweep, after step 10 and before step 11** (Lee, 2026-11-17)
+- In separate fresh sessions, one area of the code each, reporting findings without fixing them. Which areas: to discuss with Lee when we get there.
 
 **11. Demo song, acceptance run, SPEC updates**
 - The acceptance check itself: starting from `--new`, Claude builds a song with drums while Lee listens. It's saved as `examples/m1-demo`.
@@ -408,7 +413,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - A refused connection to a port on 127.0.0.1 takes about 2 s on Windows. It only happens when the token file names a running Hocket that isn't listening.
 - **Command bus:** a merged gesture's history entry takes its latest step's description, which names only what that step changed: a drag of volume and pan together whose last step moved only the volume says only "volume". SPEC §6.4 has no MCP `redo`; if one is added, it gets the same author check as `undo`, applied to whoever did the undo.
 - **Sync coverage:** `EditSync` follows every change notice. Each new command that changes the project needs its sync code and a render or live test, and each new kind of change to the Edit a stress test (SPEC §3.3). Every kind so far has one, the mix's and the tempo's since step 6, part 5.
-- **The audio callback lock during a tempo change (step 6, part 5).** `syncTempo` holds it about 30 µs as a rule, and up to 0.2 to 0.7 ms at worst, nearly all of it in Tracktion's `TempoSetting::set`. Fine at the buffer sizes in use, but at 64 samples (1.45 ms) the worst case would be a large share of a block. If it ever matters:
+- **The audio callback lock during a tempo change (step 6, part 5).** `syncTempo` holds it about 30 µs as a rule, and up to 0.2 to 0.7 ms at worst, nearly all of it in Tracktion's `TempoSetting::set`. Fine at the buffer sizes in use, but at 64 samples (1.45 ms) the worst case would be a large share of a block. Lee's decision (2026-11-17): leave it as it is until buffers smaller than 256 samples matter. If it ever does:
   - Change the tempo setting before taking the lock. A song has one tempo, so the playhead's beat can be worked out by arithmetic from the old tempo, rather than by Tracktion's `toBeats`, which rebuilds the map once the setting has changed. But a listener to the setting may rebuild and swap in the new map itself, and an audio block could then run with the new map and the old loop, wrapping at the old loop's end; Tracktion's audio thread also moves the playhead to keep its beat when it sees a new map. Needs care, and a live test of a tempo change near the loop's end.
   - The `--play` exit report could include the longest hold, next to the late callbacks.
 - **The Edit's time signature stays 4/4 (step 6, part 3).** Tracktion's beats are quarter notes and Hocket works out its own bars, so anything that reads the signature or the bar from Tracktion gets 4/4. Revisit before the first of: a metronome or count-in; one of Hocket's own devices that syncs to the bar (Milestones 4 and 5); VST3 hosting in Phase 2, since plugins read the time signature and bar position from the host (Lee, 2026-11-16; SPEC §8.2). [Claude's note: Tracktion's `EngineBehaviour::lengthOfOneBeatDependsOnTimeSignature()` returning false keeps its beats quarter notes whatever the signature, so the Edit could carry the song's signature without moving anything in time. Its audio thread would still put the playhead back on its beat when the signature changes (the Gotcha below), so a wrap made in the same instant needs the same care as the rare case below.]

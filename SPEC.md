@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.12** — 2026-11-17
+> Status: **Draft v0.13** — 2026-11-17
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -102,7 +102,7 @@ Keeping the Edit in sync with our model is the area most likely to produce early
 - Requirement: round-trip tests — load text → Hocket model → save text must produce byte-identical output for canonical files.
 - Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then, and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through.
 - Requirement: property/fuzz tests on the serializer.
-- When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place is struck there.
+- When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place is struck there. That's while looping: with loop off, playback stops instead, since the song played once has reached its end.
 - A tempo change during playback keeps the playhead on its beat, so its place in the bar, and the notes sounding carry on. A new time signature keeps the playhead at the same time, as it keeps every clip and note (§4.4).
 - While a loop region plays once (loop off), the Edit's clips end at the region's end, and those that start at or after it are left out, so nothing after it is heard before the transport stops (§3.1). Every way out of playing once (reaching the end, stop, loop on, a new region or none) gives the clips their own ends back. The sync tests compare the Edit with the model cut off in the same place, worked out on their own.
 
@@ -481,7 +481,7 @@ Raw data remains available on explicit request (e.g. for a script).
 **Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
 - Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
 - Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
-- Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at about +8.6 dBFS.)
+- Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at +11 to +13.5 dBFS, by where its oscillators' phases fall.)
 - So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4, and `hocket:drum-sampler`, with a kit (§8.4).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
 
