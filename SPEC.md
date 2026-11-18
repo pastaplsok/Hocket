@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.13** — 2026-11-17
+> Status: **Draft v0.14** — 2026-11-17
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -100,7 +100,7 @@ Why our model and not Tracktion's:
 
 Keeping the Edit in sync with our model is the area most likely to produce early bugs.
 - Requirement: round-trip tests — load text → Hocket model → save text must produce byte-identical output for canonical files.
-- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then, and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through.
+- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then (on the drum sampler, whose pieces are one-shots, its sound rings on, §5.2), and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through.
 - Requirement: property/fuzz tests on the serializer.
 - When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place is struck there. That's while looping: with loop off, playback stops instead, since the song played once has reached its end.
 - A tempo change during playback keeps the playhead on its beat, so its place in the bar, and the notes sounding carry on. A new time signature keeps the playhead at the same time, as it keeps every clip and note (§4.4).
@@ -241,7 +241,7 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
   ```
   - `drumMap` is required on a drums track and an error on any other. It maps names to MIDI note numbers, 0 to 127. Numbers, not note names, since drum charts disagree about octave names (Hocket's kick is C2, many charts' C1), while General MIDI's numbers are the same everywhere.
   - One note per name, and one name per note, so the writer knows which name to write. A map may be empty.
-- **Devices:** none, or one instrument: `"hocket:synth"` (§8.1), or `"hocket:drum-sampler"` with its `kit` (§8.4), on drums tracks only. A kit's name is lowercase and hyphenated, like a clip file's. A project reads and validates without its kit present, since the names are in the drum map. Effects come in Milestone 5.
+- **Devices:** none, or one instrument: `"hocket:synth"` (§8.1), or `"hocket:drum-sampler"` with its `kit` (§8.4), on drums tracks only. A bundled kit's name is lowercase and hyphenated, like a clip file's; a kit of the user's own is written `user/` and its name (`"user/dusty-909"`), so the two can never clash (§8.4). A project reads and validates without its kit present, since the names are in the drum map. Effects come in Milestone 5.
 - **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. A drums track's `drumMap` comes between `devices` and `clips`, sorted by note, and a drum sampler's `kit` after its `type`. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
 
 ### 4.5 Saving
@@ -311,7 +311,8 @@ A drums track (`"type": "drums"`) has a **drum map** in `project.json` that maps
 - **Fallback:** a note with no map entry is written as its note name (`A#5`), so nothing is ever lost or unreadable. `write_clip`'s result lists such notes on a drums track, since they only sound if the kit has a piece there.
 - A drum name on a track with no drum map is an error that says so, and so is a name the map doesn't have, with the map's names.
 - **A file linked into several tracks** (§4.4) must mean the same notes on each, and be written the same way for each: every note in the file has the same name in each track's map, or no name in any. A track with no drum map names nothing. It's an error otherwise, and the message names the notes, the names, and the tracks. This may later be relaxed, so that each track reads the file with its own map.
-- Choke groups (e.g. closed hat cutting off open hat) belong to the instrument / drum map, not the notation.
+- **On the drum sampler, a note's length changes nothing.** Its pieces are one-shots: each hit plays its sample to the end, unless a choke group cuts it, so a stop or a seek leaves hits ringing, and so does a clip that ends or is rewritten under one. Lengths are still kept, for MIDI export and other instruments; `1/16` is the usual one to write.
+- **Choke groups** belong to the kit (its manifest, §8.4), not the notation. A hit cuts every sounding hit in its group, its own piece's included, so an open hat struck again restarts, and a closed hat cuts an open one. The cut is a 10 ms fade from the cutting hit's sample. Pieces in no group ring over each other, like cymbals; a kick that should cut itself, like an 808's, goes in a group of its own.
 
 **The standard names**, on General MIDI's notes. Note names are Hocket's, where C4 is 60, so the kick is C2; many drum charts call it C1, counting middle C as C3.
 
@@ -484,6 +485,9 @@ Raw data remains available on explicit request (e.g. for a script).
 - Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at +11 to +13.5 dBFS, by where its oscillators' phases fall.)
 - So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4, and `hocket:drum-sampler`, with a kit (§8.4).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
+  - Velocity sets a hit's level: its gain is the piece's level × (velocity / 127)², General MIDI's default curve (v100 is −4.2 dB, v64 −11.9 dB, v28 −26 dB). It adds no gain of its own: at v127, a piece at a level of 0 dB plays its sample exactly.
+  - Samples are converted to the device's sample rate once, when a kit loads or the rate changes, band-limited so nothing folds back; at equal rates they aren't touched.
+  - **Kits leave headroom:** every piece of a kit struck at once at v127, on a track at 0 dB and C, peaks at −1 dBFS or under (choke groups apply). Bundled kits are tested against it.
 
 ### 8.2 VST3 hosting requirements (Phase 2)
 - Expose parameters with names, normalized values, and display strings.
@@ -502,7 +506,29 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
 - **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
 - **A missing kit:** a project whose kit isn't installed still loads. Hocket says the kit is missing, and the track is silent.
-- **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track adds its names to the track's drum map, keeping what's there (§5.2).
+- **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track adds its names to the track's drum map, keeping what's there (§5.2). A kit that isn't installed can't be assigned: the error lists the kits that are.
+- **The manifest**, `kit.json` in the kit's folder, beside its samples:
+  ```json
+  {
+    "format": "hocket-kit",
+    "formatVersion": 0,
+    "description": "Electronic, 808-style",
+    "pieces": [
+      { "name": "kick", "note": 36, "file": "kick.wav", "level": "0dB" },
+      { "name": "hat-closed", "note": 42, "file": "hat-closed.wav", "level": "-4dB" },
+      { "name": "hat-open", "note": 46, "file": "hat-open.wav", "level": "-4dB" }
+    ],
+    "chokeGroups": [["hat-closed", "hat-open"]]
+  }
+  ```
+  - Strict, like `project.json`: every key shown is required, and unknown keys are errors. The kit's name is its folder's.
+  - Piece names follow the drum map's naming rules (§5.2); one note per piece and one piece per note. `level` is in dB, like a track's volume. Choke groups name pieces, each in at most one group (§5.2).
+  - Samples are WAV files, 16- or 24-bit, mono or stereo (a mono one plays the same in both channels), at most 10 s each. One sample per piece; velocity layers and round robins may come with the full sampler (Milestone 4), as additions to the format.
+  - A kit that's installed but broken (a bad manifest, an unreadable sample) counts as missing, and Hocket says why.
+- **Where kits are:** bundled kits in `kits/` next to Hocket's programs (from `assets/kits/` in the repository), and the user's own in `Documents\Hocket\Kits\` on Windows (the Documents folder as Windows reports it, so it follows OneDrive). Hocket doesn't create that folder.
+  - **The user's kits are named with `user/`** in a project (`"kit": "user/dusty-909"` for `Documents\Hocket\Kits\dusty-909\`), so they never clash with a bundled kit, even one a later release adds. The folder's own name has no prefix, and follows the same naming rules as a bundled kit's.
+  - Kits are listed at start, and again whenever a name isn't found, so a kit dropped in while Hocket runs can be assigned without a restart. A kit already loaded isn't read again until Hocket restarts.
+- The overview says which kit each drums track uses, where it came from (bundled, or the user's folder), and which of the track's drum-map names it can play, with a count of the rest.
 
 ---
 
@@ -572,6 +598,7 @@ Not in v1: an installer, and a public release.
    - `add_device`, `remove_device`, and `set_params` in real units.
    - Device panels, drawn from each device's parameter definitions.
 5. **Effects and mixer.** EQ, compressor, reverb, delay, filter/saturator (Tracktion stand-ins where they pass, §8.1).
+   - The saturator has a hard-clip mode, with its drive in dB, on a track or on the master bus: deliberate clipping (a phonk kick, a clipped master) is a sound people want.
    - Return buses, sends, the master bus, `set_routing`.
    - The mixer view, with meters.
 6. **Automation.** The `.auto` parser and writer with the full set of tests (§4.2), `read_automation` and `write_automation`, automation lanes, and controller lines in `.notes`.
