@@ -229,7 +229,8 @@ namespace hocket::testing
         explicit SteadyTone (tracktion::PluginCreationInfo info) : Plugin (info) {}
         ~SteadyTone() override { notifyListenersOfDeletion(); }
 
-        // Puts one just ahead of the track's volume plugin, after its synth.
+        // Puts one just ahead of the track's gain stage, which plays its
+        // mix, after its synth.
         static SteadyTone& addTo (tracktion::AudioTrack& track)
         {
             static const bool registered = [&track]
@@ -239,8 +240,9 @@ namespace hocket::testing
             }();
 
             auto plugin = track.edit.getPluginCache().createNewPlugin (xmlTypeName, {});
-            REQUIRE ((registered && plugin != nullptr && track.getVolumePlugin() != nullptr));
-            track.pluginList.insertPlugin (plugin, track.pluginList.indexOf (track.getVolumePlugin()), nullptr);
+            const auto stages = track.pluginList.getPluginsOfType<engine::GainStagePlugin>();
+            REQUIRE ((registered && plugin != nullptr && stages.size() == 1));
+            track.pluginList.insertPlugin (plugin, track.pluginList.indexOf (stages.getFirst()), nullptr);
             return *dynamic_cast<SteadyTone*> (plugin.get());
         }
 
@@ -288,11 +290,16 @@ namespace hocket::testing
     // What Tracktion makes of a volume plugin's settings, by its own sums.
     ChannelGains volumePluginGains (tracktion::VolumeAndPanPlugin&);
 
+    // The gains a track's gain stage is set to.
+    ChannelGains gainStageGains (const engine::GainStagePlugin&);
+
     // Whether two gains are the same to within a thousandth of a dB, or both silence.
     bool sameGain (double a, double b);
 
     // The Edit is the bus's project: one tempo, the song's, with the Edit's
-    // time signature at 4/4; the tracks in order, their plugins and mix; the
+    // time signature at 4/4; the tracks in order, their plugins and mix (each
+    // track's gain stage, at its place, with Tracktion's volume plugin after
+    // it at unity); the
     // clips, in beats and seconds, and their notes; what play plays; and
     // nothing in Tracktion's undo. While the transport plays once (loop off),
     // every clip ends by the end of what plays, and one that starts at or

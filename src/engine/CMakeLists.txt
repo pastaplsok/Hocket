@@ -9,6 +9,10 @@ add_library(hocket_engine STATIC
     EditSync.h
     MasterOutput.cpp
     MasterOutput.h
+    mix/GainStage.cpp
+    mix/GainStage.h
+    mix/GainStagePlugin.cpp
+    mix/GainStagePlugin.h
     PlaybackDevice.cpp
     PlaybackDevice.h
     kits/KitLibrary.cpp

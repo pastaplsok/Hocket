@@ -694,13 +694,13 @@ TEST_CASE ("stress: a loop region played once, in real time: the note across its
 // step 6, part 5).
 //
 // The bass's sound is SteadyTone's sine, whose value at every sample is known,
-// so each channel's gain can be read from each sample. Tracktion's volume
-// plugin takes a gain to a new value in a straight ramp over 15 ms, so a gain
-// that moves faster than that is a click, or a dropped block.
+// so each channel's gain can be read from each sample. A track's gain stage
+// takes a gain to a new value in a straight ramp over 15 ms, so a gain that
+// moves faster than that is a click, or a dropped block.
 namespace
 {
-    // The ramp: VolumeAndPanPlugin's juce::SmoothedValue, linear over 15 ms.
-    const int rampSamples = static_cast<int> (std::floor (0.015 * FakeAudioDevice::sampleRate));
+    // The gain stage's ramp, linear over 15 ms.
+    const int rampSamples = engine::GainStage::rampSamples (FakeAudioDevice::sampleRate);
 
     project::Project toneProject (std::string_view notesText = heldTwoBars)
     {
@@ -763,7 +763,7 @@ namespace
     }
 
     // The first place in [from, to) where a channel's gain moves faster than
-    // the volume plugin's ramp would for a change of `largestChange` (between
+    // the gain stage's ramp would for a change of `largestChange` (between
     // the largest and smallest gains the test sets): a click, or a dropped
     // block. Empty if there's none.
     std::string gainJumps (const GainTrace& trace, int from, int to, double largestChange)

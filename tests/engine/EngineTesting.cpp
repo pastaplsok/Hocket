@@ -81,6 +81,12 @@ ChannelGains volumePluginGains (tracktion::VolumeAndPanPlugin& plugin)
     return { left, right };
 }
 
+ChannelGains gainStageGains (const engine::GainStagePlugin& stage)
+{
+    const auto gains = stage.gains();
+    return { gains.left, gains.right };
+}
+
 bool sameGain (double a, double b)
 {
     if (a == 0.0 || b == 0.0)
@@ -150,21 +156,40 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
         if (synths > 0)
             CHECK (dynamic_cast<tracktion::FourOscPlugin*> (track.pluginList[first]) != nullptr);
 
-        // The mix, by Tracktion's own sums, is SPEC §4.4's, and isn't automated.
+        // The gain stage plays the mix: exactly one, last of the track's own
+        // plugins, so after its devices (and any test plugins), and followed
+        // only by the volume and meter plugins Tracktion puts on every track.
+        const auto stages = track.pluginList.getPluginsOfType<engine::GainStagePlugin>();
+        REQUIRE (stages.size() == 1);
         auto* volume = track.getVolumePlugin();
         REQUIRE (volume != nullptr);
-        CHECK (volume->getPanLaw() == tracktion::PanLawLinear);
-        CHECK_FALSE (volume->volParam->hasAutomationPoints());
-        CHECK_FALSE (volume->panParam->hasAutomationPoints());
+        const auto stageAt = track.pluginList.indexOf (stages.getFirst());
+        CHECK (track.pluginList.indexOf (volume) == stageAt + 1);
+        CHECK (track.pluginList.size() == stageAt + 3);
 
+        if (track.pluginList.size() == stageAt + 3)
+            CHECK (dynamic_cast<tracktion::LevelMeterPlugin*> (track.pluginList[stageAt + 2]) != nullptr);
+
+        // Its gains are SPEC §4.4's.
         const auto specified = specifiedGains (project, source);
-        const auto mixed = volumePluginGains (*volume);
+        const auto mixed = gainStageGains (*stages.getFirst());
         CAPTURE (source.volume);
         CAPTURE (source.pan);
         CAPTURE (source.mute);
         CAPTURE (source.solo);
         CHECK_MESSAGE (sameGain (mixed.left, specified.left), "left " << mixed.left << ", should be " << specified.left);
         CHECK_MESSAGE (sameGain (mixed.right, specified.right), "right " << mixed.right << ", should be " << specified.right);
+
+        // Tracktion's volume plugin is at unity, exactly, and isn't automated:
+        // 0 dB, the centre, and the linear pan law, whose centre is unity.
+        CHECK (volume->getPanLaw() == tracktion::PanLawLinear);
+        CHECK (volume->getPan() == 0.0f);
+        CHECK (volume->getSliderPos() == tracktion::decibelsToVolumeFaderPosition (0.0f));
+        const auto unity = volumePluginGains (*volume);
+        CHECK (unity.left == 1.0);
+        CHECK (unity.right == 1.0);
+        CHECK_FALSE (volume->volParam->hasAutomationPoints());
+        CHECK_FALSE (volume->panParam->hasAutomationPoints());
 
         // Every clip that starts before the end, and no other.
         std::vector<const project::Clip*> expectedClips;

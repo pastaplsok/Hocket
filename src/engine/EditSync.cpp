@@ -53,30 +53,20 @@ namespace
         return {};
     }
 
-    // A track's mix (SPEC §4.4) as Tracktion's volume plugin takes it: its
-    // fader position and pan.
-    struct VolumePluginSettings
+    // A track's mix (SPEC §4.4) as each channel's gain. Hocket's pan is a
+    // balance control: the near channel stays at the track's volume, and the
+    // far one goes down linearly in gain, to (1 - |pan| / 100) of it, so at
+    // L50 the right channel is at half. A track that shouldn't be heard
+    // (muted, or another is soloed) gets no gain, so the gain stage's 15 ms
+    // ramp fades it out and back in.
+    StereoGain mixGains (const project::Track& track, bool audible)
     {
-        float faderPosition = 0.0f; // 0 is silence, 1 is +6 dB
-        float pan = 0.0f;           // -1 to 1
-    };
+        if (! audible)
+            return { 0.0f, 0.0f };
 
-    // Hocket's pan is a balance control: the near channel stays at the
-    // track's volume, and the far one goes down linearly in gain, to (1 - |b|)
-    // of it. The volume plugin's linear pan law gives left g(1 - p) and right
-    // g(1 + p), which is that when p = b / (2 - |b|) and g = volume / (1 + |p|).
-    // At L50, p is -1/3 and g 0.75 of the volume: left at the volume, right
-    // at half. A track that shouldn't be heard (muted, or another is soloed)
-    // gets no gain, so the plugin's 15 ms smoothing fades it out and back in.
-    VolumePluginSettings volumePluginSettings (const project::Track& track, bool audible)
-    {
-        const auto balance = static_cast<double> (track.pan) / static_cast<double> (units::maxPan);
-        const auto pan = balance / (2.0 - std::abs (balance));
-        const auto gain = audible ? std::pow (10.0, track.volume / 20.0) / (1.0 + std::abs (pan)) : 0.0; // -inf dB is 0
-
-        // From a gain, not dB: the plugin's dB conversion treats anything at
-        // -100 dB or under as silence, and -96 dB panned hard is lower.
-        return { tracktion::gainToVolumeFaderPosition (static_cast<float> (gain)), static_cast<float> (pan) };
+        const auto volume = std::pow (10.0, track.volume / 20.0); // -inf dB is 0
+        const auto far = volume * (1.0 - static_cast<double> (std::abs (track.pan)) / static_cast<double> (units::maxPan));
+        return { static_cast<float> (track.pan > 0 ? far : volume), static_cast<float> (track.pan < 0 ? far : volume) };
     }
 
     // Where the clip plays, in the Edit's beats: from its start to its end, or
@@ -143,6 +133,7 @@ private:
 EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus) : bus (commandBus)
 {
     const auto& project = bus.project();
+    GainStagePlugin::registerWith (engine);
     auto state = tracktion::createEmptyEdit (engine);
 
     tracktionEdit = tracktion::Edit::createEdit ({
@@ -404,15 +395,25 @@ void EditSync::syncTrack (const std::string& trackId)
         if (track == nullptr)
             throw std::runtime_error ("Tracktion couldn't add a track for " + trackId);
 
-        // Tracktion gives every new track a volume plugin; its pan law is set
-        // here, not engine-wide, before it ever plays (syncMix).
-        tracktion::VolumeAndPanPlugin::Ptr volume = track->getVolumePlugin();
+        // Tracktion gives every track a volume plugin, which can't be taken
+        // off. It takes the mix as two parameters, set one after the other,
+        // so a block that starts between them would head for a gain neither
+        // asks for. So it's left at unity, set once here and never touched
+        // again: 0 dB, the centre, and the linear pan law, whose centre is
+        // exactly unity (Tracktion's default law lowers it). Hocket's own
+        // gain stage, directly before it, plays the mix (syncMix).
+        auto* volume = track->getVolumePlugin();
 
         if (volume == nullptr)
             throw std::runtime_error ("Tracktion added no volume plugin to the track for " + trackId);
 
         volume->setPanLaw (tracktion::PanLawLinear);
-        found = tracks.emplace (trackId, SyncedTrack { track, {}, volume }).first;
+        volume->setVolumeDb (0.0f);
+        volume->setPan (0.0f);
+
+        auto gainStage = GainStagePlugin::create (*tracktionEdit);
+        track->pluginList.insertPlugin (tracktion::Plugin::Ptr (gainStage), track->pluginList.indexOf (volume), nullptr);
+        found = tracks.emplace (trackId, SyncedTrack { track, {}, gainStage }).first;
     }
 
     found->second.track->setName (juceString (source->name));
@@ -441,7 +442,8 @@ void EditSync::syncDevices (const project::Track& source, SyncedTrack& synced)
         plugin = synced.plugins.erase (plugin);
     }
 
-    // In signal-chain order, ahead of the volume/pan and meter plugins Tracktion puts on every track.
+    // In signal-chain order, ahead of the gain stage, and of the volume and
+    // meter plugins Tracktion puts on every track.
     int index = 0;
 
     for (const auto& device : source.devices)
@@ -475,18 +477,13 @@ void EditSync::syncMix()
         // While any track is soloed, only soloed tracks are heard, and a muted
         // track is never heard, soloed or not (SPEC §4.4).
         const auto audible = ! source.mute && (! anySoloed || source.solo);
-        const auto settings = volumePluginSettings (source, audible);
-        auto& volume = *found->second.volume;
+        const auto gains = mixGains (source, audible);
+        auto& stage = *found->second.gainStage;
 
-        // The parameters, not the plugin's setters: setPan() rounds a pan
-        // under 0.005 to the centre, and L1 comes to 0.00503, only just over.
-        // The audio thread reads their values, which are atomic, and smooths
-        // the gains it makes from them.
-        if (volume.volParam->getCurrentValue() != settings.faderPosition)
-            volume.volParam->setParameter (settings.faderPosition, juce::sendNotification);
-
-        if (volume.panParam->getCurrentValue() != settings.pan)
-            volume.panParam->setParameter (settings.pan, juce::sendNotification);
+        // Both channels' gains in one atomic store, which the audio thread
+        // loads at the start of a block and ramps to.
+        if (stage.gains() != gains)
+            stage.setGains (gains);
     }
 }
 

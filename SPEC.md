@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.15** — 2026-11-17
+> Status: **Draft v0.16** — 2026-11-18
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -212,7 +212,7 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Mix:** each track's `volume`, `pan`, `mute` and `solo`, always written.
   - **Values with units** are a number and then the unit: an optional sign, digits, and an optional decimal point with digits after it. The writer puts no space between number and unit; the reader accepts one. Units are case-sensitive (`dB`, not `db`). Device parameters use the same syntax from Milestone 4 (`"2.4kHz"`, `"12ms"`).
   - **`volume`** is in dB, from `"-96dB"` to `"+6dB"` in steps of 0.1 dB (finer values are rounded), or `"-infdB"` for silence. `"0dB"` leaves the signal as it is. The writer drops trailing zeros and puts `+` on boosts: `"-6.5dB"`, `"0dB"`, `"+3dB"`. The top is Tracktion's fader's.
-  - **`pan`** is `"C"`, `"L1"` to `"L100"`, or `"R1"` to `"R100"`. **It's a balance control:** at C both channels pass unchanged. Panning towards one side leaves that side's channel unchanged and lowers the other linearly in gain, to silence at L100 or R100: at L50 the right channel is at half gain (−6 dB). So `"0dB"` and `"C"` together leave a track exactly as its instrument made it, all the way to a render: Tracktion starts an Edit's master at −3 dB, and Hocket sets it to 0 dB. Pan never moves one channel's content to the other side: at L100, anything only in the right channel is silent. (Tracktion's own pan laws either boost the near side or lower the centre, so the sync layer gets this one out of its linear law with a matching volume, in Milestone 1's step 6.)
+  - **`pan`** is `"C"`, `"L1"` to `"L100"`, or `"R1"` to `"R100"`. **It's a balance control:** at C both channels pass unchanged. Panning towards one side leaves that side's channel unchanged and lowers the other linearly in gain, to silence at L100 or R100: at L50 the right channel is at half gain (−6 dB). So `"0dB"` and `"C"` together leave a track exactly as its instrument made it, all the way to a render: Tracktion starts an Edit's master at −3 dB, and Hocket sets it to 0 dB. Pan never moves one channel's content to the other side: at L100, anything only in the right channel is silent. (Tracktion's own pan laws either boost the near side or lower the centre, so Hocket plays the mix with a gain stage of its own on each track, which takes both channels' gains as one value and ramps them together over 15 ms. Tracktion's volume plugin, which every track has, stays at unity.)
   - **`mute` and `solo`** are `true` or `false`. While any track is soloed, only soloed tracks are heard; a muted track is silent even when soloed.
 - **Track types:** `"midi"`, whose clips use note names, or `"drums"`, whose clips use the names in its `drumMap` (§5.2). A track's type is set when it's added and doesn't change in v1; moving its clips to a new track of the other type does the same job. A drums track:
   ```json

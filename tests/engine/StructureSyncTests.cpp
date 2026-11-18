@@ -63,16 +63,27 @@ TEST_CASE ("sync: tracks added, removed, moved and renamed reach the Edit, and u
     }
 }
 
-TEST_CASE ("sync: instruments added, replaced and removed")
+TEST_CASE ("sync: instruments added, replaced and removed, always ahead of the track's gain stage")
 {
+    // checkEditMatches checks the gain stage's place after each: one per
+    // track, last of the track's own plugins, directly before Tracktion's
+    // volume plugin. A test plugin on the bass, as the mix tests put one,
+    // stays ahead of it too.
     CommandBus bus (randomSequenceProject());
     engine::EditSync sync (testEngine(), bus);
+    SteadyTone::addTo (*tracktion::getAudioTracks (sync.edit())[0]);
+    sync.edit().getUndoManager().clearUndoHistory();
+    checkEditMatches (sync, bus);
 
     run (bus, sync, SetInstrument { "trk-bass", {} });
     run (bus, sync, SetInstrument { "trk-lead", Instrument { "hocket:synth", {} } });
     run (bus, sync, SetInstrument { "trk-drums", Instrument { "hocket:synth", {} } });
     run (bus, sync, SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "electronic" } });
     run (bus, sync, SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "acoustic" } });
+    run (bus, sync, SetInstrument { "trk-bass", Instrument { "hocket:synth", {} } });
+    run (bus, sync, SetInstrument { "trk-lead", {} });
+    run (bus, sync, SetInstrument { "trk-drums", {} });
+    run (bus, sync, SetInstrument { "trk-drums", Instrument { "hocket:synth", {} } });
 
     undoAll (bus, sync);
 }
@@ -101,7 +112,7 @@ TEST_CASE ("sync: clips added, moved, removed, linked and made unique")
     undoAll (bus, sync);
 }
 
-TEST_CASE ("sync: volume, pan, mute and solo reach each track's volume plugin, and one track's solo silences the others")
+TEST_CASE ("sync: volume, pan, mute and solo reach each track's gain stage, and one track's solo silences the others")
 {
     // A track with a mix of its own from the start.
     auto start = randomSequenceProject();

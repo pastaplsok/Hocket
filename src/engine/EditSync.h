@@ -19,6 +19,7 @@
 // Message thread only, like the bus.
 
 #include "core/commands/CommandBus.h"
+#include "engine/mix/GainStagePlugin.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
@@ -62,12 +63,12 @@ namespace hocket::engine
 
     private:
         // A Hocket track in the Edit, the plugins its devices made, by device
-        // ID, and the volume plugin Tracktion gave it, which plays its mix.
+        // ID, and the gain stage that plays its mix, after them.
         struct SyncedTrack
         {
             tracktion::AudioTrack::Ptr track;
             std::map<std::string, tracktion::Plugin::Ptr, std::less<>> plugins;
-            tracktion::VolumeAndPanPlugin::Ptr volume;
+            juce::ReferenceCountedObjectPtr<GainStagePlugin> gainStage;
         };
 
         commands::CommandBus& bus;
@@ -101,8 +102,8 @@ namespace hocket::engine
         void removeTrack (const std::string& trackId);
         void removeClip (const std::string& clipId);
 
-        // Every track's volume, pan, mute and solo, through its Tracktion
-        // volume plugin, which smooths changes so they don't click.
+        // Every track's volume, pan, mute and solo, as both channels' gains,
+        // through its gain stage, which ramps changes so they don't click.
         void syncMix();
 
         // The tempo, with every clip moved to keep its beats, and the
