@@ -6,7 +6,9 @@ add_library(hocket_engine STATIC
     MasterOutput.cpp
     MasterOutput.h
     PlaybackDevice.cpp
-    PlaybackDevice.h)
+    PlaybackDevice.h
+    kits/SampleRateConversion.cpp
+    kits/SampleRateConversion.h)
 
 target_link_libraries(hocket_engine
     PUBLIC

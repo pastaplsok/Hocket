@@ -14,6 +14,7 @@ add_executable(hocket_engine_tests
     MixTests.cpp
     PlaybackDeviceTests.cpp
     RenderTests.cpp
+    SampleRateConversionTests.cpp
     StackSampler.cpp
     StackSampler.h
     StressTests.cpp

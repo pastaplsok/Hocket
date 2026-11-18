@@ -32,8 +32,9 @@ Moving to a newer upstream Tracktion (the 3.5.0 tag when it exists, or later), i
    - **If the rebase conflicts,** keep the fix's shape: `createThreads()` takes `processMutex` only when there are threads to create. Don't take the `createThreads()` call out of `prepareToPlay` instead. `numThreadsToUse` starts at the core count minus one, so a `setNumThreads` with that value returns early, and that call is what starts the pool's threads.
 2. **The first MIDI scan: still needed?** In `tracktion_DeviceManager.cpp`, check whether `DeviceManager::initialise()` still calls `rescanMidiDeviceList()` (which starts a 5 ms timer) and then `restartMidiCheckTimer()`, which replaces it with the 4 s rescan timer. Keep the early scan in `--play` until upstream changes that order, or does the first scan straight away.
 3. **The proxy: still needed?** In `tracktion_MidiNode.cpp`, check whether `MidiNode::prepareToPlay()` now takes over the old node's sounding notes, and ends the ones the new sequence doesn't have, the way `LoopingMidiNode` does. Keep `setUsesProxy (false)` until it does. To confirm once it might: take the call out, and run the stress test "rewrites that change the notes leave none of them stuck". It fails if notes are left on.
-4. **JUCE:** move `external/JUCE` to the new Tracktion's `modules/juce` pin (the JUCE pin note, above).
-5. **Check:** run the whole test suite. The engine stress tests fail on a dropped block or a stuck note. Then run `Run-Acceptance.ps1`, with `-FreshClone` if the submodule URL changed. Update this file and PROGRESS.md.
+4. **libsamplerate: still reachable the same way?** Hocket converts drum kits' samples to the device's rate with the libsamplerate Tracktion bundles (`src/engine/kits/SampleRateConversion.cpp`), by including `modules/3rd_party/libsamplerate/samplerate.h` inside `namespace tracktion::src`. That works because `tracktion_engine_playback.cpp` compiles libsamplerate's C files as C++ inside that namespace, with `ENABLE_SINC_BEST_CONVERTER` defined, and the header includes nothing itself. Check all three still hold. If one doesn't, the build fails to compile or link, or `SRC_SINC_BEST_QUALITY` is refused at run time; the engine tests' "sample rates" cases check the converter's quality either way.
+5. **JUCE:** move `external/JUCE` to the new Tracktion's `modules/juce` pin (the JUCE pin note, above).
+6. **Check:** run the whole test suite. The engine stress tests fail on a dropped block or a stuck note. Then run `Run-Acceptance.ps1`, with `-FreshClone` if the submodule URL changed. Update this file and PROGRESS.md.
 
 ## Bundled inside Tracktion Engine
 
@@ -46,7 +47,7 @@ Tracktion Engine's README lists these bundled libraries (mostly under `modules/3
 | choc | ISC |
 | crill | BSL-1.0 |
 | expected (TartanLlama) | CC0-1.0 |
-| libsamplerate | BSD-2-Clause |
+| libsamplerate | BSD-2-Clause (also used by Hocket directly, for drum kits' samples: "Updating Tracktion", step 4) |
 | rigtorp/MPMCQueue | MIT |
 | magic_enum | MIT |
 | farbot | MIT |
