@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -448,6 +449,8 @@ namespace
         int firstBlock = 0; // the first block played after the changes began
         double changesTook = 0.0;
         std::vector<std::vector<MidiRecorder::Event>> midi; // what each recorder `before` gave recorded
+        project::Project finalProject;                      // after the changes
+        std::chrono::duration<double> longestLockHold {};    // EditSync's of JUCE's audio callback lock
     };
 
     // Plays a bar untouched, then sends `count` commands at 20 a second, then
@@ -491,6 +494,8 @@ namespace
         run.out = audio.output();
         run.processing = audio.processingSeconds();
         run.blocks = audio.blocksPlayed();
+        run.finalProject = bus.project();
+        run.longestLockHold = sync.longestAudioLockHold();
 
         // The recorders go with the Edit.
         for (const auto* recorder : recorders)
@@ -499,8 +504,8 @@ namespace
         return run;
     }
 
-    // Milestone 0's checks on the held bass notes, bar by bar.
-    void checkHeldNotes (const StressRun& run, int count)
+    // The message thread kept up, and no block took longer than it lasts.
+    Timing checkTiming (const StressRun& run, int count)
     {
         CHECK_MESSAGE (run.changesTook < count * 0.05 + 0.5, "the changes took " << run.changesTook << " s: the message thread fell behind");
 
@@ -510,6 +515,14 @@ namespace
 #ifdef NDEBUG
         CHECK (stressed.overBudget == 0);
 #endif
+
+        return stressed;
+    }
+
+    // Milestone 0's checks on the held bass notes, bar by bar.
+    void checkHeldNotes (const StressRun& run, int count)
+    {
+        checkTiming (run, count);
 
         const auto bars = run.blocks * blockSize / barSamples;
         REQUIRE (bars >= 4);
@@ -674,4 +687,270 @@ TEST_CASE ("stress: a loop region played once, in real time: the note across its
     // Late, but within a few blocks.
     CHECK (lateMs.front() >= 0.0);
     CHECK (lateMs.back() < 50.0);
+}
+
+//==============================================================================
+// The mix and the tempo changed 20 a second during playback (Milestone 1's
+// step 6, part 5).
+//
+// The bass's sound is SteadyTone's sine, whose value at every sample is known,
+// so each channel's gain can be read from each sample. Tracktion's volume
+// plugin takes a gain to a new value in a straight ramp over 15 ms, so a gain
+// that moves faster than that is a click, or a dropped block.
+namespace
+{
+    // The ramp: VolumeAndPanPlugin's juce::SmoothedValue, linear over 15 ms.
+    const int rampSamples = static_cast<int> (std::floor (0.015 * FakeAudioDevice::sampleRate));
+
+    project::Project toneProject (std::string_view notesText = heldTwoBars)
+    {
+        return makeProject ({ makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, notesText) }) });
+    }
+
+    // Puts SteadyTone on the bass, after its synth.
+    void addTone (engine::EditSync& sync)
+    {
+        SteadyTone::addTo (*tracktion::getAudioTracks (sync.edit())[0]);
+        sync.edit().getUndoManager().clearUndoHistory();
+    }
+
+    // Each channel's gain at each sample: the sample over the sine's value
+    // there, or NaN where the sine is too near zero to tell.
+    using GainTrace = std::array<std::vector<double>, 2>;
+
+    GainTrace traceGains (const juce::AudioBuffer<float>& out, int samples)
+    {
+        const auto sine = [] (int phase)
+        {
+            return std::sin (juce::MathConstants<double>::twoPi * (phase % SteadyTone::period) / SteadyTone::period);
+        };
+
+        // Where the sine's periods start in the output: found from the first
+        // bar, played untouched at a steady gain.
+        int offset = 0;
+        double best = -1.0;
+
+        for (int candidate = 0; candidate < SteadyTone::period; ++candidate)
+        {
+            double sum = 0.0;
+
+            for (int i = checkedFrom; i < checkedFrom + 4 * SteadyTone::period; ++i)
+                sum += out.getSample (0, i) * sine (i + candidate);
+
+            if (sum > best)
+            {
+                best = sum;
+                offset = candidate;
+            }
+        }
+
+        GainTrace trace;
+
+        for (int channel = 0; channel < 2; ++channel)
+        {
+            auto& gains = trace[static_cast<std::size_t> (channel)];
+            gains.resize (static_cast<std::size_t> (samples));
+
+            for (int i = 0; i < samples; ++i)
+            {
+                const auto value = SteadyTone::level * sine (i + offset);
+                gains[static_cast<std::size_t> (i)] = std::abs (value) < 0.5 * SteadyTone::level ? std::numeric_limits<double>::quiet_NaN()
+                                                                                                  : out.getSample (channel, i) / value;
+            }
+        }
+
+        return trace;
+    }
+
+    // The first place in [from, to) where a channel's gain moves faster than
+    // the volume plugin's ramp would for a change of `largestChange` (between
+    // the largest and smallest gains the test sets): a click, or a dropped
+    // block. Empty if there's none.
+    std::string gainJumps (const GainTrace& trace, int from, int to, double largestChange)
+    {
+        const auto perSample = largestChange / rampSamples * 1.05;
+
+        for (std::size_t channel = 0; channel < 2; ++channel)
+        {
+            const auto& gains = trace[channel];
+            int last = -1;
+
+            for (int i = from; i < to; ++i)
+            {
+                const auto gain = gains[static_cast<std::size_t> (i)];
+
+                if (std::isnan (gain))
+                    continue;
+
+                if (last >= 0 && std::abs (gain - gains[static_cast<std::size_t> (last)]) > perSample * (i - last) + 1.0e-5)
+                {
+                    std::ostringstream text;
+                    text << (channel == 0 ? "left" : "right") << " channel: the gain went from " << gains[static_cast<std::size_t> (last)] << " at sample "
+                         << last << " to " << gain << " at sample " << i << ", faster than a 15 ms ramp";
+                    return text.str();
+                }
+
+                last = i;
+            }
+        }
+
+        return {};
+    }
+
+    // A channel's gain at the end of the run.
+    double finalGain (const GainTrace& trace, std::size_t channel)
+    {
+        const auto& gains = trace[channel];
+        const auto last = std::find_if (gains.rbegin(), gains.rend(), [] (double gain) { return ! std::isnan (gain); });
+        return last == gains.rend() ? std::numeric_limits<double>::quiet_NaN() : *last;
+    }
+
+    std::string microseconds (std::chrono::duration<double> time)
+    {
+        std::ostringstream text;
+        text.precision (3);
+        text << time.count() * 1.0e6 << " us";
+        return text.str();
+    }
+}
+
+TEST_CASE ("stress: volume and pan changed 20 a second during playback, with no click")
+{
+    // Each change a big one: volume between +6 dB and silence, pan between
+    // the hard sides, so every gain ramps all the way, often both at once.
+    const std::array<const char*, 5> volumes { "+6dB", "-30dB", "0dB", "-infdB", "-6.5dB" };
+    const std::array<const char*, 7> pans { "L100", "R100", "C", "L50", "R1", "L1", "R73" };
+    const auto run = stressWith (toneProject(), 100, [&volumes, &pans] (int i)
+    {
+        return commands::SetMix { "trk-bass", volumes[static_cast<std::size_t> (i % 5)], pans[static_cast<std::size_t> (i % 7)], {}, {}, "fader-drag" };
+    },
+    [] (engine::EditSync& sync) { addTone (sync); return std::vector<MidiRecorder*> {}; });
+
+    checkTiming (run, 100);
+    const auto samples = run.blocks * blockSize;
+    const auto trace = traceGains (run.out, samples);
+    const auto jumps = gainJumps (trace, checkedFrom, samples, 2.0);
+    CHECK_MESSAGE (jumps.empty(), jumps);
+
+    // The check can fail, even allowing for ramps this big: copies with a
+    // block silenced (a dropped block), and with a 2% step in one channel's
+    // gain (a click), in the untouched first bar.
+    const auto damagedAt = checkedFrom + 5000;
+    auto dropped = run.out;
+    dropped.clear (damagedAt, blockSize);
+    CHECK_FALSE (gainJumps (traceGains (dropped, samples), checkedFrom, samples, 2.0).empty());
+    auto stepped = run.out;
+    stepped.applyGain (0, damagedAt, barSamples - damagedAt, 1.02f);
+    CHECK_FALSE (gainJumps (traceGains (stepped, samples), checkedFrom, samples, 2.0).empty());
+
+    // The last change is what plays.
+    const auto expected = specifiedGains (run.finalProject, run.finalProject.tracks[0]);
+    CHECK (run.finalProject.tracks[0].pan == 100); // R100, the last change's
+    CHECK_MESSAGE (sameGain (finalGain (trace, 0), expected.left), "left " << finalGain (trace, 0) << ", should be " << expected.left);
+    CHECK_MESSAGE (sameGain (finalGain (trace, 1), expected.right), "right " << finalGain (trace, 1) << ", should be " << expected.right);
+}
+
+TEST_CASE ("stress: mute toggled 20 a second during playback, with no click, and each toggle heard")
+{
+    const auto run = stressWith (toneProject(), 100, [] (int i) { return commands::SetMix { "trk-bass", {}, {}, i % 2 == 0, {}, {} }; },
+                                 [] (engine::EditSync& sync) { addTone (sync); return std::vector<MidiRecorder*> {}; });
+
+    checkTiming (run, 100);
+    const auto samples = run.blocks * blockSize;
+    const auto trace = traceGains (run.out, samples);
+    const auto jumps = gainJumps (trace, checkedFrom, samples, 1.0);
+    CHECK_MESSAGE (jumps.empty(), jumps);
+
+    // The sound fades to silence and back each time: 50 times, unless two
+    // toggles came too close together to finish a fade (the message thread
+    // running late), which the timing checks above would show.
+    int falls = 0;
+    int rises = 0;
+    bool sounding = true;
+
+    for (const auto gain : trace[0])
+    {
+        if (std::isnan (gain))
+            continue;
+
+        if (sounding && gain < 1.0e-3)
+        {
+            ++falls;
+            sounding = false;
+        }
+        else if (! sounding && gain > 1.0 - 1.0e-3)
+        {
+            ++rises;
+            sounding = true;
+        }
+    }
+
+    MESSAGE ("muted and unmuted in full " << falls << " and " << rises << " times, of 50");
+    CHECK (falls >= 45);
+    CHECK (rises == falls);
+    CHECK (sounding);
+    CHECK (finalGain (trace, 0) == doctest::Approx (1.0));
+    CHECK (finalGain (trace, 1) == doctest::Approx (1.0));
+}
+
+TEST_CASE ("stress: tempo changed 20 a second during playback: a held note isn't struck again, no click, and the audio callback lock is held briefly")
+{
+    // One C3 held for 16 bars, longer than the run at any of these tempos, so
+    // the song doesn't loop and the note is struck once. Each change moves
+    // every clip in time, so Tracktion rebuilds its graph, and EditSync
+    // holds the audio callback lock to change the tempo and the playhead
+    // together. 15 more tracks of 8 clips each, with no instrument so the
+    // tone is all that's heard, make it a song's worth of clips to move.
+    std::vector<TestTrack> tracks;
+    tracks.push_back (makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, "@length 16bars\n\n1.1 C3 16/1 v100\n") }));
+
+    for (int t = 1; t <= 15; ++t)
+    {
+        std::vector<TestClip> clips;
+
+        for (int c = 0; c < 8; ++c)
+            clips.push_back (makeClip ("clp-t" + std::to_string (t) + "-" + std::to_string (c), c * 2 * bar, "@length 2bars\n\n1.1 E3 1/16 v90\n1.3 G3 1/16 v90\n2.1 B3 1/8 v90\n"));
+
+        tracks.push_back (makeTrack ("trk-t" + std::to_string (t), "Track " + std::to_string (t), std::move (clips)));
+        tracks.back().track.devices.clear();
+    }
+
+    const std::array<double, 6> tempos { 140.0, 60.0, 200.0, 95.5, 300.0, 120.0 };
+    const auto run = stressWith (makeProject (std::move (tracks)), 100,
+                                 [&tempos] (int i) { return commands::SetTempo { tempos[static_cast<std::size_t> (i % 6)], "tempo-drag" }; },
+                                 [] (engine::EditSync& sync)
+                                 {
+                                     auto* recorder = &MidiRecorder::addTo (sync.edit());
+                                     addTone (sync);
+                                     return std::vector { recorder };
+                                 });
+
+    const auto stressed = checkTiming (run, 100);
+    MESSAGE ("tempo changes on 16 tracks, 121 clips: the longest hold of the audio callback lock was " << microseconds (run.longestLockHold)
+                                                                                                       << "; the slowest block took " << stressed.slowest * 1000.0
+                                                                                                       << " ms of its " << blockSeconds * 1000.0 << " ms");
+    CHECK (run.finalProject.tempo == 95.5); // the last change's
+    CHECK (run.longestLockHold > std::chrono::duration<double>::zero());
+
+#ifdef NDEBUG
+    // The audio thread waits while it's held, so even the slowest block,
+    // started after the longest hold, finishes in time.
+    CHECK (run.longestLockHold.count() + stressed.slowest < blockSeconds);
+#endif
+
+    // The tone's gain never moves: no dropped block, no click.
+    const auto samples = run.blocks * blockSize;
+    const auto trace = traceGains (run.out, samples);
+    const auto jumps = gainJumps (trace, checkedFrom, samples, 0.0);
+    CHECK_MESSAGE (jumps.empty(), jumps);
+    CHECK (finalGain (trace, 0) == doctest::Approx (1.0));
+
+    // C3 struck once, at the start, and never ended or struck again: no jump
+    // of the playhead (which ends every note), no retrigger, no note-off.
+    REQUIRE (run.midi.size() == 1);
+    const auto& events = run.midi[0];
+    INFO (historyOf (48, events));
+    CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note >= 0 && e.on; }) == 1);
+    CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note >= 0 && ! e.on; }) == 0);
+    CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note < 0 && e.sample > 0; }) == 0);
 }

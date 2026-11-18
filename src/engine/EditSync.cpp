@@ -111,6 +111,35 @@ namespace
 }
 
 //==============================================================================
+// Holds JUCE's audio callback lock for its scope, timing the hold for
+// longestAudioLockHold. Reading the clock, once after taking it and once
+// before letting it go, is all this adds while it's held.
+class EditSync::AudioLock
+{
+public:
+    explicit AudioLock (EditSync& owner) : sync (owner), lock (owner.audioCallbackLock())
+    {
+        lock.enter();
+        start = std::chrono::steady_clock::now();
+    }
+
+    ~AudioLock()
+    {
+        const auto held = std::chrono::steady_clock::now() - start;
+        lock.exit();
+        sync.longestLockHold = std::max (sync.longestLockHold, held);
+    }
+
+    AudioLock (const AudioLock&) = delete;
+    AudioLock& operator= (const AudioLock&) = delete;
+
+private:
+    EditSync& sync;
+    juce::CriticalSection& lock;
+    std::chrono::steady_clock::time_point start;
+};
+
+//==============================================================================
 EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus) : bus (commandBus)
 {
     const auto& project = bus.project();
@@ -167,7 +196,11 @@ EditSync::~EditSync()
 
 tracktion::TimeRange EditSync::loopRange() const
 {
-    const auto range = commands::playRange (bus.project(), bus.transportSettings());
+    return timeOf (commands::playRange (bus.project(), bus.transportSettings()));
+}
+
+tracktion::TimeRange EditSync::timeOf (commands::TickRange range) const
+{
     return tracktionEdit->tempoSequence.toTime ({ beatPosition (range.start), beatPosition (range.end) });
 }
 
@@ -249,7 +282,7 @@ void EditSync::updateLoop (Outside outside)
     // so the playhead plays on from where it is, and timerCallback stops it.
     const auto loop = tracktion::toSamples (range, sampleRate);
     const auto wrap = looping || outside == Outside::wrap;
-    const juce::ScopedLock audioLock (audioCallbackLock());
+    const AudioLock audioLock (*this);
     const auto place = playHead->getPosition();
     const auto wrapped = ! wrap || loop.contains (place)
                            ? place
@@ -282,6 +315,10 @@ void EditSync::syncTempo()
     if (tempo.getBpm() == bpm)
         return;
 
+    // What plays, worked out before taking the lock: finding the song's end
+    // looks at every clip. In ticks, so the tempo doesn't change it.
+    const auto played = commands::playRange (bus.project(), bus.transportSettings());
+
     {
         // Tracktion's audio thread reads the Edit's tempo map and the
         // playhead's loop directly, and the playhead counts its place in
@@ -290,14 +327,17 @@ void EditSync::syncTempo()
         // place in the bar, and the loop's new length in samples holds the
         // song. An audio block in between would wrap the place at the old
         // loop's end, or clamp it there. Tracktion takes this lock itself to
-        // swap in a new tempo map; this holds it a few microseconds longer
-        // (CLAUDE.md: the one exception to the no-locks rule).
+        // swap in a new tempo map; this holds it longer: about 30 us as a
+        // rule, and the longest of 100 changes 0.2 to 0.7 ms, nearly all of
+        // it Tracktion's tempo setting notifying its listeners (step 6,
+        // part 5's stress test).
+        // CLAUDE.md: the one exception to the no-locks rule.
         //
         // The tempo setting changes under the lock too: once it has, the
         // next call that reads the tempo map (toBeats, toTime) rebuilds the
         // map first, so the beat is read before, and nothing may read the map
         // between the two outside the lock.
-        const juce::ScopedLock audioLock (audioCallbackLock());
+        const AudioLock audioLock (*this);
         const auto [playHead, sampleRate] = currentPlayHead();
         const auto beat = playHead != nullptr ? sequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate))
                                               : tracktion::BeatPosition();
@@ -314,7 +354,7 @@ void EditSync::syncTempo()
         if (playHead != nullptr)
         {
             if (playHead->isLooping())
-                playHead->setLoopRange (true, tracktion::toSamples (loopRange(), sampleRate), false);
+                playHead->setLoopRange (true, tracktion::toSamples (timeOf (played), sampleRate), false);
 
             playHead->overridePosition (tracktion::toSamples (sequence.toTime (beat), sampleRate));
         }

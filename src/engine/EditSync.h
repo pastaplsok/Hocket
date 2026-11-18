@@ -22,6 +22,7 @@
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <chrono>
 #include <functional>
 #include <map>
 #include <memory>
@@ -55,6 +56,10 @@ namespace hocket::engine
         // MIDI or audio device plugged in, unplugged, or reset by its driver.
         bool stoppedByItself() const;
 
+        // The longest this has held JUCE's audio callback lock, during which
+        // no audio block can start (CLAUDE.md): for the stress tests.
+        std::chrono::steady_clock::duration longestAudioLockHold() const { return longestLockHold; }
+
     private:
         // A Hocket track in the Edit, the plugins its devices made, by device
         // ID, and the volume plugin Tracktion gave it, which plays its mix.
@@ -71,6 +76,10 @@ namespace hocket::engine
         std::map<std::string, tracktion::MidiClip::Ptr, std::less<>> clips; // by Hocket clip ID
         int listenerId = 0;
         bool playRequested = false; // by the last transport command
+        std::chrono::steady_clock::duration longestLockHold {};
+
+        // JUCE's audio callback lock, held for a scope, and the hold timed.
+        class AudioLock;
 
         // While a loop region plays once (loop off), its end, where the
         // Edit's clips end: the notes sounding there end on time and ring
@@ -132,9 +141,11 @@ namespace hocket::engine
         std::pair<tracktion::graph::PlayHead*, double> currentPlayHead() const;
 
         tracktion::TimePosition timeOf (notes::Ticks) const;
+        tracktion::TimeRange timeOf (commands::TickRange) const;
 
         // JUCE's lock around each audio block. Held on the message thread,
-        // only for a few microseconds, so a change to the playhead and what
+        // through AudioLock only and as briefly as can be (microseconds;
+        // a tempo change, tens of them), so a change to the playhead and what
         // it reads happens between blocks.
         juce::CriticalSection& audioCallbackLock() const;
 
