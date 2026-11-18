@@ -2,6 +2,7 @@
 
 #include "core/Paths.h"
 #include "core/Suggestions.h"
+#include "core/kits/WavHeader.h"
 #include "core/project/Rules.h"
 
 #include <algorithm>
@@ -77,6 +78,18 @@ namespace
             return (missing.size() == 1 ? "a sample it names isn't in its folder: " : "samples it names aren't in its folder: ") + list;
         }
 
+        // What the samples' headers rule out. A header that can't be read is
+        // left to the decoder, which decides when the kit loads.
+        std::string unusable;
+
+        for (const auto& piece : parsed.manifest->pieces)
+            if (const auto header = readWavHeader (folder / pathFromUtf8 (piece.file)))
+                if (const auto problem = sampleFormatProblem (*header))
+                    unusable += (unusable.empty() ? "" : "; ") + inQuotes (piece.file) + " (piece " + inQuotes (piece.name) + "): " + *problem;
+
+        if (! unusable.empty())
+            return "a sample can't be played: " + unusable;
+
         manifest = std::move (*parsed.manifest);
         return {};
     }
@@ -144,6 +157,62 @@ std::string KitCatalog::describeSource (const Kit& kit)
         return "bundled";
 
     return "the user's own, in " + utf8FromPath (kit.folder);
+}
+
+Lookup KitCatalog::refresh (std::string_view name)
+{
+    const auto found = usable.find (name);
+
+    if (found == usable.end() || found->second.folder.empty())
+        return find (name);
+
+    auto& kit = found->second;
+    Manifest manifest;
+
+    if (auto why = readKit (kit.folder, manifest); ! why.empty())
+    {
+        kit.problem = why;
+    }
+    else
+    {
+        kit.manifest = std::move (manifest);
+        kit.problem.clear();
+    }
+
+    return { &kit, {} };
+}
+
+void KitCatalog::setLoadReport (std::string_view name, LoadReport report)
+{
+    if (const auto found = usable.find (name); found != usable.end())
+        found->second.loaded = std::move (report);
+}
+
+//==============================================================================
+FileStamp stampOf (const std::filesystem::path& file)
+{
+    std::error_code error;
+    const auto size = std::filesystem::file_size (file, error);
+
+    if (error)
+        return {};
+
+    const auto modified = std::filesystem::last_write_time (file, error);
+
+    if (error)
+        return {};
+
+    return { true, size, modified.time_since_epoch().count() };
+}
+
+std::vector<FileStamp> stampsOf (const Kit& kit)
+{
+    std::vector<FileStamp> stamps { stampOf (kit.folder / pathFromUtf8 (std::string (manifestFileName))) };
+
+    for (const auto& piece : kit.manifest.pieces)
+        stamps.push_back (stampOf (kit.folder / pathFromUtf8 (piece.file)));
+
+    return stamps;
 }
 
 //==============================================================================

@@ -7,12 +7,14 @@
 //
 // The folders are listed when the catalog is made, and again whenever a name
 // isn't found, so a kit added during a session can be used without a
-// restart. A kit already listed isn't read again.
+// restart. A kit already listed is read again only by refresh(), when the
+// engine sees its files change (a watched user kit).
 //
 // Message thread only, like the bus.
 
 #include "core/kits/Kit.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -28,13 +30,54 @@ namespace hocket::kits
         user     // in the user's folder: named "user/<folder>"
     };
 
+    // What loading a kit's samples found that their headers couldn't say:
+    // samples the decoder refused, and pieces that peak above full scale (a
+    // 32-bit float sample can).
+    struct LoadReport
+    {
+        struct Loud
+        {
+            std::string piece;
+            double peak = 0.0; // dBFS, above 0
+
+            bool operator== (const Loud&) const = default;
+        };
+
+        std::vector<std::string> problems;
+        std::vector<Loud> overFullScale;
+
+        bool operator== (const LoadReport&) const = default;
+    };
+
     struct Kit
     {
         std::string name; // as a project names it: "acoustic", "user/dusty-909"
         Source source = Source::bundled;
         std::filesystem::path folder; // holding kit.json and the samples
         Manifest manifest;
+
+        // Why the kit's files as they are now can't be used, when they've
+        // changed since it was read: this manifest, the last that read, plays on.
+        std::string problem;
+
+        LoadReport loaded; // from the latest load of its samples
     };
+
+    // A file's size and modified time, to tell when it changes (SPEC §8.4).
+    struct FileStamp
+    {
+        bool exists = false;
+        std::uintmax_t size = 0;
+        std::int64_t modified = 0; // in the file system's own ticks
+
+        bool operator== (const FileStamp&) const = default;
+    };
+
+    FileStamp stampOf (const std::filesystem::path& file);
+
+    // Stamps of the kit's kit.json and each of its samples, in order: when
+    // they change, the kit's files have.
+    std::vector<FileStamp> stampsOf (const Kit& kit);
 
     // What looking a kit up found: the kit, or why there's none.
     struct Lookup
@@ -71,6 +114,15 @@ namespace hocket::kits
         // Where the kit came from, for the overview: "bundled", or "the user's
         // own, in <folder>".
         static std::string describeSource (const Kit& kit);
+
+        // Reads a listed kit from its folder again, when its files have
+        // changed (watched user kits, SPEC §8.4). If it can't be used as it is
+        // now, the manifest it had stays, with the reason in Kit::problem. A
+        // kit not listed is looked up as find() would.
+        Lookup refresh (std::string_view name);
+
+        // What the latest load of the kit's samples found, for the overview.
+        void setLoadReport (std::string_view name, LoadReport report);
 
         const std::filesystem::path& bundledFolder() const { return bundled; }
         const std::filesystem::path& userFolder() const { return user; }

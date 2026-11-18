@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdio>
 #include <map>
 
 namespace hocket::api
@@ -128,6 +129,25 @@ namespace
 
         if (! unnamed.empty())
             text += ". It also has pieces on notes the drum map doesn't name, written as note names: " + unnamed;
+
+        // What its files on disk, and loading them, say.
+        if (! kit.problem.empty())
+            text += ". Its files have changed since it loaded, but can't be used as they are, so the version that loaded plays on: " + kit.problem;
+
+        for (std::size_t i = 0; i < kit.loaded.problems.size(); ++i)
+            text += (i == 0 ? ". Loading it found: " : "; ") + kit.loaded.problems[i];
+
+        if (! kit.loaded.overFullScale.empty())
+        {
+            text += ". " + std::string (kit.loaded.overFullScale.size() == 1 ? "A piece's sample peaks" : "Pieces' samples peak") + " above full scale: ";
+
+            for (std::size_t i = 0; i < kit.loaded.overFullScale.size(); ++i)
+            {
+                char peak[16];
+                std::snprintf (peak, sizeof (peak), "%+.2f", kit.loaded.overFullScale[i].peak);
+                text += (i > 0 ? ", " : "") + kit.loaded.overFullScale[i].piece + " at " + peak + " dBFS";
+            }
+        }
 
         return text;
     }

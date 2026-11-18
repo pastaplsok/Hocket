@@ -11,6 +11,8 @@ add_library(hocket_engine STATIC
     MasterOutput.h
     PlaybackDevice.cpp
     PlaybackDevice.h
+    kits/KitLibrary.cpp
+    kits/KitLibrary.h
     kits/SampleRateConversion.cpp
     kits/SampleRateConversion.h)
 

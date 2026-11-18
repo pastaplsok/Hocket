@@ -24,6 +24,8 @@ add_library(hocket_core STATIC
     kits/Kit.h
     kits/KitCatalog.cpp
     kits/KitCatalog.h
+    kits/WavHeader.cpp
+    kits/WavHeader.h
     notes/DrumMap.cpp
     notes/DrumMap.h
     notes/Notes.h

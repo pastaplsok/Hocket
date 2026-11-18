@@ -19,6 +19,7 @@ add_executable(hocket_core_tests
     TrackCommandTests.cpp
     TransportCommandTests.cpp
     UnitsTests.cpp
+    WavHeaderTests.cpp
     WatchedSavesTests.cpp)
 
 # hocket_platform: its FileLock holds a file the way an editor might.

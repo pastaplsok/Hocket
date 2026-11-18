@@ -315,3 +315,78 @@ TEST_CASE ("with no kits installed, the catalog says where they go")
     REQUIRE (empty.find ("user/mine").kit != nullptr);
     CHECK (empty.find ("user/mine").kit->source == Source::user);
 }
+
+TEST_CASE ("the catalog refuses a sample whose header rules it out, and leaves one it can't read to the decoder")
+{
+    const testing::TemporaryFolder temp (testing::unicodeName);
+    const auto wav = [] (const char* name) { return pathFromUtf8 (HOCKET_FIXTURES_DIR) / pathFromUtf8 ("wav") / pathFromUtf8 (name); };
+    const auto kitWith = [&] (const char* kit, const char* kickSample)
+    {
+        writeKit (temp.path / pathFromUtf8 (kit));
+        std::filesystem::copy_file (wav (kickSample), temp.path / pathFromUtf8 (kit) / pathFromUtf8 ("kick.wav"),
+                                    std::filesystem::copy_options::overwrite_existing);
+    };
+
+    kitWith ("eight-bit", "pcm8-mono.wav");
+    kitWith ("float", "extensible-float32-48k.wav");
+    kitWith ("unknown-size", "data-size-unknown.wav");
+    kitWith ("rf64", "rf64-pcm16-mono.wav");
+
+    KitCatalog catalog ({}, temp.path);
+    CHECK (catalog.find ("user/eight-bit").problem
+           == "kit 'user/eight-bit' can't be used: " + utf8FromPath (temp.path / pathFromUtf8 ("eight-bit"))
+                  + ": a sample can't be played: 'kick.wav' (piece 'kick'): it's 8-bit PCM; kits' samples are 16- or 24-bit PCM, or 32-bit float, "
+                    "so export it as one of those");
+    CHECK (catalog.find ("user/float").kit != nullptr);
+    CHECK (catalog.find ("user/unknown-size").kit != nullptr);
+    CHECK (catalog.find ("user/rf64").kit != nullptr);
+}
+
+TEST_CASE ("refreshing a kit reads its files again, keeping the last version that read when they can't be used")
+{
+    const testing::TemporaryFolder temp (testing::unicodeName);
+    const auto folder = temp.path / pathFromUtf8 ("dusty-909");
+    writeKit (folder);
+
+    KitCatalog catalog ({}, temp.path);
+    const auto* kit = catalog.find ("user/dusty-909").kit;
+    REQUIRE (kit != nullptr);
+    const auto stamps = stampsOf (*kit);
+    CHECK (stamps.size() == 6); // kit.json and five samples
+    CHECK (stamps.front().exists);
+
+    // A level changed: the manifest follows, and only kit.json's stamp moved.
+    writeFile (folder / pathFromUtf8 ("kit.json"), replaced (validManifest, R"("level": "-2.5dB")", R"("level": "-8dB")"));
+    CHECK (catalog.refresh ("user/dusty-909").kit == kit);
+    CHECK (kit->manifest.pieceNamed ("snare")->level == -8.0);
+    CHECK (kit->problem.empty());
+    CHECK (stampsOf (*kit)[1] == stamps[1]);
+
+    // A sample replaced: its stamp moves.
+    writeFile (folder / pathFromUtf8 ("snare.wav"), "RIFF, but longer");
+    CHECK (stampsOf (*kit)[2] != stamps[2]);
+
+    // A broken save keeps the last version that read, and says why.
+    writeFile (folder / pathFromUtf8 ("kit.json"), replaced (validManifest, R"("note": 38)", R"("note": 300)"));
+    catalog.refresh ("user/dusty-909");
+    CHECK (kit->manifest.pieceNamed ("snare")->level == -8.0);
+    CHECK (contains (kit->problem, "kit.json has an error: kit.json:7:"));
+    CHECK (catalog.find ("user/dusty-909").kit == kit);
+
+    // So does a sample gone missing.
+    writeFile (folder / pathFromUtf8 ("kit.json"), validManifest);
+    std::filesystem::remove (folder / pathFromUtf8 ("shaker.wav"));
+    catalog.refresh ("user/dusty-909");
+    CHECK (contains (kit->problem, "a sample it names isn't in its folder: 'shaker.wav' (piece 'shaker')"));
+
+    // Fixed, the problem goes.
+    writeFile (folder / pathFromUtf8 ("shaker.wav"), "RIFF");
+    catalog.refresh ("user/dusty-909");
+    CHECK (kit->problem.empty());
+    CHECK (kit->manifest.pieceNamed ("snare")->level == -2.5);
+
+    // What loading found is kept for the overview.
+    catalog.setLoadReport ("user/dusty-909", { { "the sample for 'kick' can't be decoded" }, { { "shaker", 3.5 } } });
+    CHECK (kit->loaded.overFullScale.front().piece == "shaker");
+    CHECK (stampOf (folder / pathFromUtf8 ("nothing-here.wav")) == FileStamp {});
+}

@@ -518,7 +518,14 @@ TEST_CASE ("the overview says where each track's kit came from, and which of the
         return track;
     };
 
+    // A kit whose files changed into something unusable, with what its last load found.
+    kits::Kit loud { "user/loud", kits::Source::user, pathFromUtf8 ("C:\\Kits\\loud"), { "Loud", { piece ("kick", 36), piece ("snare", 38) }, {} } };
+    loud.problem = "kit.json has an error: kit.json:7:22: piece 'snare': \"note\" should be a MIDI note number from 0 to 127, e.g. 36";
+    loud.loaded = { { "the sample for piece 'clap' couldn't be decoded" }, { { "kick", 2.31 }, { "snare", 0.04 } } };
+    catalog.add (std::move (loud));
+
     project::Project project;
+    project.tracks.push_back (drumTrack ("trk-e", "user/loud"));
     project.tracks.push_back (drumTrack ("trk-a", "electronic"));
     project.tracks.push_back (drumTrack ("trk-b", "user/dusty-909"));
     project.tracks.push_back (drumTrack ("trk-c", "dusty-909"));
@@ -541,7 +548,12 @@ TEST_CASE ("the overview says where each track's kit came from, and which of the
     CHECK (contains (overview, "  - kit \"user/dusty-909\" (the user's own, in C:\\Users\\Me\\Documents\\Hocket\\Kits\\dusty-909; My 909): plays all "
                                "the drum map's 3 names: kick, snare, hat-closed\n"));
     CHECK (contains (overview, "  - kit 'dusty-909' isn't installed (did you mean 'user/dusty-909'?). The installed kits are 'electronic' (bundled), "
-                               "'user/dusty-909' (the user's own), so the track is silent\n"));
+                               "'user/dusty-909' (the user's own), 'user/loud' (the user's own), so the track is silent\n"));
+    CHECK (contains (overview, "  - kit \"user/loud\" (the user's own, in C:\\Kits\\loud; Loud): plays 2 of the drum map's 3 names: kick, snare; the other 1 "
+                               "is silent. Its files have changed since it loaded, but can't be used as they are, so the version that loaded plays on: "
+                               "kit.json has an error: kit.json:7:22: piece 'snare': \"note\" should be a MIDI note number from 0 to 127, e.g. 36. Loading "
+                               "it found: the sample for piece 'clap' couldn't be decoded. Pieces' samples peak above full scale: kick at +2.31 dBFS, snare "
+                               "at +0.04 dBFS\n"));
     CHECK (contains (overview, "  - kit \"electronic\" (bundled; Electronic, 808-style): the drum map is empty, so it names none of the kit's pieces. "
                                "It also has pieces on notes the drum map doesn't name, written as note names: C2 (note 36, 'kick'), D2 (note 38, "
                                "'snare-tight'), A#2 (note 46, 'hat-open')\n"));

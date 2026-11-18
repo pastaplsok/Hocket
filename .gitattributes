@@ -4,3 +4,6 @@
 *.notes       text eol=lf
 *.auto        text eol=lf
 project.json  text eol=lf
+
+# Audio is binary, however its bytes happen to look: never convert line endings in it.
+*.wav         binary
