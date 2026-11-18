@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.14** — 2026-11-17
+> Status: **Draft v0.15** — 2026-11-17
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -300,7 +300,7 @@ A drums track (`"type": "drums"`) has a **drum map** in `project.json` that maps
 1.2.3    snare 1/16  v28  # ghost note
 ```
 - **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples. The map is the project's own: a kit only adds to it, when it's assigned.
-- **Assigning a kit** keeps every entry already in the track's map, and adds the kit's names for notes and names the map doesn't use yet, so nothing renamed or added is lost. The result says which of the kit's pieces were added, and which weren't and why (the note already has another name, or the name is on another note).
+- **Assigning a kit** keeps every entry already in the track's map, and adds the kit's names for notes and names the map doesn't use yet, so nothing renamed or added is lost. The result says which of the kit's pieces were added, and which weren't and why (the note already has another name, or the name is on another note). Assigning the kit a track already has merges again, so pieces added to the kit since get their names; it changes nothing only when nothing would be added.
 - **What the kit can't play:** a map usually names more than its kit has (the standard list names 47 pieces). The overview and `write_clip`'s result say which of the map's names, and which notes in a clip, the track's kit can't play.
 - **Standard names:** one list of piece names on the General MIDI percussion notes (below). A drum track with no kit gets this list as its map. Bundled kits (§8.4) use these names on these notes, and may add extra pieces on other notes.
 - **Naming rules:** lowercase letters and digits in words joined by single hyphens, starting with a letter, at most 32 characters. One note per name and one name per note.
@@ -523,11 +523,13 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
   ```
   - Strict, like `project.json`: every key shown is required, and unknown keys are errors. The kit's name is its folder's.
   - Piece names follow the drum map's naming rules (§5.2); one note per piece and one piece per note. `level` is in dB, like a track's volume. Choke groups name pieces, each in at most one group (§5.2).
-  - Samples are WAV files, 16- or 24-bit, mono or stereo (a mono one plays the same in both channels), at most 10 s each. One sample per piece; velocity layers and round robins may come with the full sampler (Milestone 4), as additions to the format.
+  - Samples are WAV files, 16- or 24-bit, or 32-bit float, mono or stereo (a mono one plays the same in both channels), at most 10 s each; bundled kits' are 16-bit. The usual layouts of real sample packs read: the extensible format header, and other chunks (LIST, smpl, acid, bext and the like) before and after the audio. A file whose header Hocket can't make sense of is left to the decoder to accept or refuse. One sample per piece; velocity layers and round robins may come with the full sampler (Milestone 4), as additions to the format.
+  - A 32-bit float sample can peak above full scale; the overview says which pieces do, and by how much.
   - A kit that's installed but broken (a bad manifest, an unreadable sample) counts as missing, and Hocket says why.
 - **Where kits are:** bundled kits in `kits/` next to Hocket's programs (from `assets/kits/` in the repository), and the user's own in `Documents\Hocket\Kits\` on Windows (the Documents folder as Windows reports it, so it follows OneDrive). Hocket doesn't create that folder.
   - **The user's kits are named with `user/`** in a project (`"kit": "user/dusty-909"` for `Documents\Hocket\Kits\dusty-909\`), so they never clash with a bundled kit, even one a later release adds. The folder's own name has no prefix, and follows the same naming rules as a bundled kit's.
-  - Kits are listed at start, and again whenever a name isn't found, so a kit dropped in while Hocket runs can be assigned without a restart. A kit already loaded isn't read again until Hocket restarts.
+  - Kits are listed at start, and again whenever a name isn't found, so a kit dropped in while Hocket runs can be assigned without a restart.
+  - **The user's kits that tracks use are watched**, every half second and when play starts: a saved change to `kit.json` or a sample is heard on the next hit, converting only the samples that changed. A file is read once it has stopped changing. A change that can't be read (an error in `kit.json`, an unreadable sample) leaves the track playing the last version that loaded, and Hocket says what's wrong. Bundled kits never change, so they aren't watched.
 - The overview says which kit each drums track uses, where it came from (bundled, or the user's folder), and which of the track's drum-map names it can play, with a count of the rest.
 
 ---
