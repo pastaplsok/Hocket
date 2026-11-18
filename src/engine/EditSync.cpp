@@ -37,7 +37,7 @@ namespace
         return tracktion::BeatDuration::fromBeats (static_cast<double> (ticks) / static_cast<double> (notes::ticksPerQuarterNote));
     }
 
-    tracktion::Plugin::Ptr createDevice (tracktion::Edit& edit, const project::Device& device)
+    tracktion::Plugin::Ptr createDevice (tracktion::Edit& edit, const project::Device& device, KitLibrary* kits)
     {
         switch (device.type)
         {
@@ -45,9 +45,13 @@ namespace
             case project::DeviceType::synth:
                 return edit.getPluginCache().createNewPlugin (tracktion::FourOscPlugin::xmlTypeName, {});
 
-            // Hocket's drum sampler is Milestone 1's step 7; until then its track is silent.
+            // Hocket's own (SPEC §8.1), with its kit loading on the library's thread.
             case project::DeviceType::drumSampler:
-                return {};
+            {
+                auto sampler = DrumSamplerPlugin::create (edit);
+                sampler->setKit (kits, device.kit);
+                return sampler;
+            }
         }
 
         return {};
@@ -130,10 +134,11 @@ private:
 };
 
 //==============================================================================
-EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus) : bus (commandBus)
+EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus, KitLibrary* kits) : bus (commandBus), kitLibrary (kits)
 {
     const auto& project = bus.project();
     GainStagePlugin::registerWith (engine);
+    DrumSamplerPlugin::registerWith (engine);
     auto state = tracktion::createEmptyEdit (engine);
 
     tracktionEdit = tracktion::Edit::createEdit ({
@@ -429,11 +434,18 @@ void EditSync::syncTrack (const std::string& trackId)
 
 void EditSync::syncDevices (const project::Track& source, SyncedTrack& synced)
 {
-    // A device's ID stays with its type, so a plugin is only ever made or removed.
+    // A device's ID stays with its type, so a plugin is only ever made or
+    // removed, but for a drum sampler's kit, which changes on the plugin it
+    // has: no graph rebuild, and hits from the old kit ring on.
     for (auto plugin = synced.plugins.begin(); plugin != synced.plugins.end();)
     {
-        if (std::ranges::any_of (source.devices, [&plugin] (const project::Device& device) { return device.id == plugin->first; }))
+        const auto device = std::ranges::find (source.devices, plugin->first, &project::Device::id);
+
+        if (device != source.devices.end())
         {
+            if (auto* sampler = dynamic_cast<DrumSamplerPlugin*> (plugin->second.get()))
+                sampler->setKit (kitLibrary, device->kit);
+
             ++plugin;
             continue;
         }
@@ -454,7 +466,7 @@ void EditSync::syncDevices (const project::Track& source, SyncedTrack& synced)
             continue;
         }
 
-        if (auto plugin = createDevice (*tracktionEdit, device))
+        if (auto plugin = createDevice (*tracktionEdit, device, kitLibrary))
         {
             synced.track->pluginList.insertPlugin (plugin, index++, nullptr);
             synced.plugins.emplace (device.id, std::move (plugin));
@@ -644,6 +656,11 @@ void EditSync::play()
     const auto& settings = bus.transportSettings();
     const auto start = timeOf (commands::startPosition (bus.project(), settings));
     playRequested = true;
+
+    // A saved change to a user kit in use is heard from now, once it has
+    // loaded, without waiting for the library's next look (SPEC §8.4).
+    if (kitLibrary != nullptr)
+        kitLibrary->checkForChanges();
 
     // A loop region played once: its end is followed by more of the song,
     // which mustn't be heard while the stop comes. Before play, which starts

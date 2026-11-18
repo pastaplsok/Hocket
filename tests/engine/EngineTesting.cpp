@@ -144,9 +144,11 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
         CAPTURE (source.id);
         CHECK (track.getName() == juce::String::fromUTF8 (source.name.c_str()));
 
-        // A 4OSC for each hocket:synth, first in the chain but for a test's
-        // MidiRecorder; nothing for a drum sampler yet.
+        // A 4OSC for each hocket:synth, and Hocket's drum sampler for each
+        // hocket:drum-sampler, playing the device's kit; first in the chain
+        // but for a test's MidiRecorder.
         const auto synths = std::ranges::count_if (source.devices, [] (const project::Device& d) { return d.type == project::DeviceType::synth; });
+        const auto samplers = track.pluginList.getPluginsOfType<engine::DrumSamplerPlugin>();
         CHECK (track.pluginList.getPluginsOfType<tracktion::FourOscPlugin>().size() == static_cast<int> (synths));
         int first = 0;
 
@@ -155,6 +157,21 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
 
         if (synths > 0)
             CHECK (dynamic_cast<tracktion::FourOscPlugin*> (track.pluginList[first]) != nullptr);
+
+        std::vector<std::string> kitsWanted;
+        std::vector<std::string> kitsPlayed;
+
+        for (const auto& device : source.devices)
+            if (device.type == project::DeviceType::drumSampler)
+                kitsWanted.push_back (device.kit);
+
+        for (const auto* sampler : samplers)
+            kitsPlayed.push_back (sampler->kitName());
+
+        CHECK (kitsPlayed == kitsWanted);
+
+        if (! samplers.isEmpty())
+            CHECK (track.pluginList.indexOf (samplers.getFirst()) == first);
 
         // The gain stage plays the mix: exactly one, last of the track's own
         // plugins, so after its devices (and any test plugins), and followed

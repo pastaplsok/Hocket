@@ -1,6 +1,8 @@
 # hocket_engine: the sync layer between Hocket's project model and Tracktion
 # Engine (SPEC §3.3), and playback.
 add_library(hocket_engine STATIC
+    devices/DrumSamplerPlugin.cpp
+    devices/DrumSamplerPlugin.h
     devices/DrumVoices.cpp
     devices/DrumVoices.h
     devices/PlayableKit.cpp

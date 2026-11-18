@@ -20,16 +20,20 @@
 #include "engine/EditSync.h"
 #include "engine/MasterOutput.h"
 #include "engine/PlaybackDevice.h"
+#include "engine/kits/KitLibrary.h"
 #include "platform/Platform.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
+#include <algorithm>
 #include <charconv>
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <iostream>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -112,6 +116,37 @@ namespace
                 if (device.type == hocket::project::DeviceType::drumSampler)
                     if (const auto found = kits.find (device.kit); found.kit == nullptr)
                         std::cerr << "Note: track " << track.id << " is silent: " << found.problem << ".\n";
+    }
+
+    // What loading the kits in use found that their headers couldn't say:
+    // samples the decoder refused, and pieces that peak above full scale. The
+    // overview says the same.
+    void reportKitLoads (const hocket::project::Project& project, hocket::kits::KitCatalog& kits)
+    {
+        std::vector<std::string> reported;
+
+        for (const auto& track : project.tracks)
+            for (const auto& device : track.devices)
+            {
+                if (device.type != hocket::project::DeviceType::drumSampler || std::ranges::find (reported, device.kit) != reported.end())
+                    continue;
+
+                reported.push_back (device.kit);
+                const auto* kit = kits.find (device.kit).kit;
+
+                if (kit == nullptr)
+                    continue;
+
+                for (const auto& problem : kit->loaded.problems)
+                    std::cerr << "Note: kit '" << device.kit << "': " << problem << ".\n";
+
+                for (const auto& loud : kit->loaded.overFullScale)
+                {
+                    char peak[32];
+                    std::snprintf (peak, sizeof (peak), "%+.2f", loud.peak);
+                    std::cerr << "Note: kit '" << device.kit << "': piece " << loud.piece << "'s sample peaks at " << peak << " dBFS, above full scale.\n";
+                }
+            }
     }
 
     int checkProject (const std::string& folder)
@@ -379,12 +414,6 @@ namespace
 
         reportKits (*loaded.project, kits);
 
-        // Hocket's drum sampler is being built (Milestone 1's step 7).
-        for (const auto& track : loaded.project->tracks)
-            for (const auto& device : track.devices)
-                if (device.type == hocket::project::DeviceType::drumSampler && kits.find (device.kit).kit != nullptr)
-                    std::cerr << "Note: track " << track.id << " is silent: Hocket's drum sampler isn't built yet.\n";
-
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();
 
@@ -471,7 +500,15 @@ namespace
 
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
-        hocket::engine::EditSync sync (engine, bus);
+
+        // The drum samplers' kits load on the library's thread, and play waits
+        // for them. Made before the EditSync, whose samplers ask it for kits.
+        // It says when a user kit in use changes on disk, and reloads it.
+        hocket::engine::KitLibrary kitLibrary (kits);
+        kitLibrary.setNotices ([] (const std::string& notice) { std::cout << notice << std::endl; });
+        hocket::engine::EditSync sync (engine, bus, &kitLibrary);
+        kitLibrary.waitUntilIdle();
+        reportKitLoads (bus.project(), kits);
 
         // The API for MCP clients (SPEC §6.3), with a new token each run.
         const auto token = hocket::api::makeToken();

@@ -19,6 +19,8 @@
 // Message thread only, like the bus.
 
 #include "core/commands/CommandBus.h"
+#include "engine/devices/DrumSamplerPlugin.h"
+#include "engine/kits/KitLibrary.h"
 #include "engine/mix/GainStagePlugin.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -38,8 +40,11 @@ namespace hocket::engine
     {
     public:
         // Builds the Edit, then registers with the bus as a listener and as its
-        // transport. The bus must outlive this.
-        EditSync (tracktion::Engine& engine, commands::CommandBus& bus);
+        // transport. The bus must outlive this. Drum samplers load their kits
+        // from `kits`, which must outlive this too; with none, they're silent.
+        // Kits load on the library's thread: wait for them (KitLibrary::
+        // waitUntilIdle) before playing or rendering.
+        EditSync (tracktion::Engine& engine, commands::CommandBus& bus, KitLibrary* kits = nullptr);
         ~EditSync() override;
 
         EditSync (const EditSync&) = delete;
@@ -72,6 +77,7 @@ namespace hocket::engine
         };
 
         commands::CommandBus& bus;
+        KitLibrary* kitLibrary = nullptr;
         std::unique_ptr<tracktion::Edit> tracktionEdit;
         std::map<std::string, SyncedTrack, std::less<>> tracks;             // by Hocket track ID
         std::map<std::string, tracktion::MidiClip::Ptr, std::less<>> clips; // by Hocket clip ID
