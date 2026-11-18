@@ -5,10 +5,15 @@
 // given after every command.
 
 #include "EngineTesting.h"
+#include "core/Paths.h"
 
 #include <doctest/doctest.h>
 
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -321,4 +326,194 @@ TEST_CASE ("live: a volume set during playback stays set when the loop comes rou
 
     auto* volume = tracktion::getAudioTracks (sync.edit())[0]->getVolumePlugin();
     CHECK_FALSE (volume->volParam->hasAutomationPoints());
+}
+
+//==============================================================================
+// Step 6's volume-and-pan stress test failed about a third of the time, at a
+// block boundary, as a ramp began toward a gain no change set (PROGRESS.md,
+// Loose ends). EditSync::syncMix sets a track's fader position, then its pan:
+// two parameters. A block that starts between the two gets the new fader with
+// the old pan. Played here block by block, with what the volume plugin read
+// for each block and each channel's gain at every sample.
+namespace
+{
+    // Each channel's gain at each sample of the tone, from `from` to the end:
+    // the sample over the tone's value there, or NaN where the sine is too
+    // near zero to tell. The tone's phase is found in the `settled` samples
+    // before `from`, where the gain is steady.
+    std::array<std::vector<double>, 2> toneGains (const juce::AudioBuffer<float>& out, int from, int settled)
+    {
+        const auto sine = [] (int i) { return std::sin (juce::MathConstants<double>::twoPi * (i % SteadyTone::period) / SteadyTone::period); };
+        int offset = 0;
+        double best = -1.0;
+
+        for (int candidate = 0; candidate < SteadyTone::period; ++candidate)
+        {
+            double sum = 0.0;
+
+            for (int i = from - settled; i < from; ++i)
+                sum += (out.getSample (0, i) + out.getSample (1, i)) * sine (i + candidate);
+
+            if (sum > best)
+                best = sum, offset = candidate;
+        }
+
+        std::array<std::vector<double>, 2> gains;
+
+        for (int channel = 0; channel < 2; ++channel)
+        {
+            for (int i = from; i < out.getNumSamples(); ++i)
+            {
+                const auto value = SteadyTone::level * sine (i + offset);
+                gains[static_cast<std::size_t> (channel)].push_back (std::abs (value) < 0.5 * SteadyTone::level ? std::numeric_limits<double>::quiet_NaN()
+                                                                                                                 : out.getSample (channel, i) / value);
+            }
+        }
+
+        return gains;
+    }
+
+    // The gain at sample i, or the nearest one after it that can be told.
+    double gainNear (const std::vector<double>& gains, std::size_t i)
+    {
+        for (; i < gains.size(); ++i)
+            if (! std::isnan (gains[i]))
+                return gains[i];
+
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    struct SplitRun
+    {
+        std::array<std::vector<double>, 2> gains; // from the first block after the fader was set
+        std::vector<ChannelGains> targets;        // what the volume plugin aimed for, block by block
+        ChannelGains before;                      // the old setting's gains
+        ChannelGains after;                       // the new setting's
+    };
+
+    // Settles the tone at `from`, then sets `to`'s fader position, plays
+    // `blocksBetween` blocks, sets its pan, and plays on: syncMix's two
+    // parameters, with blocks between them. With none between, both arrive
+    // together, as they almost always do.
+    SplitRun playSplit (const char* fromVolume, const char* fromPan, const char* toVolume, const char* toPan, int blocksBetween)
+    {
+        FakeAudioDevice device;
+        commands::CommandBus bus (toneProject());
+        engine::EditSync sync (testEngine(), bus);
+        addTone (sync);
+        auto& volume = *tracktion::getAudioTracks (sync.edit())[0]->getVolumePlugin();
+
+        run (bus, commands::SetMix { .trackId = "trk-tone", .volume = fromVolume, .pan = fromPan });
+        REQUIRE (timedPlay (bus, testing::lee).ok);
+        device.play (100 * ms);
+
+        SplitRun result;
+        result.before = volumePluginGains (volume);
+        const auto oldFader = volume.volParam->getCurrentValue();
+        const auto oldPan = volume.panParam->getCurrentValue();
+
+        // The new setting's parameters, as syncMix makes them; then the old
+        // ones back, before any block plays.
+        run (bus, commands::SetMix { .trackId = "trk-tone", .volume = toVolume, .pan = toPan });
+        result.after = volumePluginGains (volume);
+        const auto newFader = volume.volParam->getCurrentValue();
+        const auto newPan = volume.panParam->getCurrentValue();
+        volume.volParam->setParameter (oldFader, juce::sendNotification);
+        volume.panParam->setParameter (oldPan, juce::sendNotification);
+
+        const auto changedAt = device.output().buffer.getNumSamples();
+        constexpr int blocksAfter = 6;
+
+        // The fader first, as syncMix sets it; the volume plugin reads both
+        // parameters at the start of each block. How long setting one takes
+        // is the window in which a block can start between the two.
+        const auto settingStarted = std::chrono::steady_clock::now();
+        volume.volParam->setParameter (newFader, juce::sendNotification);
+        const auto settingTook = std::chrono::duration<double, std::micro> (std::chrono::steady_clock::now() - settingStarted).count();
+
+        for (int block = 0; block < blocksBetween + blocksAfter; ++block)
+        {
+            if (block == blocksBetween)
+                volume.panParam->setParameter (newPan, juce::sendNotification);
+
+            result.targets.push_back (volumePluginGains (volume));
+            device.play (FakeAudioDevice::blockSize);
+        }
+
+        result.gains = toneGains (device.output().buffer, changedAt, 4 * SteadyTone::period);
+
+        // The log asked for: what the plugin read, and the gains through the ramp.
+        std::ostringstream log;
+        log << fromVolume << " " << fromPan << " to " << toVolume << " " << toPan << ", the pan " << blocksBetween
+            << " block(s) after the fader (setting the fader took " << settingTook << " us):\n";
+
+        for (std::size_t block = 0; block < result.targets.size(); ++block)
+        {
+            const auto first = block * static_cast<std::size_t> (FakeAudioDevice::blockSize);
+            const auto last = first + FakeAudioDevice::blockSize - SteadyTone::period;
+            log << "  block " << block << ": read fader " << juce::Decibels::gainToDecibels (tracktion::volumeFaderPositionToGain (newFader))
+                << " dB, pan " << (block < static_cast<std::size_t> (blocksBetween) ? oldPan : newPan) << ": targets L " << result.targets[block].left
+                << ", R " << result.targets[block].right << "; gains L " << gainNear (result.gains[0], first) << " to "
+                << gainNear (result.gains[0], last) << ", R " << gainNear (result.gains[1], first) << " to " << gainNear (result.gains[1], last) << "\n";
+        }
+
+        MESSAGE (log.str());
+
+        // The full trace, sample by sample, when asked for (a folder to write it in).
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable ("HOCKET_TEST_TRACE_DIR", {}); folder.isNotEmpty())
+        {
+            std::ofstream csv (pathFromUtf8 (folder.toStdString())
+                               / pathFromUtf8 (std::string ("split-") + fromPan + "-" + toPan + "-" + std::to_string (blocksBetween) + ".csv"));
+            csv << "sample,left,right\n";
+
+            for (std::size_t i = 0; i < result.gains[0].size(); ++i)
+                csv << i << "," << result.gains[0][i] << "," << result.gains[1][i] << "\n";
+        }
+
+        return result;
+    }
+
+    // The largest gain a channel reached, where it can be told.
+    double highest (const std::vector<double>& gains)
+    {
+        double top = 0.0;
+
+        for (const auto gain : gains)
+            if (! std::isnan (gain))
+                top = std::max (top, gain);
+
+        return top;
+    }
+}
+
+TEST_CASE ("live: a fader and pan that reach the audio thread in different blocks ramp toward a gain neither sets")
+{
+    const auto ramp = 0.015 * FakeAudioDevice::sampleRate; // samples: VolumeAndPanPlugin's linear smoothing
+
+    // Together, as almost always: straight to the new setting, never past it.
+    const auto together = playSplit ("-6.5dB", "R100", "+6dB", "C", 0);
+    CHECK (together.targets.front().right == doctest::Approx (together.after.right));
+    CHECK (highest (together.gains[1]) <= together.after.right * 1.0001);
+
+    // One block between: for that block the plugin aims for the new fader
+    // (+6 dB, Tracktion's 1.995) with the old pan (hard right, 1), so the
+    // right channel heads for twice the new setting, +12 dB.
+    const auto oneBlock = playSplit ("-6.5dB", "R100", "+6dB", "C", 1);
+    const auto mixedTarget = 2.0 * oneBlock.after.right;
+    CHECK (oneBlock.targets.front().right == doctest::Approx (mixedTarget));
+    const auto endOfBlock = gainNear (oneBlock.gains[1], FakeAudioDevice::blockSize - SteadyTone::period);
+    const auto towardMixed = oneBlock.before.right + (mixedTarget - oneBlock.before.right) * (FakeAudioDevice::blockSize - SteadyTone::period) / ramp;
+    CHECK (endOfBlock == doctest::Approx (towardMixed).epsilon (0.01));
+
+    // Three blocks between, as one block of 1024 samples would be: the ramp
+    // gets there, 6 dB over the new setting, before coming back down.
+    const auto threeBlocks = playSplit ("-6.5dB", "R100", "+6dB", "C", 3);
+    CHECK (highest (threeBlocks.gains[1]) == doctest::Approx (mixedTarget).epsilon (0.001));
+    CHECK (juce::Decibels::gainToDecibels (highest (threeBlocks.gains[1]) / threeBlocks.after.right) == doctest::Approx (6.02).epsilon (0.01));
+
+    // The stress test's other failure: -6.5dB L50 to +6dB R1, on the left:
+    // the new fader (+5.96 dB, as R1 takes its share) with the old pan (L50, -1/3).
+    const auto other = playSplit ("-6.5dB", "L50", "+6dB", "R1", 1);
+    CHECK (other.targets.front().left == doctest::Approx (2.647).epsilon (0.001));
+    CHECK (other.after.left == doctest::Approx (1.975).epsilon (0.001));
 }
