@@ -16,7 +16,7 @@
         {
           "id": "dev-drums-kit",
           "type": "hocket:drum-sampler",
-          "kit": "acoustic"
+          "kit": "not-installed"
         }
       ],
       "drumMap": {

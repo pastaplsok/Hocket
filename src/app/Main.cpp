@@ -13,6 +13,7 @@
 #include "core/Paths.h"
 #include "core/commands/CommandBus.h"
 #include "core/commands/WatchedSaves.h"
+#include "core/kits/KitCatalog.h"
 #include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "core/units/Units.h"
@@ -24,6 +25,7 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include <charconv>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <optional>
@@ -92,6 +94,26 @@ namespace
         return value;
     }
 
+    // The kits Hocket can play (SPEC §8.4): the bundled ones, in kits\ next to
+    // this program, and the user's own, in Documents\Hocket\Kits.
+    hocket::kits::KitCatalog installedKits()
+    {
+        const auto documents = hocket::platform::documentsFolder();
+        return { hocket::platform::currentProgramFolder() / hocket::pathFromUtf8 ("kits"),
+                 documents ? *documents / hocket::pathFromUtf8 ("Hocket") / hocket::pathFromUtf8 ("Kits") : std::filesystem::path() };
+    }
+
+    // A note for each drums track whose kit can't play, saying why: the
+    // project is still valid (SPEC §8.4), but the track is silent.
+    void reportKits (const hocket::project::Project& project, hocket::kits::KitCatalog& kits)
+    {
+        for (const auto& track : project.tracks)
+            for (const auto& device : track.devices)
+                if (device.type == hocket::project::DeviceType::drumSampler)
+                    if (const auto found = kits.find (device.kit); found.kit == nullptr)
+                        std::cerr << "Note: track " << track.id << " is silent: " << found.problem << ".\n";
+    }
+
     int checkProject (const std::string& folder)
     {
         const auto result = hocket::project::load (hocket::pathFromUtf8 (folder));
@@ -116,6 +138,9 @@ namespace
             std::cout << " in " << files << (files == 1 ? " file" : " files") << ", as linked clips share them";
 
         std::cout << "\n";
+
+        auto kits = installedKits();
+        reportKits (project, kits);
         return 0;
     }
 
@@ -346,10 +371,19 @@ namespace
         if (! loaded.project)
             return 1;
 
-        // Hocket's drum sampler arrives in Milestone 1's step 7.
+        // Kit folders Hocket can't use, then tracks whose kit can't play.
+        auto kits = installedKits();
+
+        for (const auto& problem : kits.problems())
+            std::cerr << "Note: " << problem << "\n";
+
+        reportKits (*loaded.project, kits);
+
+        // Hocket's drum sampler is being built (Milestone 1's step 7).
         for (const auto& track : loaded.project->tracks)
-            if (std::ranges::any_of (track.devices, [] (const auto& device) { return device.type == hocket::project::DeviceType::drumSampler; }))
-                std::cerr << "Note: track " << track.id << " is silent: Hocket's drum sampler isn't built yet.\n";
+            for (const auto& device : track.devices)
+                if (device.type == hocket::project::DeviceType::drumSampler && kits.find (device.kit).kit != nullptr)
+                    std::cerr << "Note: track " << track.id << " is silent: Hocket's drum sampler isn't built yet.\n";
 
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();
@@ -436,6 +470,7 @@ namespace
         const hocket::commands::Author localUser { options.user };
 
         hocket::commands::CommandBus bus (std::move (*loaded.project));
+        bus.setKitCatalog (&kits); // made before the bus, so it outlives it
         hocket::engine::EditSync sync (engine, bus);
 
         // The API for MCP clients (SPEC §6.3), with a new token each run.

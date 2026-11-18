@@ -175,8 +175,8 @@ TEST_CASE ("add a track: every refusal says what's wrong")
     checkRefused (bus, AddTrack { "drums", "Kit", {}, {}, Instrument { "hocket:drum-sampler", {} } },
                   "add a track: a \"hocket:drum-sampler\" needs a kit, e.g. \"acoustic\"");
     checkRefused (bus, AddTrack { "drums", "Kit", {}, {}, Instrument { "hocket:drum-sampler", "Acoustic Kit" } },
-                  "add a track: 'Acoustic Kit' isn't a valid kit name: kit names are lowercase letters and digits in words joined by single hyphens, "
-                  "e.g. \"acoustic\"");
+                  "add a track: 'Acoustic Kit' isn't a valid kit name: a bundled kit's name is lowercase letters and digits in words joined by "
+                  "single hyphens, e.g. \"acoustic\", and a kit of the user's own is \"user/\" and its folder's name, e.g. \"user/dusty-909\"");
     checkRefused (bus, AddTrack { "midi", "Keys", {}, {}, Instrument { "hocket:synth", "warm" } },
                   "add a track: only a \"hocket:drum-sampler\" has a kit; leave the kit out for \"hocket:synth\"");
     checkRefused (bus, AddTrack { "midi", "Keys", {}, {}, Instrument { "vst3:serum", {} } },

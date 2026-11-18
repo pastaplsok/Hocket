@@ -472,6 +472,8 @@ TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips
 
     CHECK (contains (connection.text ("get_project_overview"),
                      "- trk-drums \"Drums\" (drums; volume 0dB, pan C), devices: dev-drums-kit (hocket:drum-sampler, kit \"acoustic\")\n"
+                     "  - kit 'acoustic' isn't installed. No kits are installed: bundled kits go in kits\\ next to Hocket's programs, and the user's "
+                     "own in Documents\\Hocket\\Kits, named \"user/<folder>\", so the track is silent\n"
                      "  - drum map: kick=36, snare=38, hat-closed=42\n"
                      "  - clip clp-beat: 1.1 to 2.1 (@length 1bar), 3 notes, file clips/beat.notes\n"));
 
@@ -496,6 +498,53 @@ TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips
     CHECK (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "Stored in canonical form, which differs from what you sent"));
     CHECK_FALSE (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "no name in"));
     CHECK (connection.call ("read_clip", { { "clip_id", "clp-beat" } }).at ("content")[1].at ("text") == "@length 1bar\n\n1.1      snare 1/16  v100\n");
+}
+
+TEST_CASE ("the overview says where each track's kit came from, and which of the drum map's names it plays")
+{
+    const auto piece = [] (std::string name, int note) { return kits::Piece { std::move (name), note, "x.wav", 0.0 }; };
+
+    kits::KitCatalog catalog;
+    catalog.add ({ "electronic", kits::Source::bundled, {}, { "Electronic, 808-style", { piece ("kick", 36), piece ("snare-tight", 38), piece ("hat-open", 46) }, {} } });
+    catalog.add ({ "user/dusty-909", kits::Source::user, pathFromUtf8 ("C:\\Users\\Me\\Documents\\Hocket\\Kits\\dusty-909"),
+                   { "My 909", { piece ("kick", 36), piece ("snare", 38), piece ("hat-closed", 42) }, {} } });
+
+    const auto drumTrack = [] (std::string id, std::string kit)
+    {
+        project::Track track { id, "Drums", project::TrackType::drums, { { "dev-" + id.substr (4) + "-kit", project::DeviceType::drumSampler, std::move (kit) } }, {} };
+        track.drumMap.add ("kick", 36);
+        track.drumMap.add ("snare", 38);
+        track.drumMap.add ("hat-closed", 42);
+        return track;
+    };
+
+    project::Project project;
+    project.tracks.push_back (drumTrack ("trk-a", "electronic"));
+    project.tracks.push_back (drumTrack ("trk-b", "user/dusty-909"));
+    project.tracks.push_back (drumTrack ("trk-c", "dusty-909"));
+    project.tracks.push_back (drumTrack ("trk-d", "electronic"));
+    project.tracks.back().drumMap = {};
+
+    commands::CommandBus bus (std::move (project));
+    bus.setKitCatalog (&catalog);
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    const auto overview = connection.text ("get_project_overview");
+    CHECK (contains (overview, "  - kit \"electronic\" (bundled; Electronic, 808-style): plays 2 of the drum map's 3 names: kick, snare (the kit's "
+                               "'snare-tight'); the other 1 is silent. It also has pieces on notes the drum map doesn't name, written as note "
+                               "names: A#2 (note 46, 'hat-open')\n"));
+    CHECK (contains (overview, "  - kit \"user/dusty-909\" (the user's own, in C:\\Users\\Me\\Documents\\Hocket\\Kits\\dusty-909; My 909): plays all "
+                               "the drum map's 3 names: kick, snare, hat-closed\n"));
+    CHECK (contains (overview, "  - kit 'dusty-909' isn't installed (did you mean 'user/dusty-909'?). The installed kits are 'electronic' (bundled), "
+                               "'user/dusty-909' (the user's own), so the track is silent\n"));
+    CHECK (contains (overview, "  - kit \"electronic\" (bundled; Electronic, 808-style): the drum map is empty, so it names none of the kit's pieces. "
+                               "It also has pieces on notes the drum map doesn't name, written as note names: C2 (note 36, 'kick'), D2 (note 38, "
+                               "'snare-tight'), A#2 (note 46, 'hat-open')\n"));
 }
 
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")

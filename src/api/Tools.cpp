@@ -66,6 +66,72 @@ namespace
         return text;
     }
 
+    // A drum sampler's kit, for the overview (SPEC §8.4): where it came from
+    // and which of the drum map's names it plays, or why it plays nothing.
+    // "kit \"acoustic\" (bundled; Acoustic kit): plays 16 of the drum map's
+    // 47 names: kick, snare, ...; the other 31 are silent"
+    std::string kitText (CommandBus& bus, const std::string& kitName, const notes::DrumMap* drumMap)
+    {
+        kits::KitCatalog none;
+        auto& catalog = bus.kits() != nullptr ? *bus.kits() : none;
+        const auto found = catalog.find (kitName);
+
+        if (found.kit == nullptr)
+            return found.problem + ", so the track is silent";
+
+        const auto& kit = *found.kit;
+        auto text = "kit " + doubleQuoted (kit.name) + " (" + kits::KitCatalog::describeSource (kit) + "; " + kit.manifest.description + "): ";
+
+        std::vector<std::string> plays;
+        std::size_t silent = 0;
+
+        if (drumMap != nullptr)
+        {
+            for (const auto& [note, name] : drumMap->byNote())
+            {
+                if (const auto* piece = kit.manifest.pieceOn (note))
+                    plays.push_back (name + (piece->name == name ? "" : " (the kit's " + singleQuoted (piece->name) + ")"));
+                else
+                    ++silent;
+            }
+        }
+
+        const auto mapSize = drumMap != nullptr ? drumMap->size() : 0;
+
+        if (mapSize == 0)
+        {
+            text += "the drum map is empty, so it names none of the kit's pieces";
+        }
+        else if (plays.empty())
+        {
+            text += "plays none of the drum map's " + countText (mapSize, "name") + ", so the track is silent";
+        }
+        else
+        {
+            text += "plays " + (silent == 0 ? std::string ("all ") : std::to_string (plays.size()) + " of ") + "the drum map's "
+                  + countText (mapSize, "name") + ": ";
+
+            for (std::size_t i = 0; i < plays.size(); ++i)
+                text += (i > 0 ? ", " : "") + plays[i];
+
+            if (silent > 0)
+                text += "; the other " + std::to_string (silent) + (silent == 1 ? " is" : " are") + " silent";
+        }
+
+        // Pieces the map doesn't name still play, written as note names.
+        std::string unnamed;
+
+        for (const auto& piece : kit.manifest.pieces)
+            if (drumMap == nullptr || drumMap->nameOf (piece.note) == nullptr)
+                unnamed += (unnamed.empty() ? "" : ", ") + notes::formatPitch (piece.note, notes::Accidental::sharp) + " (note "
+                         + std::to_string (piece.note) + ", " + singleQuoted (piece.name) + ")";
+
+        if (! unnamed.empty())
+            text += ". It also has pieces on notes the drum map doesn't name, written as note names: " + unnamed;
+
+        return text;
+    }
+
     // On a drums track, the notes its drum map doesn't name (SPEC §5.2): they're
     // written as note names, and a kit may have no piece there. Empty otherwise.
     std::string unnamedNotesText (const project::Track& track, const notes::Clip& content)
@@ -241,6 +307,10 @@ namespace
             }
 
             text += track.devices.empty() ? "none\n" : "\n";
+
+            for (const auto& device : track.devices)
+                if (device.type == project::DeviceType::drumSampler)
+                    text += "  - " + kitText (call.bus, device.kit, project::drumMapOf (track)) + "\n";
 
             if (const auto* drumMap = project::drumMapOf (track))
                 text += "  - drum map: " + drumMapText (*drumMap) + "\n";

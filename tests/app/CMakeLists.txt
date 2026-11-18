@@ -32,6 +32,13 @@ set_tests_properties(hocket_headless_check_drum_project PROPERTIES
     FIXTURES_REQUIRED drum_project
     PASS_REGULAR_EXPRESSION "OK: 174 BPM, 4/4, 2 tracks, 4 clips in 3 files, as linked clips share them")
 
+# Its kit isn't installed, which --check notes without failing (SPEC §8.4).
+add_test(NAME hocket_headless_check_notes_missing_kit
+    COMMAND hocket_headless --check "${unicode_folder}/drums")
+set_tests_properties(hocket_headless_check_notes_missing_kit PROPERTIES
+    FIXTURES_REQUIRED drum_project
+    PASS_REGULAR_EXPRESSION "Note: track trk-drums is silent: kit 'not-installed' isn't installed")
+
 # A --master-volume that isn't a volume is refused before anything else. The
 # folder doesn't exist either, so --play can't get as far as opening a device.
 add_test(NAME hocket_headless_master_volume_needs_a_unit

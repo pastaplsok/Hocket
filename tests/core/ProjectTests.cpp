@@ -577,6 +577,19 @@ namespace
     };
 }
 
+TEST_CASE ("a user kit's name, \"user/<folder>\", round-trips byte for byte")
+{
+    auto files = drumFiles;
+    auto& json = files.at ("project.json");
+    const auto at = json.find (R"("kit": "acoustic")");
+    REQUIRE (at != std::string::npos);
+    json.replace (at, std::string_view (R"("kit": "acoustic")").size(), R"("kit": "user/dusty-909")");
+
+    const auto project = parseOrFail (files);
+    CHECK (project.tracks[0].devices[0].kit == "user/dusty-909");
+    CHECK (write (project) == files);
+}
+
 TEST_CASE ("a drum project round-trips byte for byte, and reads without any kit present")
 {
     CHECK (write (parseOrFail (drumFiles)) == drumFiles);
@@ -719,7 +732,12 @@ TEST_CASE ("errors in drum maps, drum samplers and drums tracks point at the val
           "device 'dev-bass-synth': a \"hocket:drum-sampler\" goes on a \"drums\" track, whose drum map names the kit's pieces; this is "
           "a \"midi\" track. Make it \"type\": \"drums\" with a \"drumMap\", or use \"hocket:synth\"" },
         { R"("kit": "acoustic")", R"("kit": "Acoustic Kit")", R"("Acoustic Kit")", "device 'dev-drums-kit': 'Acoustic Kit' isn't a valid kit name: "
-                                                                                   "kit names are lowercase letters and digits in words joined by single hyphens" },
+                                                                                   "a bundled kit's name is lowercase letters and digits in words joined by single hyphens" },
+        { R"("kit": "acoustic")", R"("kit": "user/Dusty 909")", R"("user/Dusty 909")",
+          "device 'dev-drums-kit': 'user/Dusty 909' isn't a valid kit name: after \"user/\" comes the name of the kit's folder in Documents\\Hocket\\Kits" },
+        { R"("kit": "acoustic")", R"("kit": "user/")", R"("user/")", "device 'dev-drums-kit': 'user/' isn't a valid kit name: after \"user/\" comes" },
+        { R"("kit": "acoustic")", R"("kit": "users/dusty-909")", R"("users/dusty-909")",
+          "device 'dev-drums-kit': 'users/dusty-909' isn't a valid kit name: a bundled kit's name is" },
         { R"("kit": "acoustic")", R"("kit": 1)", R"(1
         })", "device 'dev-drums-kit': \"kit\" should be a string, e.g. \"acoustic\"" },
         { R"(,

@@ -66,6 +66,22 @@ std::optional<std::filesystem::path> localAppDataFolder()
     return {};
 }
 
+std::optional<std::filesystem::path> documentsFolder()
+{
+    // XDG_DOCUMENTS_DIR lives in user-dirs.dirs, not the environment; the
+    // ports will read it. Until then, ~/Documents.
+    if (const auto* home = std::getenv ("HOME"); home != nullptr && *home != '\0')
+        return pathFromUtf8 (home) / pathFromUtf8 ("Documents");
+
+    return {};
+}
+
+std::filesystem::path currentProgramFolder()
+{
+    std::error_code error;
+    return std::filesystem::read_symlink ("/proc/self/exe", error).parent_path();
+}
+
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)
 {
     const auto descriptor = open (file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);

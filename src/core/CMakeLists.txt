@@ -20,6 +20,10 @@ add_library(hocket_core STATIC
     commands/TransportCommands.cpp
     commands/WatchedSaves.cpp
     commands/WatchedSaves.h
+    kits/Kit.cpp
+    kits/Kit.h
+    kits/KitCatalog.cpp
+    kits/KitCatalog.h
     notes/DrumMap.cpp
     notes/DrumMap.h
     notes/Notes.h
@@ -37,6 +41,8 @@ add_library(hocket_core STATIC
     project/ProjectWriter.cpp
     project/Rules.cpp
     project/Rules.h
+    project/StrictJson.cpp
+    project/StrictJson.h
     units/Units.cpp
     units/Units.h)
 

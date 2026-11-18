@@ -121,17 +121,35 @@ bool isProgramRunning (std::uint32_t processId, std::string_view programName)
     return sameFileName (programPath (process.handle).filename(), pathFromUtf8 (programName));
 }
 
+namespace
+{
+    std::optional<std::filesystem::path> knownFolder (REFKNOWNFOLDERID id)
+    {
+        PWSTR folder = nullptr;
+        const auto result = SHGetKnownFolderPath (id, 0, nullptr, &folder);
+        std::optional<std::filesystem::path> path;
+
+        if (SUCCEEDED (result))
+            path = std::filesystem::path (folder);
+
+        CoTaskMemFree (folder);
+        return path;
+    }
+}
+
 std::optional<std::filesystem::path> localAppDataFolder()
 {
-    PWSTR folder = nullptr;
-    const auto result = SHGetKnownFolderPath (FOLDERID_LocalAppData, 0, nullptr, &folder);
-    std::optional<std::filesystem::path> path;
+    return knownFolder (FOLDERID_LocalAppData);
+}
 
-    if (SUCCEEDED (result))
-        path = std::filesystem::path (folder);
+std::optional<std::filesystem::path> documentsFolder()
+{
+    return knownFolder (FOLDERID_Documents);
+}
 
-    CoTaskMemFree (folder);
-    return path;
+std::filesystem::path currentProgramFolder()
+{
+    return programPath (GetCurrentProcess()).parent_path();
 }
 
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)

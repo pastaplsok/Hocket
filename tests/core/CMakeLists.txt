@@ -7,6 +7,7 @@ add_executable(hocket_core_tests
     DrumMapTests.cpp
     GestureTests.cpp
     JsonTextTests.cpp
+    KitTests.cpp
     NotesSyntaxTests.cpp
     NotesFormatTests.cpp
     NotesPropertyTests.cpp

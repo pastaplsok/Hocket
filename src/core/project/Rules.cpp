@@ -302,13 +302,41 @@ std::optional<std::string> devicePlacementProblem (DeviceType device, TrackType 
          + std::string (trackTypeName (track)) + "\" track";
 }
 
-std::optional<std::string> kitNameProblem (std::string_view kit)
+bool isUserKit (std::string_view kit)
 {
-    if (kit.size() <= maxKitNameLength && isHyphenatedName (kit))
+    return kit.starts_with (userKitPrefix);
+}
+
+std::string_view kitFolderName (std::string_view kit)
+{
+    return isUserKit (kit) ? kit.substr (userKitPrefix.size()) : kit;
+}
+
+std::optional<std::string> kitFolderNameProblem (std::string_view name)
+{
+    if (name.size() <= maxKitNameLength && isHyphenatedName (name))
         return {};
 
-    return singleQuoted (kit) + " isn't a valid kit name: kit names are lowercase letters and digits in words joined by single hyphens, "
-                                "e.g. \"acoustic\"";
+    if (name.empty())
+        return "a kit's name can't be empty";
+
+    return singleQuoted (name) + " isn't a valid kit name: it should be lowercase letters and digits in words joined by single hyphens, "
+                                 "at most " + std::to_string (maxKitNameLength) + " bytes, e.g. \"dusty-909\"";
+}
+
+std::optional<std::string> kitNameProblem (std::string_view kit)
+{
+    const auto name = kitFolderName (kit);
+
+    if (name.size() <= maxKitNameLength && isHyphenatedName (name))
+        return {};
+
+    if (isUserKit (kit))
+        return singleQuoted (kit) + " isn't a valid kit name: after \"user/\" comes the name of the kit's folder in Documents\\Hocket\\Kits, "
+                                    "lowercase letters and digits in words joined by single hyphens, e.g. \"user/dusty-909\"";
+
+    return singleQuoted (kit) + " isn't a valid kit name: a bundled kit's name is lowercase letters and digits in words joined by single "
+                                "hyphens, e.g. \"acoustic\", and a kit of the user's own is \"user/\" and its folder's name, e.g. \"user/dusty-909\"";
 }
 
 //==============================================================================

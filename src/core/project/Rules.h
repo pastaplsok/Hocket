@@ -80,8 +80,20 @@ namespace hocket::project
     // track this one is; the caller says how to fix it.
     std::optional<std::string> devicePlacementProblem (DeviceType device, TrackType track);
 
-    // A kit is a folder, assets/kits/<name> (SPEC §8.4): a hyphenated name
-    // (isHyphenatedName), at most maxKitNameLength bytes.
+    // A kit is a folder (SPEC §8.4). A bundled kit is named by its folder's
+    // name; a kit of the user's own, in Documents\Hocket\Kits, by "user/" and
+    // its folder's name, so the two can never clash.
+    inline constexpr std::string_view userKitPrefix = "user/";
+
+    bool isUserKit (std::string_view kit);
+
+    // A kit's folder name: "user/dusty-909" is in the folder "dusty-909".
+    std::string_view kitFolderName (std::string_view kit);
+
+    // A kit folder's name: hyphenated (isHyphenatedName), at most maxKitNameLength bytes.
+    std::optional<std::string> kitFolderNameProblem (std::string_view name);
+
+    // A kit's name as a project names it: a folder name, after "user/" for a user kit.
     std::optional<std::string> kitNameProblem (std::string_view kit);
 
     //==============================================================================

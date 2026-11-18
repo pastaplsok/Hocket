@@ -11,6 +11,7 @@
 #include "core/commands/Commands.h"
 #include "core/commands/Edits.h"
 #include "core/commands/Transport.h"
+#include "core/kits/KitCatalog.h"
 #include "core/project/Project.h"
 
 #include <functional>
@@ -99,6 +100,12 @@ namespace hocket::commands
         // session's, changed only by transport commands (SPEC §3.1).
         const TransportSettings& transportSettings() const { return transportState; }
 
+        // The installed drum kits (SPEC §8.4), which assigning a kit checks
+        // against, and the overview describes. Without one, no kit is
+        // installed. It must outlive the bus, or be removed with nullptr first.
+        void setKitCatalog (kits::KitCatalog* catalog) { kitCatalog = catalog; }
+        kits::KitCatalog* kits() const { return kitCatalog; }
+
     private:
         using Edit = edits::Edit;
 
@@ -146,6 +153,7 @@ namespace hocket::commands
         int nextListenerId = 1;
         Transport* transport = nullptr;
         TransportSettings transportState;
+        kits::KitCatalog* kitCatalog = nullptr;
 
         Result runTransportCommand (const Command&);
         edits::Plan plan (const Command&) const;

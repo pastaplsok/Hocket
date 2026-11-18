@@ -39,6 +39,14 @@ namespace hocket::platform
     // %LOCALAPPDATA% on Windows. nullopt if the OS doesn't say.
     std::optional<std::filesystem::path> localAppDataFolder();
 
+    // The user's Documents folder, as the OS reports it (on Windows it may
+    // be redirected, to OneDrive say). nullopt if the OS doesn't say.
+    std::optional<std::filesystem::path> documentsFolder();
+
+    // The folder holding the running program's executable: where things
+    // installed next to it (the bundled drum kits) are found.
+    std::filesystem::path currentProgramFolder();
+
     // A file held so that no other holder can take it until this one lets go
     // or its process ends, crashes included: for "only one at a time". On
     // Windows nothing else can open the file meanwhile, not even to read it;

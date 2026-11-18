@@ -1,12 +1,10 @@
 #include "core/Paths.h"
-#include "core/Suggestions.h"
 #include "core/project/JsonText.h"
 #include "core/project/Project.h"
 #include "core/project/Rules.h"
+#include "core/project/StrictJson.h"
 #include "core/notes/NotesSyntax.h"
 #include "core/units/Units.h"
-
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <set>
@@ -21,12 +19,6 @@ namespace
 
     constexpr std::size_t maxErrors = 20;
     constexpr const char* projectFileName = "project.json";
-
-    struct KeySpec
-    {
-        std::string_view name;
-        std::string_view example; // a valid value, written as JSON
-    };
 
     constexpr KeySpec projectKeys[] = {
         { "format", R"("hocket-project")" },
@@ -73,12 +65,6 @@ namespace
     };
 
     // Keys that belong on another kind of object, and what to say about them.
-    struct MisplacedKey
-    {
-        std::string_view name;
-        std::string_view message;
-    };
-
     constexpr MisplacedKey misplacedTrackKeys[] = {
         { "drumMap", "only \"drums\" tracks have a \"drumMap\"; other tracks' clips use note names. Make the track \"type\": \"drums\", or remove its drum map" },
     };
@@ -93,59 +79,19 @@ namespace
         { "start", R"("1.1")" },
     };
 
-    std::string singleQuoted (std::string_view text)
-    {
-        return "'" + std::string (text) + "'";
-    }
-
-    std::string jsonQuoted (std::string_view text)
-    {
-        return "\"" + std::string (text) + "\"";
-    }
-
-    std::string_view exampleFor (std::span<const KeySpec> keys, std::string_view name)
-    {
-        for (const auto& key : keys)
-            if (key.name == name)
-                return key.example;
-
-        return {};
-    }
-
-    std::string exampleObject (std::span<const KeySpec> keys)
-    {
-        std::string text = "{ ";
-
-        for (const auto& key : keys)
-            text += (text.size() > 2 ? ", " : "") + jsonQuoted (key.name) + ": " + std::string (key.example);
-
-        return text + " }";
-    }
-
-    class Reader
+    class Reader : private StrictJson
     {
     public:
         Reader (std::string_view projectJson, const FileReader& fileReader)
-            : text (projectJson), lines (projectJson), readFile (fileReader)
+            : StrictJson (projectJson, projectFileName), readFile (fileReader)
         {
         }
 
         LoadResult run()
         {
-            // Constructed in place: the value positions must come through intact.
-            std::optional<Json> root;
+            if (const auto root = parse())
+                readProject (*root);
 
-            try
-            {
-                root.emplace (Json::parse (text));
-            }
-            catch (const Json::parse_error& e)
-            {
-                syntaxError (e);
-                return finish();
-            }
-
-            readProject (*root);
             return finish();
         }
 
@@ -159,11 +105,8 @@ namespace
             std::size_t startOffset = 0;
         };
 
-        std::string_view text;
-        LineIndex lines;
         const FileReader& readFile;
         Project project;
-        std::vector<Diagnostic> errors;
         // A clip file, read once, by the first clip that uses it.
         struct FileRead
         {
@@ -203,144 +146,6 @@ namespace
             return { std::move (project), {} };
         }
 
-        //==============================================================================
-        void errorAtOffset (std::size_t offset, std::string message)
-        {
-            const auto position = lines.positionOf (offset);
-            errors.push_back ({ projectFileName, position.line, position.column, std::move (message) });
-        }
-
-        void errorAt (const Json& value, std::string message)
-        {
-            errorAtOffset (offsetOf (value), std::move (message));
-        }
-
-        std::size_t offsetOf (const Json& value) const
-        {
-            return value.is_string() ? stringStart (text, value.end_pos()) : value.start_pos();
-        }
-
-        int lineOf (const Json& value) const
-        {
-            return lines.positionOf (offsetOf (value)).line;
-        }
-
-        void syntaxError (const Json::parse_error& e)
-        {
-            // e.what() is "[json.exception.parse_error.101] parse error at line 3, column 5: <detail>"
-            std::string detail = e.what();
-
-            if (const auto column = detail.find ("column "); column != std::string::npos)
-                if (const auto colon = detail.find (": ", column); colon != std::string::npos)
-                    detail = detail.substr (colon + 2);
-
-            const auto offset = std::min (e.byte > 0 ? e.byte - 1 : 0, text.size());
-            const auto at = offset < text.size() ? text[offset] : '\0';
-            auto before = offset;
-
-            while (before > 0 && std::string_view (" \t\r\n").find (text[before - 1]) != std::string_view::npos)
-                --before;
-
-            if ((at == '}' || at == ']') && before > 0 && text[before - 1] == ',')
-                detail += " (JSON doesn't allow a comma before a closing bracket)";
-            else if (at == '/' || (offset > 0 && text[offset - 1] == '/'))
-                detail += " (JSON doesn't allow comments)";
-
-            errorAtOffset (offset, "project.json isn't valid JSON: " + detail);
-        }
-
-        //==============================================================================
-        bool requireObject (const Json& value, const std::string& where, std::span<const KeySpec> keys)
-        {
-            if (value.is_object())
-                return true;
-
-            errorAt (value, where + " should be an object: " + exampleObject (keys));
-            return false;
-        }
-
-        // Duplicate, unknown and missing keys. Every key is required (SPEC §4.4).
-        void checkKeys (const Json& object, const std::string& where, std::span<const KeySpec> keys,
-                        std::span<const MisplacedKey> misplaced = {})
-        {
-            std::set<std::string> seen;
-
-            for (const auto& [key, offset] : keysOfObject (text, object.start_pos()))
-            {
-                if (! seen.insert (key).second)
-                {
-                    errorAtOffset (offset, where + ": " + jsonQuoted (key) + " appears twice; keep only one");
-                    continue;
-                }
-
-                if (! exampleFor (keys, key).empty())
-                    continue;
-
-                if (const auto found = std::ranges::find (misplaced, key, &MisplacedKey::name); found != misplaced.end())
-                {
-                    errorAtOffset (offset, where + ": " + std::string (found->message));
-                    continue;
-                }
-
-                std::string message = where + ": unknown key " + jsonQuoted (key);
-
-                for (const auto& spec : keys)
-                    if (editDistance (key, spec.name) <= 2)
-                        message += " (did you mean " + jsonQuoted (spec.name) + "?)";
-
-                message += "; the keys are ";
-
-                for (std::size_t i = 0; i < keys.size(); ++i)
-                    message += (i > 0 ? ", " : "") + jsonQuoted (keys[i].name);
-
-                errorAtOffset (offset, std::move (message));
-            }
-
-            for (const auto& spec : keys)
-                if (! object.contains (spec.name))
-                    errorAt (object, where + ": missing " + jsonQuoted (spec.name) + "; add e.g. " + jsonQuoted (spec.name) + ": "
-                                         + std::string (spec.example));
-        }
-
-        const Json* member (const Json& object, std::string_view key)
-        {
-            const auto found = object.find (key);
-            return found == object.end() ? nullptr : &*found;
-        }
-
-        std::optional<std::string> readString (const Json& object, std::string_view key, const std::string& where,
-                                               std::span<const KeySpec> keys)
-        {
-            const auto* value = member (object, key);
-
-            if (value == nullptr)
-                return {}; // reported by checkKeys
-
-            if (! value->is_string())
-            {
-                errorAt (*value, where + ": " + jsonQuoted (key) + " should be a string, e.g. " + std::string (exampleFor (keys, key)));
-                return {};
-            }
-
-            return value->get<std::string>();
-        }
-
-        const Json* readArray (const Json& object, std::string_view key, const std::string& where, std::span<const KeySpec> keys)
-        {
-            const auto* value = member (object, key);
-
-            if (value == nullptr)
-                return nullptr;
-
-            if (! value->is_array())
-            {
-                errorAt (*value, where + ": " + jsonQuoted (key) + " should be an array, e.g. " + std::string (exampleFor (keys, key)));
-                return nullptr;
-            }
-
-            return value;
-        }
-
         // Checks the ID's format and that no other object has it. Returns it if it's usable.
         std::optional<std::string> readId (const Json& object, IdKind kind, const std::string& where, std::span<const KeySpec> keys)
         {
@@ -375,21 +180,7 @@ namespace
                 return;
 
             checkKeys (root, where, projectKeys);
-
-            if (const auto format = readString (root, "format", where, projectKeys); format && *format != "hocket-project")
-                errorAt (root.at ("format"), where + ": \"format\" must be \"hocket-project\"; this doesn't look like a Hocket project file");
-
-            if (const auto* version = member (root, "formatVersion"))
-            {
-                if (! version->is_number_integer())
-                    errorAt (*version, where + ": \"formatVersion\" should be a whole number, e.g. 0");
-                else if (const auto number = version->get<std::int64_t>(); number > formatVersion)
-                    errorAt (*version, where + ": the project is format version " + std::to_string (number)
-                                           + ", but this build of Hocket reads only format version " + std::to_string (formatVersion)
-                                           + "; it was written by a newer Hocket");
-                else if (number < formatVersion)
-                    errorAt (*version, where + ": \"formatVersion\" must be " + std::to_string (formatVersion));
-            }
+            checkFormat (root, where, projectKeys, "hocket-project", formatVersion, "project");
 
             if (const auto* tempo = member (root, "tempo"))
             {
@@ -507,22 +298,6 @@ namespace
 
             if (const auto solo = readBool (value, "solo", where))
                 track.solo = *solo;
-        }
-
-        std::optional<bool> readBool (const Json& object, std::string_view key, const std::string& where)
-        {
-            const auto* value = member (object, key);
-
-            if (value == nullptr)
-                return {}; // reported by checkKeys
-
-            if (! value->is_boolean())
-            {
-                errorAt (*value, where + ": " + jsonQuoted (key) + " should be true or false, without quotes");
-                return {};
-            }
-
-            return value->get<bool>();
         }
 
         // For a track whose drum map has errors, so its clip files weren't read.
