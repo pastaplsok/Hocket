@@ -2,6 +2,9 @@
 # fake audio device. They need JUCE's message manager and a Tracktion Engine,
 # so they have their own main.
 add_executable(hocket_engine_tests
+    AllocationCounter.cpp
+    AllocationCounter.h
+    DrumVoicesTests.cpp
     EditSyncTests.cpp
     EngineTestMain.cpp
     EngineTesting.cpp
