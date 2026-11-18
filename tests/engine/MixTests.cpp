@@ -389,6 +389,10 @@ namespace
         std::vector<ChannelGains> targets;        // what the volume plugin aimed for, block by block
         ChannelGains before;                      // the old setting's gains
         ChannelGains after;                       // the new setting's
+        float faderBefore = 0.0f;                 // the volume plugin's parameters, before and after
+        float faderAfter = 0.0f;
+        float panBefore = 0.0f;
+        float panAfter = 0.0f;
     };
 
     // Settles the tone at `from`, then sets `to`'s fader position, plays
@@ -420,6 +424,10 @@ namespace
         const auto newPan = volume.panParam->getCurrentValue();
         volume.volParam->setParameter (oldFader, juce::sendNotification);
         volume.panParam->setParameter (oldPan, juce::sendNotification);
+        result.faderBefore = oldFader;
+        result.faderAfter = newFader;
+        result.panBefore = oldPan;
+        result.panAfter = newPan;
 
         const auto changedAt = device.output().buffer.getNumSamples();
         constexpr int blocksAfter = 6;
@@ -516,4 +524,19 @@ TEST_CASE ("live: a fader and pan that reach the audio thread in different block
     const auto other = playSplit ("-6.5dB", "L50", "+6dB", "R1", 1);
     CHECK (other.targets.front().left == doctest::Approx (2.647).epsilon (0.001));
     CHECK (other.after.left == doctest::Approx (1.975).epsilon (0.001));
+
+    // A pan move on its own sets both parameters too: the fader is the volume
+    // over (1 + |p|), so R100 to C at 0 dB takes it from half the volume to
+    // all of it. With the old pan (hard right) the right channel heads for
+    // twice the volume, +6 dB, until the pan arrives.
+    const auto panOnly = playSplit ("0dB", "R100", "0dB", "C", 3);
+    CHECK (panOnly.faderAfter != panOnly.faderBefore);
+    CHECK (panOnly.panAfter != panOnly.panBefore);
+    CHECK (panOnly.after.right == doctest::Approx (1.0).epsilon (0.0001));
+    CHECK (panOnly.targets.front().right == doctest::Approx (2.0).epsilon (0.0001));
+    CHECK (juce::Decibels::gainToDecibels (highest (panOnly.gains[1])) == doctest::Approx (6.02).epsilon (0.01));
+
+    // A volume move on its own sets only the fader: the pan's |p| is the same.
+    const auto volumeOnly = playSplit ("0dB", "L50", "-6dB", "L50", 1);
+    CHECK (volumeOnly.panAfter == volumeOnly.panBefore);
 }
