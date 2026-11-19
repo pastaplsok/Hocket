@@ -1,0 +1,31 @@
+{
+  "format": "hocket-kit",
+  "formatVersion": 0,
+  "description": "Electronic, 808-style, synthesized by Hocket",
+  "pieces": [
+    { "name": "kick2", "note": 35, "file": "kick2.wav", "level": "-20.5dB" },
+    { "name": "kick", "note": 36, "file": "kick.wav", "level": "-18.5dB" },
+    { "name": "sidestick", "note": 37, "file": "sidestick.wav", "level": "-26.5dB" },
+    { "name": "snare", "note": 38, "file": "snare.wav", "level": "-21.5dB" },
+    { "name": "clap", "note": 39, "file": "clap.wav", "level": "-23.5dB" },
+    { "name": "snare2", "note": 40, "file": "snare2.wav", "level": "-21.5dB" },
+    { "name": "tom-floor-low", "note": 41, "file": "tom-floor-low.wav", "level": "-22.5dB" },
+    { "name": "hat-closed", "note": 42, "file": "hat-closed.wav", "level": "-28.5dB" },
+    { "name": "tom-floor-high", "note": 43, "file": "tom-floor-high.wav", "level": "-22.5dB" },
+    { "name": "hat-pedal", "note": 44, "file": "hat-pedal.wav", "level": "-30.5dB" },
+    { "name": "tom-low", "note": 45, "file": "tom-low.wav", "level": "-22.5dB" },
+    { "name": "hat-open", "note": 46, "file": "hat-open.wav", "level": "-29.5dB" },
+    { "name": "tom-mid-low", "note": 47, "file": "tom-mid-low.wav", "level": "-22.5dB" },
+    { "name": "tom-mid-high", "note": 48, "file": "tom-mid-high.wav", "level": "-22.5dB" },
+    { "name": "crash", "note": 49, "file": "crash.wav", "level": "-27.5dB" },
+    { "name": "tom-high", "note": 50, "file": "tom-high.wav", "level": "-22.5dB" },
+    { "name": "ride", "note": 51, "file": "ride.wav", "level": "-29.5dB" },
+    { "name": "cowbell", "note": 56, "file": "cowbell.wav", "level": "-27.5dB" },
+    { "name": "conga-high-mute", "note": 62, "file": "conga-high-mute.wav", "level": "-25.5dB" },
+    { "name": "conga-high-open", "note": 63, "file": "conga-high-open.wav", "level": "-25.5dB" },
+    { "name": "conga-low", "note": 64, "file": "conga-low.wav", "level": "-25.5dB" },
+    { "name": "maracas", "note": 70, "file": "maracas.wav", "level": "-32.5dB" },
+    { "name": "claves", "note": 75, "file": "claves.wav", "level": "-28.5dB" }
+  ],
+  "chokeGroups": [["kick2"], ["kick"], ["hat-closed", "hat-pedal", "hat-open"]]
+}

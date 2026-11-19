@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.17** — 2026-11-18
+> Status: **Draft v0.18** — 2026-11-18
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -504,7 +504,8 @@ Surge XT, Vital (free tier), Dexed, Airwindows, Valhalla Supermassive, TDR Nova,
 Hocket comes with a few drum kits in different styles: acoustic, electronic (808-style), and one suited to breakbeat and jungle.
 - **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
-- **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name.
+- **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name. A bundled kit counts as released only once Lee says it's final: until then it's refined by ear in place.
+- **The electronic kit is synthesized** by a generator kept in the repository (`tools/kits/`), with named parameters for each piece, so it's changed by changing a parameter and generating it again. Its samples are 44.1 kHz, 16-bit and mono, and released as CC0.
 - **A missing kit:** a project whose kit isn't installed still loads. Hocket says the kit is missing, and the track is silent.
 - **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track adds its names to the track's drum map, keeping what's there (§5.2). A kit that isn't installed can't be assigned: the error lists the kits that are.
 - **The manifest**, `kit.json` in the kit's folder, beside its samples:

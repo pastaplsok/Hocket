@@ -1,4 +1,5 @@
 add_executable(hocket_core_tests
+    BundledKitTests.cpp
     ClipCommandTests.cpp
     ClipFileWatcherTests.cpp
     CommandBusPropertyTests.cpp
@@ -26,10 +27,11 @@ add_executable(hocket_core_tests
 target_link_libraries(hocket_core_tests PRIVATE hocket_core hocket_platform doctest::doctest_with_main)
 target_include_directories(hocket_core_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
-# Tests load the example projects from the source tree, as checked out.
+# Tests load the example projects and the bundled kits from the source tree, as checked out.
 target_compile_definitions(hocket_core_tests PRIVATE
     HOCKET_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
-    HOCKET_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures")
+    HOCKET_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
+    HOCKET_KITS_DIR="${PROJECT_SOURCE_DIR}/assets/kits")
 
 hocket_enable_warnings(hocket_core_tests)
 

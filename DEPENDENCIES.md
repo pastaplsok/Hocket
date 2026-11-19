@@ -14,6 +14,16 @@ All source dependencies are git submodules under `external/`, each pinned to an 
 
 **JUCE pin.** JUCE is our own top-level submodule, pinned to the same commit Tracktion Engine's `modules/juce` submodule points at. We don't use Tracktion's nested submodule because its URL is SSH-only (`git@github.com:`), which fails for anyone without GitHub SSH keys. CMake warns at configure time if the two pins drift apart; when updating Tracktion, move JUCE to Tracktion's new pin in the same change.
 
+**Tools, not built or linked:** regenerating the bundled electronic drum kit (`tools/kits/make-electronic-kit.py`) needs Python 3 and [numpy](https://numpy.org) (BSD-3-Clause), version 2.4.6 when the kit was made. Nothing else needs either: the kit's files are committed.
+
+## Bundled drum kits
+
+Each kit's source and license, and its size in the repository (SPEC §8.4). Every one is in `assets/kits/<name>/`, which the build copies to `kits\` next to the programs.
+
+| Kit | Source | License | Size |
+|---|---|---|---|
+| `electronic` | Synthesized by Hocket's own generator, `tools/kits/make-electronic-kit.py`, from oscillators and noise; nothing is sampled from a recording. 23 pieces, 44.1 kHz, 16-bit, mono. Not final until Lee says so (SPEC §8.4). | CC0 1.0 (`assets/kits/electronic/LICENSE.txt`) | 1.14 MB of WAVs, 13.0 s of audio |
+
 ## Tracktion Engine: Hocket's fork, and two workarounds
 
 **The fork.** The submodule comes from Hocket's fork, `pastaplsok/tracktion_engine`, branch `bugfix/graph_rebuild_skips_audio_block`: upstream `develop` at `a5e44996f5f`, plus one commit, "Graph: Fixed graph rebuilds making the audio thread skip a block". Without it, a clip rewritten during playback now and then plays a 5.8 ms block of silence, heard as a click (PROGRESS.md, Loose ends: dropped blocks).

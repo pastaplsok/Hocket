@@ -5,6 +5,7 @@ add_executable(hocket_engine_tests
     AllocationCounter.cpp
     AllocationCounter.h
     DrumSamplerTests.cpp
+    DrumTesting.h
     DrumVoicesTests.cpp
     EditSyncTests.cpp
     EngineTestMain.cpp
@@ -34,10 +35,11 @@ if(WIN32)
 endif()
 target_include_directories(hocket_engine_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")
 
-# Tests load the example projects and fixtures from the source tree, as checked out.
+# Tests load the example projects, fixtures and bundled kits from the source tree, as checked out.
 target_compile_definitions(hocket_engine_tests PRIVATE
     HOCKET_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
-    HOCKET_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures")
+    HOCKET_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
+    HOCKET_KITS_DIR="${PROJECT_SOURCE_DIR}/assets/kits")
 
 hocket_enable_warnings(hocket_engine_tests)
 

@@ -7,3 +7,7 @@ project.json  text eol=lf
 
 # Audio is binary, however its bytes happen to look: never convert line endings in it.
 *.wav         binary
+
+# Bundled kits' text files: the generator (tools/kits) checks them byte for byte.
+assets/kits/**/*.json  text eol=lf
+assets/kits/**/*.txt   text eol=lf
