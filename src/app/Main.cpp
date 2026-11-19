@@ -27,11 +27,13 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -116,6 +118,30 @@ namespace
                 if (device.type == hocket::project::DeviceType::drumSampler)
                     if (const auto found = kits.find (device.kit); found.kit == nullptr)
                         std::cerr << "Note: track " << track.id << " is silent: " << found.problem << ".\n";
+    }
+
+    // The installed kits the project's drum samplers play, for --play to say
+    // it's loading them: "kit 'electronic'", "kits 'electronic' and
+    // 'user/dusty-909'"; empty if there are none.
+    std::string kitsInUse (const hocket::project::Project& project, hocket::kits::KitCatalog& kits)
+    {
+        std::vector<std::string> names;
+
+        for (const auto& track : project.tracks)
+            for (const auto& device : track.devices)
+                if (device.type == hocket::project::DeviceType::drumSampler && kits.find (device.kit).kit != nullptr)
+                    if (const auto quoted = "'" + device.kit + "'"; std::ranges::find (names, quoted) == names.end())
+                        names.push_back (quoted);
+
+        if (names.empty())
+            return {};
+
+        std::string text = names.size() == 1 ? "kit " : "kits ";
+
+        for (std::size_t i = 0; i < names.size(); ++i)
+            text += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
+
+        return text;
     }
 
     // What loading the kits in use found that their headers couldn't say:
@@ -414,6 +440,21 @@ namespace
 
         reportKits (*loaded.project, kits);
 
+        // From here on, Ctrl+C (or Ctrl+Break, or closing the window) stops
+        // --play cleanly. Before play starts, that's at the next place it can
+        // stop: once the device has opened, or while the kits load, closing
+        // the device on the way out (step 8).
+        hocket::catchInterrupts();
+
+        const auto stoppedBeforePlaying = [] (std::string_view when)
+        {
+            if (! hocket::interruptRequested())
+                return false;
+
+            std::cout << "stopped before playing" << when << std::endl;
+            return true;
+        };
+
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();
 
@@ -495,6 +536,9 @@ namespace
         const hocket::engine::MasterOutput master (engine.getDeviceManager(), options.masterVolume);
         std::cout << "Master level " << hocket::units::format (master.volume(), hocket::units::volume()) << " (--master-volume <dB> changes it)\n";
 
+        if (stoppedBeforePlaying (""))
+            return 0;
+
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 
@@ -506,9 +550,29 @@ namespace
         // It says when a user kit in use changes on disk, and reloads it.
         hocket::engine::KitLibrary kitLibrary (kits);
         kitLibrary.setNotices ([] (const std::string& notice) { std::cout << notice << std::endl; });
+
+        // Said before and after, so a Ctrl+C can be timed to land while they
+        // load (step 8's check, tools/acceptance/Check-CtrlCWhileLoading.ps1).
+        const auto loading = kitsInUse (bus.project(), kits);
+
+        if (! loading.empty())
+            std::cout << "Loading " << loading << std::endl;
+
+        const auto loadStarted = std::chrono::steady_clock::now();
         hocket::engine::EditSync sync (engine, bus, &kitLibrary);
-        kitLibrary.waitUntilIdle();
+
+        while (! kitLibrary.waitUntilIdle (std::chrono::milliseconds (20)))
+            if (stoppedBeforePlaying (", while the kits were loading"))
+                return 0; // the library lets the kit it's building finish, then drops it
+
+        if (! loading.empty())
+            std::cout << "Loaded in " << std::chrono::duration_cast<std::chrono::milliseconds> (std::chrono::steady_clock::now() - loadStarted).count()
+                      << " ms" << std::endl;
+
         reportKitLoads (bus.project(), kits);
+
+        if (stoppedBeforePlaying (""))
+            return 0;
 
         // The API for MCP clients (SPEC §6.3), with a new token each run.
         const auto token = hocket::api::makeToken();
@@ -557,7 +621,6 @@ namespace
 
         std::cout << played.message << (options.watch ? "; saving a clip file plays the change" : "") << ". Ctrl+C to stop." << std::endl;
 
-        hocket::catchInterrupts();
         {
             PlayLoop loop (bus, sync, playbackDevice, api, folder, options.watch, localUser);
             juce::MessageManager::getInstance()->runDispatchLoop();

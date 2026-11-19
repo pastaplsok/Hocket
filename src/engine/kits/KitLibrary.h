@@ -23,6 +23,7 @@
 #include <juce_events/juce_events.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -80,6 +81,12 @@ namespace hocket::engine
         // Blocks until everything asked for has been loaded, then delivers
         // it: for --play's start, renders and tests.
         void waitUntilIdle();
+
+        // The same, but gives up after `timeout`, and says whether it got
+        // there: for --play's start, to notice a Ctrl+C while kits load. A
+        // library destroyed meanwhile lets the kit being built finish, then
+        // drops it.
+        bool waitUntilIdle (std::chrono::milliseconds timeout);
 
         // Looks at the watched kits' files now, as the timer does: a change
         // seen on two looks in a row (so the files have stopped changing) is

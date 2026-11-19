@@ -166,12 +166,50 @@ if (-not $SkipTests) {
 #==============================================================================
 if (Test-HocketRunning) { throw "a Hocket is already running (see $tokenFile); stop it first" }
 
-# The demo with an empty clip: it plays silence.
+# The demo with an empty clip, plus a drums track playing the bundled electronic
+# kit with an empty clip too: it plays silence, and every run loads a kit.
 $project = Join-Path $work 'm0-acceptance'
 Copy-Item -Recurse (Join-Path $repo 'examples\m0-demo') $project
 $clipFile = Join-Path $project 'clips\bass.notes'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($clipFile, "@length 2bars`n", $utf8)
+[IO.File]::WriteAllText((Join-Path $project 'clips\beat.notes'), "@length 2bars`n", $utf8)
+
+$drumsTrack = @'
+    },
+    {
+      "id": "trk-drums",
+      "name": "Drums",
+      "type": "drums",
+      "volume": "0dB",
+      "pan": "C",
+      "mute": false,
+      "solo": false,
+      "devices": [
+        {
+          "id": "dev-drums-kit",
+          "type": "hocket:drum-sampler",
+          "kit": "electronic"
+        }
+      ],
+      "drumMap": {},
+      "clips": [
+        {
+          "id": "clp-beat",
+          "file": "clips/beat.notes",
+          "start": "1.1"
+        }
+      ]
+    }
+  ]
+}
+'@
+$projectFile = Join-Path $project 'project.json'
+$projectText = [IO.File]::ReadAllText($projectFile).Replace("`r`n", "`n")
+$ending = "    }`n  ]`n}`n"
+if (-not $projectText.EndsWith($ending)) { throw "examples\m0-demo\project.json doesn't end the way this script expects" }
+$projectText = $projectText.Substring(0, $projectText.Length - $ending.Length) + $drumsTrack.Replace("`r`n", "`n") + "`n"
+[IO.File]::WriteAllText($projectFile, $projectText, $utf8)
 
 $playLog = Join-Path $work 'play.log'
 $playArguments = "--play `"$project`" --watch --user Lee"
@@ -193,6 +231,11 @@ while (-not $looping -and -not $play.HasExited -and (Get-Date) -lt $deadline) {
 
 $device = if (Test-Path $playLog) { (Select-String -Path $playLog -Pattern '^Playing on' | Select-Object -First 1).Line } else { '' }
 Add-Result '--play opens the device and loops' $looping $(if ($looping) { $device } else { "see $playLog" })
+
+if ($looping) {
+    $kitLines = @(Select-String -Path $playLog -Pattern '^(Loading kit|Loaded in)' | ForEach-Object { $_.Line })
+    Add-Result '--play loads the bundled kit before playing' ($kitLines.Count -eq 2) ($kitLines -join '; ')
+}
 
 $bridge = $null
 try {

@@ -304,6 +304,42 @@ TEST_CASE ("kit library: a load overtaken by a later one is dropped, and an ende
     CHECK_FALSE (second);
 }
 
+TEST_CASE ("kit library: a timed wait says whether loading is done, and a library destroyed mid-load drops the kit it was building")
+{
+    // Ten seconds of stereo at 48 kHz, played at 44.1 kHz: long enough to
+    // convert (about half a second) to be caught loading.
+    testing::TemporaryFolder temp { testing::unicodeName };
+    const auto userFolder = temp.path / path ("Kits");
+    writeText (userFolder / path ("slow") / path ("kit.json"), R"({
+  "format": "hocket-kit",
+  "formatVersion": 0,
+  "description": "Slow to convert",
+  "pieces": [
+    { "name": "crash", "note": 49, "file": "crash.wav", "level": "0dB" }
+  ],
+  "chokeGroups": []
+}
+)");
+    testing::writeWav (userFolder / path ("slow") / path ("crash.wav"), { ramp (480000, 0.000001f), ramp (480000, -0.000001f) }, 48000.0);
+    kits::KitCatalog catalog (std::filesystem::path(), userFolder);
+
+    {
+        KitLibrary library (catalog);
+        Received received;
+        const auto subscription = library.subscribe ("user/slow", 44100.0, received.delivery());
+        CHECK_FALSE (library.waitUntilIdle (std::chrono::milliseconds (0))); // queued, or being built
+        CHECK (received.kits.empty());
+        // Destroyed here, mid-load: the kit being built is finished and dropped, never delivered.
+    }
+
+    KitLibrary library (catalog);
+    Received received;
+    const auto subscription = library.subscribe ("user/slow", 44100.0, received.delivery());
+    CHECK (library.waitUntilIdle (std::chrono::seconds (60)));
+    REQUIRE (received.kits.size() == 1);
+    CHECK (library.counts().conversions == 1);
+}
+
 TEST_CASE ("kit library: a 32-bit float sample above full scale is played as it is, and reported with its peak")
 {
     Fixture f;

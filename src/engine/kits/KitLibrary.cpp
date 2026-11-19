@@ -227,6 +227,19 @@ void KitLibrary::waitUntilIdle()
     deliverDone();
 }
 
+bool KitLibrary::waitUntilIdle (std::chrono::milliseconds timeout)
+{
+    {
+        std::unique_lock lock (mutex);
+
+        if (! idle.wait_for (lock, timeout, [this] { return queue.empty() && ! busy; }))
+            return false;
+    }
+
+    deliverDone();
+    return true;
+}
+
 void KitLibrary::setNotices (std::function<void (const std::string&)> notices)
 {
     notify = std::move (notices);
