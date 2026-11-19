@@ -5,6 +5,7 @@
 #include "core/units/Units.h"
 
 #include <algorithm>
+#include <optional>
 #include <set>
 
 namespace hocket::commands::planning
@@ -118,10 +119,160 @@ namespace
         settings.clips.clear();
         return settings;
     }
+
+    // "a; b; c": for items with commas of their own.
+    std::string semicolonList (const std::vector<std::string>& items)
+    {
+        std::string text;
+
+        for (const auto& item : items)
+            text += (text.empty() ? "" : "; ") + item;
+
+        return text;
+    }
+
+    // At most `shown` items, then "N more <noun>s", for a history entry.
+    std::string shortList (std::vector<std::string> items, std::string_view noun, std::size_t shown = 4)
+    {
+        if (items.size() > shown + 1)
+        {
+            const auto more = items.size() - shown;
+            items.resize (shown);
+            items.push_back (std::to_string (more) + " more " + std::string (noun) + "s");
+        }
+
+        return listText (items);
+    }
+
+    // The clips whose files the track's clips use that would be written
+    // differently with this drum map: it changes names, never notes.
+    std::vector<std::string> clipsRewrittenBy (const project::Project& project, const project::Track& track, const notes::DrumMap& drumMap)
+    {
+        edits::Files files;
+        std::vector<std::string> rewritten;
+
+        for (const auto& clip : track.clips)
+        {
+            if (! files.insert (clip.file).second)
+                continue;
+
+            const auto& content = project.notesFiles.at (clip.file);
+
+            if (notes::write (content, project.meter, &track.drumMap) != notes::write (content, project.meter, &drumMap))
+                for (const auto* user : project::clipsUsing (project, clip.file))
+                    rewritten.push_back (user->id);
+        }
+
+        return rewritten;
+    }
+
+    // "clp-beat is written with the new names now", or nothing.
+    std::string rewrittenRemark (const std::vector<std::string>& rewritten)
+    {
+        if (rewritten.empty())
+            return {};
+
+        return (rewritten.size() == 1 ? rewritten.front() + " is" : "These clips are") + std::string (" written with the new names now")
+             + (rewritten.size() == 1 ? "" : ": " + listText (rewritten));
+    }
+
+    //==============================================================================
+    // A kit to assign (SPEC §8.4): an installed kit that isn't broken. Without
+    // a catalog no kit is installed, and the message says where kits go.
+    kits::Lookup findKit (kits::KitCatalog* catalog, std::string_view name)
+    {
+        if (catalog != nullptr)
+            return catalog->find (name);
+
+        kits::KitCatalog none;
+        return { nullptr, none.find (name).problem };
+    }
+
+    // Assigning a kit adds its names to the track's drum map where neither the
+    // note nor the name is taken, and keeps every entry the map has (SPEC §5.2).
+    struct KitNames
+    {
+        notes::DrumMap drumMap;            // the track's, with the kit's names added
+        std::vector<std::string> added;    // "perc (82)", by note
+        std::vector<std::string> notAdded; // "rim (37), since note 37 is already 'sidestick' there, which plays it", by note
+    };
+
+    // Why the track, with trial's drum map, would name the notes of a file it
+    // shares with another track differently from that track (SPEC §5.2), or empty.
+    std::string sharedFileConflict (const project::Project& project, const project::Track& track, const project::Track& trial)
+    {
+        edits::Files files;
+
+        for (const auto& clip : track.clips)
+        {
+            if (! files.insert (clip.file).second)
+                continue;
+
+            for (const auto* other : project::tracksUsing (project, clip.file))
+                if (other->id != track.id)
+                    if (const auto conflicts = project::drumNameConflicts (project.notesFiles.at (clip.file), trial, *other); ! conflicts.empty())
+                        return clip.file + " is also used on " + other->id + ", which would then name its notes differently (" + conflicts + ")";
+        }
+
+        return {};
+    }
+
+    KitNames mergeKitNames (const project::Project& project, const project::Track& track, const kits::Manifest& kit)
+    {
+        KitNames names { track.drumMap, {}, {} };
+        auto trial = settingsOf (track);
+
+        std::vector<const kits::Piece*> pieces;
+
+        for (const auto& piece : kit.pieces)
+            pieces.push_back (&piece);
+
+        std::ranges::sort (pieces, {}, [] (const kits::Piece* piece) { return piece->note; });
+
+        for (const auto* piece : pieces)
+        {
+            const auto label = piece->name + " (" + std::to_string (piece->note) + ")";
+            const auto playIt = ", so write " + notes::formatPitch (piece->note, notes::Accidental::sharp) + " to play it";
+
+            if (const auto* name = names.drumMap.nameOf (piece->note))
+            {
+                if (*name != piece->name)
+                    names.notAdded.push_back (label + ", since note " + std::to_string (piece->note) + " is already " + singleQuoted (*name)
+                                              + " there, which plays it");
+                continue;
+            }
+
+            if (const auto note = names.drumMap.noteOf (piece->name))
+            {
+                names.notAdded.push_back (label + ", since " + singleQuoted (piece->name) + " is already note " + std::to_string (*note) + " there" + playIt);
+                continue;
+            }
+
+            trial.drumMap = names.drumMap;
+            trial.drumMap.add (piece->name, piece->note);
+
+            if (const auto conflict = sharedFileConflict (project, track, trial); ! conflict.empty())
+            {
+                names.notAdded.push_back (label + ", since " + conflict + playIt);
+                continue;
+            }
+
+            names.drumMap = trial.drumMap;
+            names.added.push_back (label);
+        }
+
+        return names;
+    }
+
+    // "Not added to the drum map: rim (37), since ...; perc (82), since ...", or nothing.
+    std::string notAddedRemark (const KitNames& names)
+    {
+        return names.notAdded.empty() ? std::string() : "Not added to the drum map: " + semicolonList (names.notAdded);
+    }
 }
 
 //==============================================================================
-edits::Plan plan (const project::Project& project, const AddTrack& command)
+edits::Plan plan (const project::Project& project, const AddTrack& command, kits::KitCatalog* kits)
 {
     const auto fail = [] (const std::string& why) { return refused ("add a track: " + why); };
     const auto type = project::parseTrackType (command.type);
@@ -159,6 +310,10 @@ edits::Plan plan (const project::Project& project, const AddTrack& command)
         return fail (place.error);
 
     std::vector<std::string> remarks;
+    std::optional<KitNames> kitNames;
+
+    if (track.type == project::TrackType::drums)
+        track.drumMap = notes::standardDrumMap();
 
     if (command.instrument)
     {
@@ -167,15 +322,35 @@ edits::Plan plan (const project::Project& project, const AddTrack& command)
         if (! device.device)
             return fail (device.error);
 
+        // The standard map, with the kit's names merged in (SPEC §5.2).
+        if (device.device->type == project::DeviceType::drumSampler)
+        {
+            const auto kit = findKit (kits, device.device->kit);
+
+            if (kit.kit == nullptr)
+                return fail (kit.problem);
+
+            kitNames = mergeKitNames (project, track, kit.kit->manifest);
+            track.drumMap = kitNames->drumMap;
+        }
+
         remarks.push_back ("Its instrument is " + describeDevice (*device.device));
         track.devices.push_back (std::move (*device.device));
     }
 
     if (track.type == project::TrackType::drums)
     {
-        track.drumMap = notes::standardDrumMap();
-        remarks.push_back ("It has the standard drum map: " + std::to_string (track.drumMap.size())
-                           + " names on General MIDI's notes, such as kick (36), snare (38) and hat-closed (42)");
+        const auto standard = notes::standardDrumMap().size();
+        auto mapRemark = "It has the standard drum map: " + std::to_string (standard)
+                       + " names on General MIDI's notes, such as kick (36), snare (38) and hat-closed (42)";
+
+        if (kitNames && ! kitNames->added.empty())
+            mapRemark += ", plus the kit's " + listText (kitNames->added);
+
+        remarks.push_back (std::move (mapRemark));
+
+        if (kitNames && ! kitNames->notAdded.empty())
+            remarks.push_back (notAddedRemark (*kitNames));
     }
 
     std::string remarkText;
@@ -346,7 +521,7 @@ edits::Plan plan (const project::Project& project, const SetMix& command)
 }
 
 //==============================================================================
-edits::Plan plan (const project::Project& project, const SetInstrument& command)
+edits::Plan plan (const project::Project& project, const SetInstrument& command, kits::KitCatalog* kits)
 {
     const auto* track = project::findTrack (project, command.trackId);
 
@@ -371,15 +546,61 @@ edits::Plan plan (const project::Project& project, const SetInstrument& command)
     if (! device.device)
         return refused ("set " + track->id + "'s instrument: " + device.error);
 
+    // A kit must be installed, and its names join the drum map (SPEC §5.2),
+    // even when the track has the kit already: pieces added to the kit since
+    // get their names.
+    std::optional<KitNames> kitNames;
+    std::string adding;
+    std::vector<std::string> remarks;
+
+    if (device.device->type == project::DeviceType::drumSampler)
+    {
+        const auto kit = findKit (kits, device.device->kit);
+
+        if (kit.kit == nullptr)
+            return refused ("set " + track->id + "'s instrument: " + kit.problem);
+
+        kitNames = mergeKitNames (project, *track, kit.kit->manifest);
+        settings.drumMap = kitNames->drumMap;
+
+        if (! kitNames->added.empty())
+        {
+            adding = ", adding " + shortList (kitNames->added, "name") + " to its drum map";
+
+            if (shortList (kitNames->added, "name") != listText (kitNames->added))
+                remarks.push_back ("Added to the drum map: " + listText (kitNames->added));
+        }
+
+        if (! kitNames->notAdded.empty())
+            remarks.push_back (notAddedRemark (*kitNames));
+
+        if (const auto rewritten = rewrittenRemark (clipsRewrittenBy (project, *track, settings.drumMap)); ! rewritten.empty())
+            remarks.push_back (rewritten);
+    }
+
+    std::string remarkText;
+
+    for (const auto& remark : remarks)
+        remarkText += (remarkText.empty() ? "" : ". ") + remark;
+
     // The same kind of device: only its kit can differ, and it keeps its ID.
     if (current != nullptr && current->type == device.device->type)
     {
         if (current->kit == device.device->kit)
-            return unchanged (track->id + "'s instrument is already " + describeDevice (*current) + ", so nothing changed and no history entry was added");
+        {
+            if (! kitNames || kitNames->added.empty())
+                return unchanged (track->id + "'s instrument is already " + describeDevice (*current)
+                                  + (kitNames ? ", and its drum map has every name the kit can add" : "")
+                                  + ", so nothing changed and no history entry was added" + (remarkText.empty() ? "" : ". " + remarkText));
+
+            return { { true, {} }, { edits::SetTrack { std::move (settings) } },
+                     "added names from kit " + singleQuoted (current->kit) + " to " + track->id + "'s drum map: " + shortList (kitNames->added, "name"),
+                     std::move (remarkText) };
+        }
 
         settings.devices.front().kit = device.device->kit;
         return { { true, {} }, { edits::SetTrack { std::move (settings) } },
-                 "set " + track->id + "'s kit to " + singleQuoted (device.device->kit) + ", on " + current->id, {} };
+                 "set " + track->id + "'s kit to " + singleQuoted (device.device->kit) + ", on " + current->id + adding, std::move (remarkText) };
     }
 
     auto description = "set " + track->id + "'s instrument to " + describeDevice (*device.device);
@@ -388,7 +609,7 @@ edits::Plan plan (const project::Project& project, const SetInstrument& command)
         description += ", replacing " + current->id;
 
     settings.devices = { std::move (*device.device) };
-    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), {} };
+    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description) + adding, std::move (remarkText) };
 }
 
 namespace
@@ -471,10 +692,8 @@ edits::Plan plan (const project::Project& project, const SetDrumMap& command)
     if (settings.drumMap == track->drumMap)
         return unchanged (track->id + "'s drum map is already exactly that, so nothing changed and no history entry was added");
 
-    // Files linked into other tracks must still mean the same notes on each (SPEC §5.2),
-    // and the clips whose files are written differently now are worth naming.
+    // Files linked into other tracks must still mean the same notes on each (SPEC §5.2).
     edits::Files files;
-    std::vector<std::string> rewritten;
 
     for (const auto& clip : track->clips)
     {
@@ -489,29 +708,12 @@ edits::Plan plan (const project::Project& project, const SetDrumMap& command)
                     return fail (clip.file + " is also used on " + other->id + ", and with this map the two tracks wouldn't name its notes alike: "
                                  + conflicts + ". A file used on several tracks must mean the same notes on each, so change both maps alike, "
                                    "or make the clips unique first");
-
-        if (notes::write (content, project.meter, &track->drumMap) != notes::write (content, project.meter, &settings.drumMap))
-            for (const auto* user : project::clipsUsing (project, clip.file))
-                rewritten.push_back (user->id);
     }
 
-    auto changes = drumMapChanges (track->drumMap, settings.drumMap);
-    constexpr std::size_t shown = 4;
+    // The clips whose files are written differently now are worth naming.
+    auto remarks = rewrittenRemark (clipsRewrittenBy (project, *track, settings.drumMap));
+    auto description = "changed " + track->id + "'s drum map: " + shortList (drumMapChanges (track->drumMap, settings.drumMap), "change");
 
-    if (changes.size() > shown + 1)
-    {
-        const auto more = changes.size() - shown;
-        changes.resize (shown);
-        changes.push_back (std::to_string (more) + " more changes");
-    }
-
-    std::string remarks;
-
-    if (! rewritten.empty())
-        remarks = (rewritten.size() == 1 ? rewritten.front() + " is" : "These clips are") + std::string (" written with the new names now")
-                + (rewritten.size() == 1 ? "" : ": " + listText (rewritten));
-
-    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, "changed " + track->id + "'s drum map: " + listText (changes),
-             std::move (remarks) };
+    return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), std::move (remarks) };
 }
 }

@@ -4,6 +4,7 @@
 // random sequences of them: the bus's own (tests/core) and the sync layer's
 // (tests/engine).
 
+#include "common/TestKits.h"
 #include "core/commands/CommandBus.h"
 
 #include <array>
@@ -58,6 +59,17 @@ namespace hocket::testing
         return project;
     }
 
+    // The kits the random commands assign. Each adds names to a drum map,
+    // and has pieces the standard map names otherwise. "not-installed",
+    // which they also assign, isn't one.
+    inline kits::KitCatalog randomSequenceKits()
+    {
+        kits::KitCatalog catalog;
+        catalog.add (testKit ("acoustic", { { "kick", 36 }, { "rim", 37 }, { "snare", 38 }, { "hat-closed", 42 }, { "perc", 82 } }));
+        catalog.add (testKit ("electronic", { { "kick", 36 }, { "clap", 39 }, { "snare", 40 }, { "zap", 83 } }));
+        return catalog;
+    }
+
     namespace randomParts
     {
         // IDs, mostly real ones, sometimes not.
@@ -108,7 +120,7 @@ namespace hocket::testing
             {
                 case 0: return {};
                 case 1: return commands::Instrument { "hocket:synth", {} };
-                case 2: return commands::Instrument { "hocket:drum-sampler", pick (rng, std::array<std::string, 2> { "acoustic", "electronic" }) };
+                case 2: return commands::Instrument { "hocket:drum-sampler", pick (rng, std::array<std::string, 3> { "acoustic", "electronic", "not-installed" }) };
                 case 3: return commands::Instrument { "hocket:drum-sampler", {} };
                 default: return commands::Instrument { "vst3:serum", {} };
             }
@@ -137,7 +149,8 @@ namespace hocket::testing
 
         inline std::string notesText (Rng& rng)
         {
-            static const std::array<std::string, 7> texts {
+            // A#5 and B5 are the kits' perc and zap, which assigning a kit names.
+            static const std::array<std::string, 8> texts {
                 "@length 1bar\n\n1.1 C2 1/4 v100\n",
                 "@length 2bars\n\n1.1 E2 1/8 v90\n1.3 G2 1/8 v80\n",
                 "@length 4bars\n",
@@ -145,6 +158,7 @@ namespace hocket::testing
                 "1.1 D2 1/4 v70\n",
                 "1.1 H2 1/4 v100\n",
                 "@length 1bar\n\n1.1 C2 1/4 v100\n2.1 C2 1/4 v100\n",
+                "@length 1bar\n\n1.1 A#5 1/16 v100\n1.3 B5 1/16 v90\n",
             };
 
             return pick (rng, texts);

@@ -30,7 +30,9 @@ TEST_CASE ("random command sequences: refusals change nothing, every project rea
         CAPTURE (seed);
         Rng rng { seed };
         const auto original = randomSequenceProject();
+        auto kitCatalog = randomSequenceKits();
         CommandBus bus (original);
+        bus.setKitCatalog (&kitCatalog);
 
         for (int step = 0; step < 40; ++step)
         {

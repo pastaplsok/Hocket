@@ -1,6 +1,7 @@
 // The track commands: add, remove, rename, move, and the mix.
 
 #include "BusTesting.h"
+#include "common/TestKits.h"
 #include "core/project/Rules.h"
 
 using namespace hocket;
@@ -46,6 +47,20 @@ namespace
         const auto* track = project::findTrack (bus.project(), id);
         REQUIRE (track != nullptr);
         return *track;
+    }
+
+    // Kits whose pieces makeDrumProject's map already names, so assigning
+    // them adds no names; and "big", a bundled kit that adds some (and the
+    // standard map names some of its notes and names otherwise).
+    kits::KitCatalog installedKits()
+    {
+        kits::KitCatalog catalog;
+        catalog.add (testKit ("acoustic", { { "kick", 36 }, { "snare", 38 }, { "clap", 39 } }));
+        catalog.add (testKit ("electronic", { { "kick", 36 }, { "snare", 38 } }));
+        catalog.add (testKit ("jungle-breaks", { { "kick", 36 }, { "snare2", 40 } }));
+        catalog.add (testKit ("big", { { "kick", 36 }, { "rim", 37 }, { "snare-tight", 38 }, { "snare2", 41 }, { "cowbell", 56 },
+                                       { "perc", 82 }, { "shaker", 83 } }));
+        return catalog;
     }
 
     // Refused, with this message, changing nothing.
@@ -97,7 +112,9 @@ TEST_CASE ("add a track: at the end, with an ID from its name, announced and und
 
 TEST_CASE ("add a track: a drums track gets the standard drum map, and the result names its instrument")
 {
+    auto catalog = installedKits();
     CommandBus bus (makeProject());
+    bus.setKitCatalog (&catalog);
 
     const auto result = bus.execute (AddTrack { "drums", "Drums", {}, { "trk-bass", {} }, Instrument { "hocket:drum-sampler", "acoustic" } }, claude);
     CHECK (result.message == "#1 added track trk-drums \"Drums\" before trk-bass. Its instrument is dev-drums-kit, a hocket:drum-sampler "
@@ -400,7 +417,9 @@ namespace
 
 TEST_CASE ("set a track's instrument: add, replace or remove it, or change only the kit")
 {
+    auto catalog = installedKits();
     CommandBus bus (makeDrumProject());
+    bus.setKitCatalog (&catalog);
     ChangeLog log (bus);
 
     CHECK (bus.execute (SetInstrument { "trk-bass", {} }, claude).message == "#1 removed trk-bass's instrument dev-bass-synth");
@@ -425,8 +444,11 @@ TEST_CASE ("set a track's instrument: add, replace or remove it, or change only 
 
     const auto same = bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "jungle-breaks" } }, claude);
     CHECK (same.ok);
-    CHECK (same.message == "trk-perc's instrument is already dev-perc-kit, a hocket:drum-sampler playing kit 'jungle-breaks', so nothing changed "
-                           "and no history entry was added");
+    CHECK (same.message == "trk-perc's instrument is already dev-perc-kit, a hocket:drum-sampler playing kit 'jungle-breaks', and its drum map "
+                           "has every name the kit can add, so nothing changed and no history entry was added");
+
+    const auto sameSynth = bus.execute (SetInstrument { "trk-drums", Instrument { "hocket:synth", {} } }, claude);
+    CHECK (sameSynth.message == "trk-drums's instrument is already dev-drums-synth, a hocket:synth, so nothing changed and no history entry was added");
 
     REQUIRE (bus.execute (SetInstrument { "trk-bass", {} }, claude).ok);
     CHECK (bus.execute (SetInstrument { "trk-bass", {} }, claude).message
@@ -443,6 +465,157 @@ TEST_CASE ("set a track's instrument: add, replace or remove it, or change only 
         REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
 
     CHECK (bus.project() == makeDrumProject());
+}
+
+TEST_CASE ("assign a kit: its names join the drum map where the note and the name are free, and the result says what became of each piece")
+{
+    // clp-beat, linked into trk-perc, also plays A#5 (82), which neither map
+    // names; clp-fill is trk-drums's alone, and plays G#3 (56).
+    auto project = makeDrumProject();
+    const auto map = project.tracks[0].drumMap;
+    project.notesFiles["clips/beat.notes"] = parsedNotes ("@length 1bar\n\n1.1 kick 1/16 v100\n1.2 snare2 1/16 v90\n1.3 A#5 1/16 v80\n", {}, &map);
+    project.notesFiles["clips/fill.notes"] = parsedNotes ("@length 1bar\n\n1.1 G#3 1/16 v100\n", {}, &map);
+    project.tracks[0].clips.push_back ({ "clp-fill", "clips/fill.notes", 4 * bar });
+
+    auto catalog = installedKits();
+    CommandBus bus (project);
+    bus.setKitCatalog (&catalog);
+    ChangeLog log (bus);
+
+    CHECK (bus.execute (SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "big" } }, claude).message
+           == "#1 set trk-drums's kit to 'big', on dev-drums-kit, adding rim (37), cowbell (56) and shaker (83) to its drum map. "
+              "Not added to the drum map: snare-tight (38), since note 38 is already 'snare' there, which plays it; snare2 (41), since 'snare2' "
+              "is already note 40 there, so write F2 to play it; perc (82), since clips/beat.notes is also used on trk-perc, which would then "
+              "name its notes differently (note 82 (A#5) is 'perc' on trk-drums but has no name on trk-perc), so write A#5 to play it. "
+              "clp-fill is written with the new names now");
+    CHECK (log.take() == std::vector<std::string> { "InstrumentChanged trk-drums", "DrumMapChanged trk-drums" });
+
+    auto expected = map;
+    expected.add ("rim", 37);
+    expected.add ("cowbell", 56);
+    expected.add ("shaker", 83);
+    CHECK (trackOf (bus, "trk-drums").drumMap == expected);
+    CHECK (trackOf (bus, "trk-perc").drumMap == map);
+    CHECK (bus.project().notesFiles == project.notesFiles); // names change, never notes
+    CHECK (contains (*project::clipFileText (bus.project(), "clips/fill.notes"), "1.1      cowbell"));
+    CHECK (bus.changesTo ("clips/fill.notes").size() == 1);
+    CHECK (bus.changesTo ("clips/beat.notes").empty());
+    checkReadsBack (bus.project());
+
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.project() == project);
+    REQUIRE (bus.redo (lee).ok);
+    CHECK (trackOf (bus, "trk-drums").drumMap == expected);
+
+    // A drum sampler replacing a synth merges too, and so does a new one.
+    CHECK (bus.execute (SetInstrument { "trk-bass", Instrument { "hocket:synth", {} } }, claude).message
+           == "trk-bass's instrument is already dev-bass-synth, a hocket:synth, so nothing changed and no history entry was added");
+    REQUIRE (bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:synth", {} } }, claude).ok);
+    CHECK (bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "big" } }, claude).message
+           == "#3 set trk-perc's instrument to dev-perc-kit, a hocket:drum-sampler playing kit 'big', replacing dev-perc-synth, adding rim (37), "
+              "cowbell (56) and shaker (83) to its drum map. Not added to the drum map: snare-tight (38), since note 38 is already 'snare' there, "
+              "which plays it; snare2 (41), since 'snare2' is already note 40 there, so write F2 to play it; perc (82), since clips/beat.notes is "
+              "also used on trk-drums, which would then name its notes differently (note 82 (A#5) is 'perc' on trk-perc but has no name on "
+              "trk-drums), so write A#5 to play it");
+    CHECK (trackOf (bus, "trk-perc").drumMap == expected);
+    checkReadsBack (bus.project());
+}
+
+TEST_CASE ("assign a kit again: pieces added to the kit since get their names, and with nothing to add it changes nothing")
+{
+    auto catalog = installedKits();
+    CommandBus bus (makeDrumProject());
+    bus.setKitCatalog (&catalog);
+
+    // trk-drums plays 'acoustic', whose names its map has.
+    const auto acoustic = SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "acoustic" } };
+    CHECK (bus.execute (acoustic, claude).message
+           == "trk-drums's instrument is already dev-drums-kit, a hocket:drum-sampler playing kit 'acoustic', and its drum map has every name the "
+              "kit can add, so nothing changed and no history entry was added");
+    CHECK (bus.history().empty());
+
+    // The kit gains pieces, as a user's kit being edited would.
+    catalog.add (testKit ("acoustic", { { "kick", 36 }, { "snare", 38 }, { "clap", 39 }, { "kick-deep", 40 }, { "ride", 51 } }));
+    CHECK (bus.execute (acoustic, claude).message
+           == "#1 added names from kit 'acoustic' to trk-drums's drum map: ride (51). Not added to the drum map: kick-deep (40), since note 40 is "
+              "already 'snare2' there, which plays it");
+    CHECK (trackOf (bus, "trk-drums").devices == std::vector<project::Device> { { "dev-drums-kit", project::DeviceType::drumSampler, "acoustic" } });
+    CHECK (trackOf (bus, "trk-drums").drumMap.noteOf ("ride") == 51);
+
+    // Nothing more to add, but what wasn't added is still said.
+    CHECK (bus.execute (acoustic, claude).message
+           == "trk-drums's instrument is already dev-drums-kit, a hocket:drum-sampler playing kit 'acoustic', and its drum map has every name the "
+              "kit can add, so nothing changed and no history entry was added. Not added to the drum map: kick-deep (40), since note 40 is already "
+              "'snare2' there, which plays it");
+    CHECK (bus.history().size() == 1);
+}
+
+TEST_CASE ("assign a kit: a history entry names four of the names added, and the result all of them")
+{
+    auto catalog = installedKits();
+    catalog.add (testKit ("shakers", { { "shaker1", 90 }, { "shaker2", 91 }, { "shaker3", 92 }, { "shaker4", 93 }, { "shaker5", 94 },
+                                       { "shaker6", 95 }, { "shaker7", 96 } }));
+    CommandBus bus (makeDrumProject());
+    bus.setKitCatalog (&catalog);
+
+    CHECK (bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "shakers" } }, claude).message
+           == "#1 set trk-perc's instrument to dev-perc-kit, a hocket:drum-sampler playing kit 'shakers', adding shaker1 (90), shaker2 (91), "
+              "shaker3 (92), shaker4 (93) and 3 more names to its drum map. Added to the drum map: shaker1 (90), shaker2 (91), shaker3 (92), "
+              "shaker4 (93), shaker5 (94), shaker6 (95) and shaker7 (96)");
+    CHECK (bus.history().front().description
+           == "set trk-perc's instrument to dev-perc-kit, a hocket:drum-sampler playing kit 'shakers', adding shaker1 (90), shaker2 (91), "
+              "shaker3 (92), shaker4 (93) and 3 more names to its drum map");
+    CHECK (trackOf (bus, "trk-perc").drumMap.size() == 4 + 7);
+}
+
+TEST_CASE ("assign a kit: one that isn't installed is refused, naming the kits that are")
+{
+    auto catalog = installedKits();
+    catalog.add (testKit ("user/dusty-909", { { "kick", 36 } }));
+    CommandBus bus (makeDrumProject());
+    bus.setKitCatalog (&catalog);
+
+    const std::string installed = "The installed kits are 'acoustic' (bundled), 'big' (bundled), 'electronic' (bundled), 'jungle-breaks' (bundled), "
+                                  "'user/dusty-909' (the user's own)";
+    checkRefused (bus, SetInstrument { "trk-drums", Instrument { "hocket:drum-sampler", "acoustc" } },
+                  "set trk-drums's instrument: kit 'acoustc' isn't installed (did you mean 'acoustic'?). " + installed);
+    checkRefused (bus, SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "dusty-909" } },
+                  "set trk-perc's instrument: kit 'dusty-909' isn't installed (did you mean 'user/dusty-909'?). " + installed);
+    checkRefused (bus, AddTrack { "drums", "More", {}, {}, Instrument { "hocket:drum-sampler", "nope" } },
+                  "add a track: kit 'nope' isn't installed. " + installed);
+
+    // The user's kit is assigned by its user/ name.
+    CHECK (bus.execute (SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "user/dusty-909" } }, claude).message
+           == "#1 set trk-perc's instrument to dev-perc-kit, a hocket:drum-sampler playing kit 'user/dusty-909'");
+
+    // With no kits at all, the message says where they go.
+    CommandBus bare (makeDrumProject());
+    checkRefused (bare, SetInstrument { "trk-perc", Instrument { "hocket:drum-sampler", "acoustic" } },
+                  "set trk-perc's instrument: kit 'acoustic' isn't installed. No kits are installed: bundled kits go in kits\\ next to Hocket's "
+                  "programs, and the user's own in Documents\\Hocket\\Kits, named \"user/<folder>\"");
+
+    // A project naming a kit that isn't installed still loads, and the track
+    // can be given another instrument.
+    CHECK (bare.execute (SetInstrument { "trk-drums", Instrument { "hocket:synth", {} } }, claude).ok);
+}
+
+TEST_CASE ("add a track: a drums track with a kit has the standard drum map, with the kit's names merged in")
+{
+    auto catalog = installedKits();
+    CommandBus bus (makeProject());
+    bus.setKitCatalog (&catalog);
+
+    CHECK (bus.execute (AddTrack { "drums", "Drums", {}, {}, Instrument { "hocket:drum-sampler", "big" } }, claude).message
+           == "#1 added track trk-drums \"Drums\". Its instrument is dev-drums-kit, a hocket:drum-sampler playing kit 'big'. It has the standard "
+              "drum map: 47 names on General MIDI's notes, such as kick (36), snare (38) and hat-closed (42), plus the kit's perc (82) and "
+              "shaker (83). Not added to the drum map: rim (37), since note 37 is already 'sidestick' there, which plays it; snare-tight (38), "
+              "since note 38 is already 'snare' there, which plays it; snare2 (41), since note 41 is already 'tom-floor-low' there, which plays it");
+
+    auto expected = notes::standardDrumMap();
+    expected.add ("perc", 82);
+    expected.add ("shaker", 83);
+    CHECK (trackOf (bus, "trk-drums").drumMap == expected);
+    checkReadsBack (bus.project());
 }
 
 TEST_CASE ("set a drum map: the notes stay, the names change, and the history says how")

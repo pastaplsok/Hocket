@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.16** — 2026-11-18
+> Status: **Draft v0.17** — 2026-11-18
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -300,7 +300,7 @@ A drums track (`"type": "drums"`) has a **drum map** in `project.json` that maps
 1.2.3    snare 1/16  v28  # ghost note
 ```
 - **The map lives on the track**, in `project.json`, so a project reads and validates without any kit present. A kit's manifest maps notes to samples. The map is the project's own: a kit only adds to it, when it's assigned.
-- **Assigning a kit** keeps every entry already in the track's map, and adds the kit's names for notes and names the map doesn't use yet, so nothing renamed or added is lost. The result says which of the kit's pieces were added, and which weren't and why (the note already has another name, or the name is on another note). Assigning the kit a track already has merges again, so pieces added to the kit since get their names; it changes nothing only when nothing would be added.
+- **Assigning a kit** keeps every entry already in the track's map, and adds the kit's names for notes and names the map doesn't use yet, so nothing renamed or added is lost. A name isn't added either when a file the track shares with another track (below) would then name its notes differently on the two. The result says which of the kit's pieces were added, and which weren't and why (the note already has another name, which plays the piece; the name is on another note; or a shared file), with the note name that plays a piece left unnamed. Assigning the kit a track already has merges again, so pieces added to the kit since get their names; it changes nothing only when nothing would be added. A kit that isn't installed can't be assigned (§8.4).
 - **What the kit can't play:** a map usually names more than its kit has (the standard list names 47 pieces). The overview and `write_clip`'s result say which of the map's names, and which notes in a clip, the track's kit can't play.
 - **Standard names:** one list of piece names on the General MIDI percussion notes (below). A drum track with no kit gets this list as its map. Bundled kits (§8.4) use these names on these notes, and may add extra pieces on other notes.
 - **Naming rules:** lowercase letters and digits in words joined by single hyphens, starting with a letter, at most 32 characters. One note per name and one name per note.
@@ -377,7 +377,7 @@ Milestone 0's headless host has an opt-in exception for development, `--play --w
 ### 6.2 The API speaks the text format
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.
 - `read_clip` returns the stored text in canonical form, verbatim, in a content block of its own; the clip's details (ID, track, file, position, length) come in the block before it. A model can edit the text and send it straight back.
-- `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date. On a drums track, it also lists the notes the drum map doesn't name (§5.2).
+- `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date. On a drums track, it also lists the notes the drum map doesn't name, and on a drum sampler's track the notes its kit has no piece for, or that none sound because the kit can't play (§5.2).
 - Resizing a clip is a `write_clip` with a new `@length`. On a linked clip it resizes every clip using the file, and a longer `@length` must fit each of them. A note can't start at or after the clip's end (§5.4), so a shorter `@length` must leave out the notes past it.
 
 ### 6.3 Transport

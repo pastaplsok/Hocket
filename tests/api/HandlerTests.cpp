@@ -482,7 +482,7 @@ TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips
                      "Its notes are named by trk-drums's drum map, which get_project_overview lists; notes the map doesn't name are written as note names.\n"));
     CHECK (read.at ("content")[1].at ("text") == "@length 1bar\n\n1.1      [kick hat-closed]  1/16  v100\n1.2      snare 1/16  v100\n");
 
-    // Notes the map doesn't name are listed, since the kit may have nothing there.
+    // Notes the map doesn't name are listed, and the kit isn't installed, so none sound.
     const auto written = connection.call ("write_clip", { { "clip_id", "clp-beat" },
                                                           { "notes", "@length 1bar\n\n1.1      kick  1/16  v100\n1.2      Bb5   1/16  v90\n"
                                                                      "1.3      Bb5   1/16  v90\n1.4      C7    1/16  v90\n" } });
@@ -490,14 +490,63 @@ TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips
     CHECK (written.at ("content")[0].at ("text")
            == "#1 wrote clip clp-beat (4 notes)\n"
               "Stored exactly as you sent it.\n"
-              "These notes have no name in trk-drums's drum map, so they're written as note names: Bb5 (note 82, 2 notes), C7 (note 96). "
-              "They only sound if the kit has a piece there.");
+              "These notes have no name in trk-drums's drum map, so they're written as note names: Bb5 (note 82, 2 notes), C7 (note 96).\n"
+              "None of these notes sound: kit 'acoustic' isn't installed. No kits are installed: bundled kits go in kits\\ next to Hocket's "
+              "programs, and the user's own in Documents\\Hocket\\Kits, named \"user/<folder>\", so trk-drums is silent.");
 
     // A note name the map names is stored as the name.
     const auto renamed = connection.call ("write_clip", { { "clip_id", "clp-beat" }, { "notes", "@length 1bar\n\n1.1      D2    1/16  v100\n" } });
     CHECK (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "Stored in canonical form, which differs from what you sent"));
     CHECK_FALSE (contains (renamed.at ("content")[0].at ("text").get<std::string>(), "no name in"));
     CHECK (connection.call ("read_clip", { { "clip_id", "clp-beat" } }).at ("content")[1].at ("text") == "@length 1bar\n\n1.1      snare 1/16  v100\n");
+}
+
+TEST_CASE ("write_clip on a drums track names the clip's notes that its kit has no piece for")
+{
+    const auto piece = [] (std::string name, int note) { return kits::Piece { std::move (name), note, "x.wav", 0.0 }; };
+
+    kits::KitCatalog catalog;
+    catalog.add ({ "electronic", kits::Source::bundled, {}, { "Electronic, 808-style", { piece ("kick", 36), piece ("snare", 38), piece ("perc", 82) }, {} } });
+
+    project::Track drums { "trk-drums", "Drums", project::TrackType::drums, { { "dev-drums-kit", project::DeviceType::drumSampler, "electronic" } },
+                           { { "clp-beat", "clips/beat.notes", 0 } } };
+    drums.drumMap = notes::standardDrumMap();
+    project::Track keys { "trk-keys", "Keys", project::TrackType::drums, { { "dev-keys-synth", project::DeviceType::synth } },
+                          { { "clp-keys", "clips/keys.notes", 0 } } };
+    keys.drumMap = notes::standardDrumMap();
+
+    project::Project project;
+    project.notesFiles["clips/beat.notes"] = *notes::parse ("@length 1bar\n").clip;
+    project.notesFiles["clips/keys.notes"] = *notes::parse ("@length 1bar\n").clip;
+    project.tracks.push_back (std::move (drums));
+    project.tracks.push_back (std::move (keys));
+
+    commands::CommandBus bus (std::move (project));
+    bus.setKitCatalog (&catalog);
+    api::HandlerOptions handlerOptions;
+    handlerOptions.token = token;
+    api::Handler handler (bus, std::move (handlerOptions));
+    handler.connectionOpened (1);
+    Connection connection { handler, 1 };
+    REQUIRE (connection.hello().contains ("result"));
+
+    const auto beat = "@length 1bar\n\n1.1      [kick hat-closed]  1/16  v100\n1.2      snare 1/16  v90\n1.3      hat-closed  1/16  v80\n"
+                      "1.4      [A#5 C7]  1/16  v90\n";
+    CHECK (connection.call ("write_clip", { { "clip_id", "clp-beat" }, { "notes", beat } }).at ("content")[0].at ("text")
+           == "#1 wrote clip clp-beat (6 notes)\n"
+              "Stored exactly as you sent it.\n"
+              "These notes have no name in trk-drums's drum map, so they're written as note names: A#5 (note 82), C7 (note 96).\n"
+              "Kit \"electronic\" has no piece for these, so they're silent: hat-closed (2 notes), C7 (note 96).");
+
+    // Everything plays: nothing more to say.
+    CHECK (connection.call ("write_clip", { { "clip_id", "clp-beat" }, { "notes", "@length 1bar\n\n1.1      kick  1/16  v100\n" } })
+               .at ("content")[0].at ("text")
+           == "#2 wrote clip clp-beat (1 note)\nStored exactly as you sent it.");
+
+    // A drums track played by a synth has no kit to miss pieces.
+    CHECK (connection.call ("write_clip", { { "clip_id", "clp-keys" }, { "notes", "@length 1bar\n\n1.1      hat-closed  1/16  v100\n" } })
+               .at ("content")[0].at ("text")
+           == "#3 wrote clip clp-keys (1 note)\nStored exactly as you sent it.");
 }
 
 TEST_CASE ("the overview says where each track's kit came from, and which of the drum map's names it plays")

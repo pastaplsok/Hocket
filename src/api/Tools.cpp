@@ -152,8 +152,59 @@ namespace
         return text;
     }
 
+    // "kick (2 notes), A#5 (note 82)": notes by the name the track writes them
+    // with, each pitch once, with a count where there's more than one.
+    std::string pitchListText (const notes::DrumMap* drumMap, const std::map<int, std::pair<notes::Accidental, std::size_t>>& pitches)
+    {
+        std::string list;
+
+        for (const auto& [pitch, spellingAndCount] : pitches)
+        {
+            const auto& [spelling, count] = spellingAndCount;
+            const auto* name = drumMap != nullptr ? drumMap->nameOf (pitch) : nullptr;
+            list += (list.empty() ? "" : ", ") + (name != nullptr ? *name : notes::formatPitch (pitch, spelling));
+
+            if (name != nullptr && count > 1)
+                list += " (" + countText (count, "note") + ")";
+            else if (name == nullptr)
+                list += " (note " + std::to_string (pitch) + (count > 1 ? ", " + countText (count, "note") : "") + ")";
+        }
+
+        return list;
+    }
+
+    // On a track whose drum sampler can't play some of a clip's notes, which
+    // ones (SPEC §5.2): those its kit has no piece for, or all of them when
+    // the kit can't play. Empty otherwise.
+    std::string kitGapsText (CommandBus& bus, const project::Track& track, const notes::Clip& content)
+    {
+        const auto sampler = std::ranges::find (track.devices, project::DeviceType::drumSampler, &project::Device::type);
+
+        if (sampler == track.devices.end() || content.notes.empty())
+            return {};
+
+        kits::KitCatalog none;
+        auto& catalog = bus.kits() != nullptr ? *bus.kits() : none;
+        const auto found = catalog.find (sampler->kit);
+
+        if (found.kit == nullptr)
+            return "None of these notes sound: " + found.problem + ", so " + track.id + " is silent.";
+
+        std::map<int, std::pair<notes::Accidental, std::size_t>> silent; // pitch -> spelling, count
+
+        for (const auto& note : content.notes)
+            if (found.kit->manifest.pieceOn (note.pitch) == nullptr)
+                ++silent.try_emplace (note.pitch, note.spelling, 0).first->second.second;
+
+        if (silent.empty())
+            return {};
+
+        return "Kit " + doubleQuoted (found.kit->name) + " has no piece for these, so they're silent: "
+             + pitchListText (project::drumMapOf (track), silent) + ".";
+    }
+
     // On a drums track, the notes its drum map doesn't name (SPEC §5.2): they're
-    // written as note names, and a kit may have no piece there. Empty otherwise.
+    // written as note names. Empty otherwise.
     std::string unnamedNotesText (const project::Track& track, const notes::Clip& content)
     {
         const auto* drumMap = project::drumMapOf (track);
@@ -170,17 +221,7 @@ namespace
         if (unnamed.empty())
             return {};
 
-        std::string list;
-
-        for (const auto& [pitch, spellingAndCount] : unnamed)
-        {
-            const auto& [spelling, count] = spellingAndCount;
-            list += (list.empty() ? "" : ", ") + notes::formatPitch (pitch, spelling) + " (note " + std::to_string (pitch)
-                  + (count > 1 ? ", " + countText (count, "note") : "") + ")";
-        }
-
-        return "These notes have no name in " + track.id + "'s drum map, so they're written as note names: " + list
-             + ". They only sound if the kit has a piece there.";
+        return "These notes have no name in " + track.id + "'s drum map, so they're written as note names: " + pitchListText (nullptr, unnamed) + ".";
     }
 
     std::string tempoText (double tempo)
@@ -425,11 +466,12 @@ namespace
         const auto stored = notes::write (content, project.meter, project::drumMapOf (*track));
         const auto changes = describeChanges (sent, stored);
         const auto unnamed = unnamedNotesText (*track, content);
+        const auto gaps = kitGapsText (call.bus, *track, content);
 
         return success (result.message + "\n"
                         + (changes.empty() ? "Stored exactly as you sent it."
                                            : "Stored in canonical form, which differs from what you sent: " + changes + ". read_clip returns the stored text.")
-                        + (unnamed.empty() ? std::string() : "\n" + unnamed));
+                        + (unnamed.empty() ? std::string() : "\n" + unnamed) + (gaps.empty() ? std::string() : "\n" + gaps));
     }
 
     ToolResult undo (const Call& call)
@@ -561,8 +603,11 @@ namespace
                "- pitch: note name and octave, e.g. C2, F#4, Bb3 (C4 is middle C). A chord is [C3 E3 G3]. On a drums "
                "track, use the names in the track's drum map instead (kick, snare, hat-closed; get_project_overview "
                "lists each map), e.g. \"1.1 [kick hat-closed] 1/16 v100\". Hocket writes every note the map names by "
-               "its name, and other notes by note name.\n"
-               "- length: a fraction of a whole note (1/4, 1/8, 3/16), a triplet (1/8t), or ticks (250tk).\n"
+               "its name, and other notes by note name. The result lists the clip's notes that the track's kit has no "
+               "piece for, which are silent.\n"
+               "- length: a fraction of a whole note (1/4, 1/8, 3/16), a triplet (1/8t), or ticks (250tk). On a drum "
+               "kit, length doesn't change the sound: each hit plays its sample to the end, unless the kit's choke "
+               "groups cut it (a closed hat cuts an open one), so write 1/16.\n"
                "- velocity: v1 to v127, required on every line.\n"
                "- # starts a comment, kept as written.\n"
                "Clips linked to this one share its .notes file, so they change too; the result names them. A clip, and "

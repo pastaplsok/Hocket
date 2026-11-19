@@ -4,6 +4,7 @@
 // carry it out. Internal to the bus, which records what a plan does.
 
 #include "core/commands/Edits.h"
+#include "core/kits/KitCatalog.h"
 
 namespace hocket::commands::planning
 {
@@ -11,13 +12,14 @@ namespace hocket::commands::planning
     edits::Plan plan (const project::Project& project, const SetTempo& command);
     edits::Plan plan (const project::Project& project, const SetTimeSignature& command);
 
-    // TrackCommands.cpp
-    edits::Plan plan (const project::Project& project, const AddTrack& command);
+    // TrackCommands.cpp. Assigning a kit looks it up in the installed kits
+    // (nullptr: none are installed), and adds its names to the drum map (SPEC §5.2).
+    edits::Plan plan (const project::Project& project, const AddTrack& command, kits::KitCatalog* kits);
     edits::Plan plan (const project::Project& project, const RemoveTrack& command);
     edits::Plan plan (const project::Project& project, const RenameTrack& command);
     edits::Plan plan (const project::Project& project, const MoveTrack& command);
     edits::Plan plan (const project::Project& project, const SetMix& command);
-    edits::Plan plan (const project::Project& project, const SetInstrument& command);
+    edits::Plan plan (const project::Project& project, const SetInstrument& command, kits::KitCatalog* kits);
     edits::Plan plan (const project::Project& project, const SetDrumMap& command);
 
     // ClipCommands.cpp

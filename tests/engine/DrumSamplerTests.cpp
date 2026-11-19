@@ -479,6 +479,7 @@ TEST_CASE ("live: a new kit while playing replaces the old on the same plugin, f
 
     FakeAudioDevice device;
     commands::CommandBus bus (makeProject ({ drumsTrack ("user/kit-a", { makeClip ("clp-beat", 0, "@length 1bar\n\n1.1 C#3 1/16 v127\n1.3 C2 1/16 v127\n") }) }));
+    bus.setKitCatalog (&*kits.catalog); // assigning kit B looks it up
     engine::EditSync sync (testEngine(), bus, &library);
     library.waitUntilIdle();
     auto* before = &samplerOf (sync);

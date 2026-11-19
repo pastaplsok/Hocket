@@ -38,7 +38,9 @@ namespace
 
 TEST_CASE ("sync: tracks added, removed, moved and renamed reach the Edit, and undo takes them back")
 {
+    auto kitCatalog = randomSequenceKits();
     CommandBus bus (randomSequenceProject());
+    bus.setKitCatalog (&kitCatalog);
     engine::EditSync sync (testEngine(), bus);
     checkEditMatches (sync, bus);
 
@@ -69,7 +71,9 @@ TEST_CASE ("sync: instruments added, replaced and removed, always ahead of the t
     // track, last of the track's own plugins, directly before Tracktion's
     // volume plugin. A test plugin on the bass, as the mix tests put one,
     // stays ahead of it too.
+    auto kitCatalog = randomSequenceKits();
     CommandBus bus (randomSequenceProject());
+    bus.setKitCatalog (&kitCatalog);
     engine::EditSync sync (testEngine(), bus);
     SteadyTone::addTo (*tracktion::getAudioTracks (sync.edit())[0]);
     sync.edit().getUndoManager().clearUndoHistory();
@@ -90,7 +94,9 @@ TEST_CASE ("sync: instruments added, replaced and removed, always ahead of the t
 
 TEST_CASE ("sync: clips added, moved, removed, linked and made unique")
 {
+    auto kitCatalog = randomSequenceKits();
     CommandBus bus (randomSequenceProject());
+    bus.setKitCatalog (&kitCatalog);
     engine::EditSync sync (testEngine(), bus);
 
     run (bus, sync, AddClip { "trk-bass", "9.1", EmptyClip { 2 }, {}, {} });
@@ -118,7 +124,9 @@ TEST_CASE ("sync: volume, pan, mute and solo reach each track's gain stage, and 
     auto start = randomSequenceProject();
     start.tracks[1].volume = -6.5;
     start.tracks[1].pan = 30;
+    auto kitCatalog = randomSequenceKits();
     CommandBus bus (start);
+    bus.setKitCatalog (&kitCatalog);
     engine::EditSync sync (testEngine(), bus);
     checkEditMatches (sync, bus);
 
@@ -151,7 +159,9 @@ TEST_CASE ("sync: volume, pan, mute and solo reach each track's gain stage, and 
 
 TEST_CASE ("sync: the tempo moves every clip to keep its beats, a time signature moves none, and undo takes them back")
 {
+    auto kitCatalog = randomSequenceKits();
     CommandBus bus (randomSequenceProject());
+    bus.setKitCatalog (&kitCatalog);
     engine::EditSync sync (testEngine(), bus);
     const auto before = randomSequenceProject();
 
@@ -174,7 +184,9 @@ TEST_CASE ("sync: random command sequences keep the Edit matching the model, thr
     {
         CAPTURE (seed);
         Rng rng { seed };
+        auto kitCatalog = randomSequenceKits();
         CommandBus bus (randomSequenceProject());
+        bus.setKitCatalog (&kitCatalog);
         engine::EditSync sync (testEngine(), bus);
 
         for (int step = 0; step < 30; ++step)
@@ -246,7 +258,9 @@ TEST_CASE ("sync: random commands during playback, with the loop region and loop
         CAPTURE (seed);
         Rng rng { seed };
         FakeAudioDevice device;
+        auto kitCatalog = randomSequenceKits();
         CommandBus bus (randomSequenceProject());
+        bus.setKitCatalog (&kitCatalog);
         engine::EditSync sync (testEngine(), bus);
 
         // Fast, so plays reach their end often (until a random tempo).

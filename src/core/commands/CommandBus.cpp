@@ -139,7 +139,13 @@ Result CommandBus::runTransportCommand (const Command& command)
 edits::Plan CommandBus::plan (const Command& command) const
 {
     return std::visit (Overloaded {
-                           [this] (const auto& c) { return planning::plan (currentProject, c); },
+                           [this] (const auto& c)
+                           {
+                               if constexpr (requires { planning::plan (currentProject, c, kitCatalog); })
+                                   return planning::plan (currentProject, c, kitCatalog);
+                               else
+                                   return planning::plan (currentProject, c);
+                           },
                            // Transport commands never get here.
                            [] (const Play&) { return edits::Plan {}; },
                            [] (const Stop&) { return edits::Plan {}; },
