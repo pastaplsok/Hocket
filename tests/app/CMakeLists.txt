@@ -39,6 +39,14 @@ set_tests_properties(hocket_headless_check_notes_missing_kit PROPERTIES
     FIXTURES_REQUIRED drum_project
     PASS_REGULAR_EXPRESSION "Note: track trk-drums is silent: kit 'not-installed' isn't installed")
 
+# The electronic kit's audition project (step 8) is valid, and its kit is
+# installed: the build copies the bundled kits next to the program.
+add_test(NAME hocket_headless_check_electronic_kit_example
+    COMMAND hocket_headless --check "${PROJECT_SOURCE_DIR}/examples/electronic-kit")
+set_tests_properties(hocket_headless_check_electronic_kit_example PROPERTIES
+    PASS_REGULAR_EXPRESSION "OK: 96 BPM, 4/4, 1 track, 4 clips in 3 files, as linked clips share them"
+    FAIL_REGULAR_EXPRESSION "silent|isn't installed")
+
 # A --master-volume that isn't a volume is refused before anything else. The
 # folder doesn't exist either, so --play can't get as far as opening a device.
 add_test(NAME hocket_headless_master_volume_needs_a_unit

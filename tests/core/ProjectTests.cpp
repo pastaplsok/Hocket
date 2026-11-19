@@ -326,6 +326,25 @@ TEST_CASE ("the example project loads from disk and is in canonical form")
     }
 }
 
+TEST_CASE ("the electronic kit's audition project loads from disk and is in canonical form")
+{
+    const auto folder = hocket::pathFromUtf8 (HOCKET_EXAMPLES_DIR "/electronic-kit");
+    const auto result = load (folder);
+
+    for (const auto& error : result.errors)
+        MESSAGE (formatDiagnostic (error));
+
+    REQUIRE (result.project);
+    REQUIRE (result.project->tracks.size() == 1);
+    CHECK (result.project->tracks.front().devices.front().kit == "electronic");
+
+    for (const auto& [path, contents] : write (*result.project))
+    {
+        CAPTURE (path);
+        CHECK (readFile (folder / hocket::pathFromUtf8 (path)) == contents);
+    }
+}
+
 TEST_CASE ("loading a folder that isn't a project explains why")
 {
     const auto missing = load (hocket::pathFromUtf8 (HOCKET_EXAMPLES_DIR "/no-such-project"));

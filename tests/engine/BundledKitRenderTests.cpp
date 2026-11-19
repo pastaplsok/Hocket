@@ -65,6 +65,46 @@ TEST_CASE ("bundled kits' headroom: every piece struck at once at v127, rendered
     }
 }
 
+TEST_CASE ("render: the electronic kit's audition project plays each piece of its tour where the clip says, and nothing in it clips")
+{
+    auto catalog = bundledKits();
+    engine::KitLibrary library (catalog);
+    auto loaded = project::load (pathFromUtf8 (HOCKET_EXAMPLES_DIR "/electronic-kit"));
+    REQUIRE (loaded.project);
+    commands::CommandBus bus (std::move (*loaded.project));
+    engine::EditSync sync (testEngine(), bus, &library);
+    library.waitUntilIdle();
+
+    const auto audio = renderLoop (sync);
+    REQUIRE (audio.sampleRate == 44100.0);
+    CHECK (audio.buffer.getNumSamples() == audio.sampleAt (62.5)); // 25 bars at 96 BPM
+
+    const auto peak = peakBetween (audio.buffer, 0, audio.buffer.getNumSamples());
+    MESSAGE ("the audition project peaks at " << dbfs (peak) << " dBFS");
+    CHECK (dbfs (peak) <= -1.0);
+
+    // The tour: a piece every half bar (1.25 s at 96 BPM) from 1.1 to 11.1,
+    // the crash at 12.1 and the ride at 13.1. Each comes out of silence, at
+    // its place (its attack can take a few ms to reach the threshold).
+    std::vector<double> starts;
+
+    for (int piece = 0; piece < 21; ++piece)
+        starts.push_back (piece * 1.25);
+
+    starts.push_back (27.5);
+    starts.push_back (30.0);
+
+    for (const auto seconds : starts)
+    {
+        CAPTURE (seconds);
+        const auto at = audio.sampleAt (seconds);
+        const auto first = firstSoundAt (audio.buffer, at - audio.sampleAt (0.05), 1.0e-4f);
+        CHECK (first >= at);
+        CHECK (first <= at + audio.sampleAt (0.004));
+        CHECK (peakBetween (audio.buffer, at, at + audio.sampleAt (0.2)) > 1.0e-3f);
+    }
+}
+
 TEST_CASE ("bundled kits' headroom at 48 kHz: converted as a 48 kHz device gets them, every piece struck at once at v127 peaks at -1 dBFS or under")
 {
     auto catalog = bundledKits();
