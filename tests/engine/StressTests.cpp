@@ -7,6 +7,7 @@
 // and runs the message loop between them, where Tracktion rebuilds its
 // playback graph and hands it to the audio thread.
 
+#include "DrumTesting.h"
 #include "EngineTesting.h"
 
 #include "core/notes/Notes.h"
@@ -451,19 +452,30 @@ namespace
         std::vector<std::vector<MidiRecorder::Event>> midi; // what each recorder `before` gave recorded
         project::Project finalProject;                      // after the changes
         std::chrono::duration<double> longestLockHold {};    // EditSync's of JUCE's audio callback lock
+        int lastChangeSample = 0;                           // about where in `out` the last change was sent
     };
 
     // Plays a bar untouched, then sends `count` commands at 20 a second, then
     // plays to the end of the bar after the last. `before` runs once the Edit
     // exists, and gives the recorders it added, whose MIDI the run keeps;
-    // `after` runs once the changes are sent.
+    // `after` runs once the changes are sent. With `kits` (opened), the bus
+    // and the drum samplers use them, and play waits for them to load.
+    // `atEnd` runs once playback is over, before the Edit goes.
     StressRun stressWith (project::Project project, int count, const std::function<commands::Command (int)>& change,
                           const std::function<std::vector<MidiRecorder*> (engine::EditSync&)>& before = {},
-                          const std::function<void (commands::CommandBus&)>& after = {})
+                          const std::function<void (commands::CommandBus&)>& after = {}, Kits* kits = nullptr,
+                          const std::function<void (engine::EditSync&)>& atEnd = {})
     {
         FakeAudioDevice device;
         commands::CommandBus bus (std::move (project));
-        engine::EditSync sync (testEngine(), bus);
+
+        if (kits != nullptr)
+            bus.setKitCatalog (&*kits->catalog);
+
+        engine::EditSync sync (testEngine(), bus, kits != nullptr ? &*kits->library : nullptr);
+
+        if (kits != nullptr)
+            kits->library->waitUntilIdle();
 
         const auto recorders = before ? before (sync) : std::vector<MidiRecorder*> {};
         REQUIRE (timedPlay (bus, lee).ok);
@@ -484,6 +496,7 @@ namespace
         }
 
         run.changesTook = std::chrono::duration<double> (Clock::now() - start).count();
+        run.lastChangeSample = audio.blocksPlayed() * blockSize;
 
         if (after)
             after (bus);
@@ -500,6 +513,9 @@ namespace
         // The recorders go with the Edit.
         for (const auto* recorder : recorders)
             run.midi.push_back (recorder->recorded());
+
+        if (atEnd)
+            atEnd (sync);
 
         return run;
     }
@@ -953,4 +969,329 @@ TEST_CASE ("stress: tempo changed 20 a second during playback: a held note isn't
     CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note >= 0 && e.on; }) == 1);
     CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note >= 0 && ! e.on; }) == 0);
     CHECK (std::ranges::count_if (events, [] (const MidiRecorder::Event& e) { return e.note < 0 && e.sample > 0; }) == 0);
+}
+
+//==============================================================================
+// The drum sampler at 20 changes a second (Milestone 1's step 7, part 6): a
+// drum clip rewritten, and kits swapped. A drum hit is the same every time, so
+// what plays can be checked sample for sample: a gap, a click, a dropped
+// block, a hit struck twice, late or not at all, or a hit from the wrong kit
+// all show. Kits are made up as in DrumSamplerTests.cpp; a MidiRecorder ahead
+// of the sampler checks the MIDI it gets.
+namespace
+{
+    constexpr int eighth = beatSamples / 2; // 11025 samples at 120 BPM
+    constexpr int sixteenth = eighth / 2 + 1;
+
+    // The MIDI a drum sampler got, as a synth would need it: no note struck
+    // again while it's on, and none still on at the end (`played` samples)
+    // for longer than a sixteenth, the clips' notes' length. Empty if fine.
+    std::string drumMidiProblems (const std::vector<MidiRecorder::Event>& events, int played)
+    {
+        std::array<std::int64_t, 128> onSince {};
+        onSince.fill (-1);
+
+        for (const auto& e : events)
+        {
+            if (e.note < 0)
+            {
+                onSince.fill (-1);
+                continue;
+            }
+
+            auto& since = onSince[static_cast<std::size_t> (e.note)];
+
+            if (e.on && since >= 0)
+                return "note " + std::to_string (e.note) + " was struck again at sample " + std::to_string (e.sample) + " while on: "
+                     + historyOf (e.note, events);
+
+            since = e.on ? e.sample : -1;
+        }
+
+        for (int note = 0; note < 128; ++note)
+            if (const auto since = onSince[static_cast<std::size_t> (note)]; since >= 0 && played - since > sixteenth + 2 * blockSize)
+                return "note " + std::to_string (note) + " is left on: " + historyOf (note, events);
+
+        return {};
+    }
+
+    // A bar of eighth notes on a drum kit: each holds a piece's sample, or
+    // nothing. The samples are shorter than an eighth, so each hit sounds alone.
+    using Slots = std::array<const std::vector<float>*, 8>;
+
+    struct SlotsHeard
+    {
+        int first = 0;  // slots heard as `first` has them, where it differs from `last`
+        int last = 0;   // and as `last` has them
+        std::string problem;
+    };
+
+    // From the first hit to the end of what played, each eighth must hold
+    // exactly one whole hit, `first`'s or `last`'s for that eighth, at v127
+    // and 0 dB, and silence after it, on both channels: nothing dropped, cut,
+    // struck twice or late. From `onlyLastFrom` on, it must be `last`'s.
+    SlotsHeard checkSlots (const juce::AudioBuffer<float>& out, int played, const Slots& first, const Slots& last, int onlyLastFrom)
+    {
+        SlotsHeard heard;
+        const auto start = firstSoundAt (out);
+
+        if (start < 0 || start >= blockSize)
+        {
+            heard.problem = "the first hit came at sample " + std::to_string (start) + ", not in the first block";
+            return heard;
+        }
+
+        const auto matches = [&out] (int from, const std::vector<float>* sample)
+        {
+            for (int channel = 0; channel < 2; ++channel)
+                for (int i = 0; i < eighth; ++i)
+                    if (out.getSample (channel, from + i) != (sample != nullptr ? at (*sample, i) : 0.0f))
+                        return false;
+
+            return true;
+        };
+
+        for (int from = start, slot = 0; from + eighth <= played; from += eighth, slot = (slot + 1) % 8)
+        {
+            const auto* a = first[static_cast<std::size_t> (slot)];
+            const auto* b = last[static_cast<std::size_t> (slot)];
+            const auto isLast = matches (from, b);
+            const auto isFirst = a == b ? isLast : matches (from, a);
+            const auto where = "the eighth at sample " + std::to_string (from) + " (bar " + std::to_string ((from - start) / barSamples + 1) + ", eighth "
+                             + std::to_string (slot + 1) + ")";
+
+            if (! isFirst && ! isLast)
+            {
+                heard.problem = where + " is neither whole hit it could be";
+                return heard;
+            }
+
+            if (from >= onlyLastFrom && ! isLast)
+            {
+                heard.problem = where + " came after the last change, but isn't what it made";
+                return heard;
+            }
+
+            if (a != b)
+                ++(isLast ? heard.last : heard.first);
+        }
+
+        return heard;
+    }
+}
+
+TEST_CASE ("stress checks: the drum checks catch a dropped block, a late, doubled or wrong hit, the old pattern after the last change, and a stuck note")
+{
+    // Three bars from sample 100: two as `first` has them, then one as `last`.
+    const auto kickSample = tone (9000, 0.05, 0.5f);
+    const auto hatSample = tone (3000, 0.3, 0.3f);
+    const auto otherHat = tone (3000, 0.37, 0.25f);
+    const Slots first { &kickSample, &hatSample, &kickSample, &hatSample, &kickSample, &hatSample, &kickSample, &hatSample };
+    const Slots last { &kickSample, &otherHat, &kickSample, nullptr, &kickSample, &otherHat, &kickSample, nullptr };
+    constexpr int start = 100;
+    constexpr int played = start + 3 * barSamples;
+
+    // `damage` changes one hit's place, or adds one, by slot number from the start.
+    const auto make = [&] (int damagedSlot = -1, int lateBy = 0, const std::vector<float>* instead = nullptr)
+    {
+        juce::AudioBuffer<float> out (2, played);
+        out.clear();
+
+        for (int slot = 0; slot < 24; ++slot)
+        {
+            const auto& slots = slot < 16 ? first : last;
+            const auto* sample = slot == damagedSlot && instead != nullptr ? instead : slots[static_cast<std::size_t> (slot % 8)];
+            const auto from = start + slot * eighth + (slot == damagedSlot ? lateBy : 0);
+
+            if (sample != nullptr)
+                for (int channel = 0; channel < 2; ++channel)
+                    for (std::size_t i = 0; i < sample->size(); ++i)
+                        out.addSample (channel, from + static_cast<int> (i), (*sample)[i]);
+        }
+
+        return out;
+    };
+
+    const auto lastFrom = start + 2 * barSamples;
+    const auto fine = checkSlots (make(), played, first, last, lastFrom);
+    CHECK (fine.problem.empty());
+    CHECK (fine.first == 8);
+    CHECK (fine.last == 4);
+
+    auto dropped = make();
+    dropped.clear (start + barSamples + 1000, blockSize);
+    CHECK (checkSlots (dropped, played, first, last, lastFrom).problem
+           == "the eighth at sample 88300 (bar 2, eighth 1) is neither whole hit it could be");
+    CHECK (checkSlots (make (9, 1), played, first, last, lastFrom).problem == "the eighth at sample 99325 (bar 2, eighth 2) is neither whole hit it could be");
+    CHECK_FALSE (checkSlots (make (9, 4000), played, first, last, lastFrom).problem.empty());           // late by an eighth's third
+    CHECK_FALSE (checkSlots (make (3, 0, &kickSample), played, first, last, lastFrom).problem.empty()); // a piece neither has there
+
+    auto doubled = make(); // the hat in bar 2's second eighth struck again
+    for (int channel = 0; channel < 2; ++channel)
+        for (std::size_t i = 0; i < hatSample.size(); ++i)
+            doubled.addSample (channel, start + 9 * eighth + 4000 + static_cast<int> (i), hatSample[i]);
+
+    CHECK_FALSE (checkSlots (doubled, played, first, last, lastFrom).problem.empty());
+    CHECK (checkSlots (make(), played, first, last, start + barSamples).problem
+           == "the eighth at sample 99325 (bar 2, eighth 2) came after the last change, but isn't what it made");
+
+    using Event = MidiRecorder::Event;
+    CHECK (drumMidiProblems ({ { 0, 36, true }, { 5000, 36, false }, { 11025, 36, true }, { 16000, 36, false } }, 20000).empty());
+    CHECK (drumMidiProblems ({ { 0, 36, true }, { 19000, 42, true } }, 20000) == "note 36 is left on: on 36 at sample 0; ");
+    CHECK (drumMidiProblems ({ { 0, 36, true }, { 3000, 36, true } }, 20000) == "note 36 was struck again at sample 3000 while on: on 36 at sample 0; on 36 at sample 3000; ");
+    CHECK (drumMidiProblems ({ { 0, 36, true }, { 3000, -1, false } }, 20000).empty()); // all notes off ends it
+    CHECK (drumMidiProblems (std::vector<Event> { { 19000, 36, true } }, 20000).empty()); // still within its sixteenth
+}
+
+TEST_CASE ("stress: a drum clip rewritten 20 a second during playback: every hit, choke and ring-out sample for sample as before")
+{
+    // Kick, snare and hats on the eighths, with velocities; the open hats ring
+    // until a closed hat chokes them, the second across the loop's wrap. The
+    // rewrites only change a comment, so every pass must be the same.
+    Kits kits;
+    const auto kickSample = tone (9000, 0.05, 0.5f);
+    const auto snareSample = tone (8000, 0.21, 0.4f);
+    const auto closedSample = tone (3000, 0.3, 0.3f);
+    const auto openSample = tone (20000, 0.31, 0.35f);
+    kits.write ("kit-a", { { "kick", 36, { kickSample } }, { "snare", 38, { snareSample } }, { "hat-closed", 42, { closedSample } }, { "hat-open", 46, { openSample } } },
+                44100.0, { { "hat-closed", "hat-open" } });
+    kits.open();
+
+    const std::string groove = "@length 1bar\n\n"
+                               "1.1 C2 1/16 v127\n1.1 F#2 1/16 v90\n1.1.3 F#2 1/16 v60\n1.2 D2 1/16 v110\n1.2 F#2 1/16 v90\n1.2.3 F#2 1/16 v60\n"
+                               "1.3 C2 1/16 v127\n1.3 A#2 1/16 v100\n1.3.3 F#2 1/16 v60\n1.4 D2 1/16 v110\n1.4 F#2 1/16 v90\n1.4.3 A#2 1/16 v100\n";
+
+    const auto run = stressWith (makeProject ({ drumsTrack ("user/kit-a", { makeClip ("clp-beat", 0, groove) }) }), 100,
+                                 [&groove] (int i) { return commands::WriteClip { "clp-beat", groove + "# rewrite " + std::to_string (i) + "\n" }; },
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit()) }; }, {}, &kits);
+
+    checkTiming (run, 100);
+    const auto played = run.blocks * blockSize;
+    const auto start = firstSoundAt (run.out);
+    REQUIRE (start >= 0);
+    REQUIRE (start < blockSize);
+    REQUIRE (played - start > 5 * barSamples);
+
+    // What DrumVoices plays given the same hits, from the first.
+    const auto audioOf = [] (const std::vector<float>& sample) { return std::make_shared<engine::SampleAudio> (engine::SampleAudio { { sample } }); };
+    engine::DrumVoices reference;
+    reference.setKit (std::make_unique<engine::PlayableKit> (44100.0, std::vector<engine::PlayableKit::Piece> {
+                                                                          { 36, audioOf (kickSample), 1.0f, -1 },
+                                                                          { 38, audioOf (snareSample), 1.0f, -1 },
+                                                                          { 42, audioOf (closedSample), 1.0f, 0 },
+                                                                          { 46, audioOf (openSample), 1.0f, 0 } }));
+
+    using engine::DrumEvent;
+    const std::array<std::array<int, 3>, 12> pattern { { { 0, 36, 127 }, { 0, 42, 90 }, { 1, 42, 60 }, { 2, 38, 110 }, { 2, 42, 90 }, { 3, 42, 60 },
+                                                         { 4, 36, 127 }, { 4, 46, 100 }, { 5, 42, 60 }, { 6, 38, 110 }, { 6, 42, 90 }, { 7, 46, 100 } } };
+    std::vector<DrumEvent> events;
+
+    for (int pass = 0; pass * barSamples < played - start; ++pass)
+        for (const auto& [slot, note, velocity] : pattern)
+            if (const auto offset = pass * barSamples + slot * eighth; offset < played - start)
+                events.push_back ({ DrumEvent::Kind::hit, offset, note, velocity });
+
+    std::vector<float> left (static_cast<std::size_t> (played - start), 0.0f);
+    std::vector<float> right (left.size(), 0.0f);
+    reference.process (left.data(), right.data(), played - start, events);
+
+    // A rounding error at most, from hits struck together being mixed in another order.
+    for (int channel = 0; channel < 2; ++channel)
+    {
+        const auto& want = channel == 0 ? left : right;
+        const auto off = mismatches (run.out, channel, start, played, [&want, start] (int i) { return want[static_cast<std::size_t> (i - start)]; }, 1.0e-6f);
+        CHECK_MESSAGE (off.empty(), off);
+    }
+
+    REQUIRE (run.midi.size() == 1);
+    CHECK (std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; }) == static_cast<std::ptrdiff_t> (events.size()));
+    const auto midi = drumMidiProblems (run.midi[0], played);
+    CHECK_MESSAGE (midi.empty(), midi);
+}
+
+TEST_CASE ("stress: a drum clip rewritten 20 a second between two patterns: each hit is whole, on its eighth, from one pattern, and the last rewrite is what plays")
+{
+    Kits kits;
+    const auto kickSample = tone (9000, 0.05, 0.5f);
+    const auto snareSample = tone (8000, 0.21, 0.4f);
+    const auto hatSample = tone (3000, 0.3, 0.3f);
+    const auto tomSample = tone (7000, 0.11, 0.45f);
+    kits.write ("kit-a", { { "kick", 36, { kickSample } }, { "snare", 38, { snareSample } }, { "hat-closed", 42, { hatSample } }, { "tom-low", 45, { tomSample } } });
+    kits.open();
+
+    // A rock beat, and one with toms and gaps: they differ in five eighths.
+    const std::string rock = "@length 1bar\n\n1.1 C2 1/16 v127\n1.1.3 F#2 1/16 v127\n1.2 D2 1/16 v127\n1.2.3 F#2 1/16 v127\n"
+                             "1.3 C2 1/16 v127\n1.3.3 F#2 1/16 v127\n1.4 D2 1/16 v127\n1.4.3 F#2 1/16 v127\n";
+    const std::string toms = "@length 1bar\n\n1.1 C2 1/16 v127\n1.2 A2 1/16 v127\n1.2.3 F#2 1/16 v127\n"
+                             "1.3.3 C2 1/16 v127\n1.4 D2 1/16 v127\n1.4.3 A2 1/16 v127\n";
+    const Slots rockSlots { &kickSample, &hatSample, &snareSample, &hatSample, &kickSample, &hatSample, &snareSample, &hatSample };
+    const Slots tomSlots { &kickSample, nullptr, &tomSample, &hatSample, nullptr, &kickSample, &snareSample, &tomSample };
+
+    // From the rock beat to the toms and back, 101 times, so it ends on the
+    // toms: what plays at the end shows the rewrites took effect.
+    constexpr int rewrites = 101;
+    const auto run = stressWith (makeProject ({ drumsTrack ("user/kit-a", { makeClip ("clp-beat", 0, rock) }) }), rewrites,
+                                 [&] (int i) { return commands::WriteClip { "clp-beat", i % 2 == 0 ? toms : rock }; },
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit()) }; }, {}, &kits);
+
+    checkTiming (run, rewrites);
+    const auto played = run.blocks * blockSize;
+    const auto heard = checkSlots (run.out, played, rockSlots, tomSlots, run.lastChangeSample + 4410);
+    CHECK_MESSAGE (heard.problem.empty(), heard.problem);
+    MESSAGE ("eighths where the two differ, heard as the rock beat has them: " << heard.first << "; as the toms have them: " << heard.last);
+    CHECK (heard.last >= 5); // a bar of the toms at the end, at least
+
+    REQUIRE (run.midi.size() == 1);
+    const auto midi = drumMidiProblems (run.midi[0], played);
+    CHECK_MESSAGE (midi.empty(), midi);
+}
+
+TEST_CASE ("stress: kits swapped 20 a second during playback: each hit is whole and one kit's, the old kits are freed, and the last kit is what plays")
+{
+    Kits kits;
+    const auto kickA = tone (9000, 0.05, 0.5f);
+    const auto snareA = tone (8000, 0.21, 0.4f);
+    const auto hatA = tone (3000, 0.3, 0.3f);
+    const auto kickB = tone (8500, 0.071, 0.45f);
+    const auto snareB = tone (7500, 0.17, 0.35f);
+    const auto hatB = tone (3500, 0.37, 0.25f);
+    kits.write ("kit-a", { { "kick", 36, { kickA } }, { "snare", 38, { snareA } }, { "hat-closed", 42, { hatA } } });
+    kits.write ("kit-b", { { "kick", 36, { kickB } }, { "snare", 38, { snareB } }, { "hat-closed", 42, { hatB } } });
+    kits.open();
+
+    const std::string rock = "@length 1bar\n\n1.1 C2 1/16 v127\n1.1.3 F#2 1/16 v127\n1.2 D2 1/16 v127\n1.2.3 F#2 1/16 v127\n"
+                             "1.3 C2 1/16 v127\n1.3.3 F#2 1/16 v127\n1.4 D2 1/16 v127\n1.4.3 F#2 1/16 v127\n";
+    const Slots slotsA { &kickA, &hatA, &snareA, &hatA, &kickA, &hatA, &snareA, &hatA };
+    const Slots slotsB { &kickB, &hatB, &snareB, &hatB, &kickB, &hatB, &snareB, &hatB };
+
+    // From kit A to kit B and back, 101 times, so it ends on kit B: what plays
+    // at the end shows the swaps took effect. Each kit a swap replaces is
+    // freed once no hit plays from it.
+    constexpr int swaps = 101;
+    std::size_t kitsHeld = 0;
+    std::string kitPlayed;
+    const auto run = stressWith (makeProject ({ drumsTrack ("user/kit-a", { makeClip ("clp-beat", 0, rock) }) }), swaps,
+                                 [] (int i) { return commands::SetInstrument { "trk-drums", commands::Instrument { "hocket:drum-sampler", i % 2 == 0 ? "user/kit-b" : "user/kit-a" } }; },
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit()) }; }, {}, &kits,
+                                 [&kitsHeld, &kitPlayed] (engine::EditSync& sync)
+                                 {
+                                     const auto until = Clock::now() + 600ms; // the sampler frees retired kits every 250 ms
+                                     runMessagesUntil ([until] { return Clock::now() >= until; });
+                                     kitsHeld = samplerOf (sync).voices().kitsHeld();
+                                     kitPlayed = samplerOf (sync).kitName();
+                                 });
+
+    checkTiming (run, swaps);
+    const auto played = run.blocks * blockSize;
+    const auto heard = checkSlots (run.out, played, slotsA, slotsB, run.lastChangeSample + 4410);
+    CHECK_MESSAGE (heard.problem.empty(), heard.problem);
+    MESSAGE ("eighths heard from kit A: " << heard.first << "; from kit B: " << heard.last);
+    CHECK (heard.last >= 8); // a bar of kit B at the end, at least
+
+    CHECK (kitPlayed == "user/kit-b");
+    CHECK_MESSAGE (kitsHeld == 1, "the sampler still holds " << kitsHeld << " kits after " << swaps << " swaps");
+
+    REQUIRE (run.midi.size() == 1);
+    const auto midi = drumMidiProblems (run.midi[0], played);
+    CHECK_MESSAGE (midi.empty(), midi);
 }
