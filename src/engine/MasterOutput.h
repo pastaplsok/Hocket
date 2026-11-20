@@ -17,12 +17,14 @@
 
 namespace hocket::engine
 {
-    // --play's level without --master-volume, in dB. The Milestone 0 demo peaks
-    // at about -8.2 dBFS on its own (rendered on 2026-11-16), so about -23 dBFS
-    // reaches the device. A five-note chord at full velocity on one 4OSC peaks
-    // at +11.3 to +13.5 dBFS, as its oscillators' phases fall, so it reaches
-    // the device at -3.7 to -1.5 dBFS.
-    inline constexpr double defaultMasterVolume = -15.0;
+    // --play's level without --master-volume, in dB: the project as it's mixed
+    // (Lee, 2026-11-20). It was -15 dB, from the night ASIO4ALL played the
+    // demo far too loud, until the bundled electronic kit (its kick at -12 dBFS
+    // at v127) was barely audible on the Magni with every volume at 100%. The
+    // Milestone 0 demo peaks at about -8.2 dBFS (rendered on 2026-11-16); a
+    // five-note chord at full velocity on one 4OSC peaks at +11.3 to +13.5 dBFS
+    // and clips, which the exit report warns of, suggesting a --master-volume.
+    inline constexpr double defaultMasterVolume = 0.0;
 
     class MasterOutput
     {

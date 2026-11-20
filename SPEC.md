@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.19** — 2026-11-20
+> Status: **Draft v0.20** — 2026-11-20
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -541,7 +541,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - Audio drivers vary more than their names suggest. Many people's only ASIO is a wrapper (ASIO4ALL, FL Studio ASIO), and on Milestone 0's test machine ASIO4ALL buzzed at a 512-sample buffer while FL Studio ASIO played cleanly at the same size. It was the buffer size, not the sample rate: ASIO4ALL still buzzed at the rate Windows was using, and was clean at 1024 samples. ASIO4ALL talks to the device directly, so with that USB DAC it most likely needed more room than a driver that goes through Windows' audio engine. Not one driver tried there reported xruns. So:
   - v1's audio settings let the person choose the sample rate and buffer size, rather than taking whatever the driver offers;
   - Hocket counts late audio callbacks itself, since the driver's xrun count often isn't there.
-- Some drivers (ASIO, Windows Audio in exclusive mode) bypass the Windows volume slider, so playback can be far louder than other audio at the same setting. Until the master bus (Milestone 5), `hocket-headless --play` has a master level of its own: −15 dB by default, set with `--master-volume <dB>` (written like track volumes), and not saved in the project. It applies to what's sent to the device, so offline renders don't include it. It prints the level at start, and at exit the peak output level next to the xrun count, with a warning if the output clipped that suggests a `--master-volume` to keep it under full scale. The master bus should keep a safe default too.
+- Some drivers (ASIO, Windows Audio in exclusive mode) bypass the Windows volume slider, so playback can be far louder than other audio at the same setting. Until the master bus (Milestone 5), `hocket-headless --play` has a master level of its own: 0 dB by default, the project as it's mixed, set with `--master-volume <dB>` (written like track volumes), and not saved in the project. (It was −15 dB until the bundled electronic kit, its kick at −12 dBFS, was barely audible at full volume: Lee, 2026-11-20.) It applies to what's sent to the device, so offline renders don't include it. It prints the level at start, and at exit the peak output level next to the xrun count, with a warning if the output clipped that suggests a `--master-volume` to keep it under full scale. Over a driver that bypasses the Windows volume, `--play` warns to turn the device's own volume down first.
 - Keep platform-specific code isolated so Linux (JACK/PipeWire) and macOS (CoreAudio, AU) ports are additive.
 - Unicode paths: all text is UTF-8 inside Hocket. On Windows, text from the OS (paths, command line) is converted from UTF-16 at the platform boundary, never through the ANSI code page, so folders with any name work.
 
