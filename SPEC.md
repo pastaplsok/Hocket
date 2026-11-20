@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.18** — 2026-11-18
+> Status: **Draft v0.19** — 2026-11-20
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -487,7 +487,7 @@ Raw data remains available on explicit request (e.g. for a script).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
   - Velocity sets a hit's level: its gain is the piece's level × (velocity / 127)², General MIDI's default curve (v100 is −4.2 dB, v64 −11.9 dB, v28 −26 dB). It adds no gain of its own: at v127, a piece at a level of 0 dB plays its sample exactly.
   - Samples are converted to the device's sample rate once, when a kit loads or the rate changes, band-limited so nothing folds back; at equal rates they aren't touched.
-  - **Kits leave headroom:** every piece of a kit struck at once at v127, on a track at 0 dB and C, peaks at −1 dBFS or under (choke groups apply). Bundled kits are tested against it.
+  - **Kits leave headroom:** the heaviest realistic hit, kick, kick2, snare, clap, open hat and crash struck together at v127 (those of them a kit has), on a track at 0 dB and C, peaks at −1 dBFS or under, at 44.1 and 48 kHz. Every piece at once is no rule: the output meter covers that (§9). Bundled kits are tested against it.
 
 ### 8.2 VST3 hosting requirements (Phase 2)
 - Expose parameters with names, normalized values, and display strings.
@@ -505,6 +505,7 @@ Hocket comes with a few drum kits in different styles: acoustic, electronic (808
 - **Licensing:** only samples under an explicit permissive license (CC0 or similar), and nothing taken from copyrighted recordings. Every source and license is listed in DEPENDENCIES.md.
 - **Size:** compact, short 16-bit one-shots, so the repository doesn't bloat. DEPENDENCIES.md notes the total size.
 - **A kit is part of Hocket, like a preset.** A project names its kit (the drum sampler's `kit`, §4.4), and nothing is copied into the project folder. A released kit's samples never change; a changed kit gets a new name. A bundled kit counts as released only once Lee says it's final: until then it's refined by ear in place.
+- **Levels:** a bundled kit's kick at v127, on a track at 0 dB and C, peaks at −12 dBFS, and its other pieces are balanced against it by ear. Every bundled kit's kick matches, so changing kits keeps the level. Kits also keep to the headroom rule (§8.1); bundled kits are tested against both.
 - **The electronic kit is synthesized** by a generator kept in the repository (`tools/kits/`), with named parameters for each piece, so it's changed by changing a parameter and generating it again. Its samples are 44.1 kHz, 16-bit and mono, and released as CC0.
 - **A missing kit:** a project whose kit isn't installed still loads. Hocket says the kit is missing, and the track is silent.
 - **Names:** a kit's manifest maps notes to samples, and names any pieces beyond the standard ones. Bundled kits use the standard names on the standard notes (§5.2), and may add extra pieces on other notes. Assigning a kit to a track adds its names to the track's drum map, keeping what's there (§5.2). A kit that isn't installed can't be assigned: the error lists the kits that are.

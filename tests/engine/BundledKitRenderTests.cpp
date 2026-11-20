@@ -1,11 +1,15 @@
-// The headroom rule for bundled kits (Milestone 1's step 7, Lee's decision):
-// every piece of a kit struck at once at v127, on a track at 0 dB and C, peaks
-// at -1 dBFS or under, choke groups and all. Rendered through Tracktion at
-// 44.1 kHz, the electronic kit's own rate; and at 48 kHz played by the
-// sampler's own core, the kit converted as a 48 kHz device gets it. (A render
-// at 48 kHz would be silent: the sampler asks for the kit at a new rate when
-// the render starts, and an offline render doesn't wait.) The track's gain
-// stage at 0 dB and C, and the Edit's master, are exactly unity (MixTests.cpp).
+// Bundled kits' levels (SPEC §8.4; Lee, 2026-11-20), on a track at 0 dB and C:
+// - the kick at v127 peaks at -12 dBFS, the level every bundled kit's kick matches;
+// - the headroom rule: the heaviest realistic hit, kick, kick2, snare, clap,
+//   open hat and crash struck together at v127 (those of them the kit has),
+//   peaks at -1 dBFS or under. Every piece at once is no rule: the output
+//   meter covers that.
+// Rendered through Tracktion at 44.1 kHz, the electronic kit's own rate; and
+// at 48 kHz played by the sampler's own core, the kit converted as a 48 kHz
+// device gets it. (A render at 48 kHz would be silent: the sampler asks for the
+// kit at a new rate when the render starts, and an offline render doesn't
+// wait.) The track's gain stage at 0 dB and C, and the Edit's master, are
+// exactly unity (MixTests.cpp).
 
 #include "DrumTesting.h"
 
@@ -31,19 +35,48 @@ namespace
         return 20.0 * std::log10 (static_cast<double> (peak));
     }
 
-    // A clip striking every piece of the kit at 1.1, at v127, by note name.
-    std::string everyPieceAtOnce (const kits::Manifest& manifest)
+    constexpr double kickPeak = -12.0;
+    constexpr double hitLimit = -1.0;
+
+    // The heaviest realistic hit's pieces that this kit has.
+    std::vector<const kits::Piece*> heaviestHit (const kits::Manifest& manifest)
+    {
+        std::vector<const kits::Piece*> pieces;
+
+        for (const auto* name : { "kick", "kick2", "snare", "clap", "hat-open", "crash" })
+            if (const auto* piece = manifest.pieceNamed (name))
+                pieces.push_back (piece);
+
+        return pieces;
+    }
+
+    // A clip striking these pieces together at 1.1, at v127, by note name.
+    std::string struckTogether (const std::vector<const kits::Piece*>& pieces)
     {
         std::string text = "@length 1bar\n\n";
 
-        for (const auto& piece : manifest.pieces)
-            text += "1.1 " + notes::formatPitch (piece.note, notes::Accidental::sharp) + " 1/16 v127\n";
+        for (const auto* piece : pieces)
+            text += "1.1 " + notes::formatPitch (piece->note, notes::Accidental::sharp) + " 1/16 v127\n";
 
         return text;
     }
+
+    // These pieces struck together on a track at 0 dB and C, rendered at 44.1
+    // kHz: the loudest sample.
+    float renderedPeak (kits::KitCatalog& catalog, const std::string& kit, const std::vector<const kits::Piece*>& pieces)
+    {
+        engine::KitLibrary library (catalog);
+        commands::CommandBus bus (makeProject ({ drumsTrack (kit, { makeClip ("clp-hit", 0, struckTogether (pieces)) }) }));
+        engine::EditSync sync (testEngine(), bus, &library);
+        library.waitUntilIdle();
+
+        const auto audio = renderLoop (sync);
+        REQUIRE (audio.sampleRate == 44100.0);
+        return audio.buffer.getMagnitude (0, audio.buffer.getNumSamples());
+    }
 }
 
-TEST_CASE ("bundled kits' headroom: every piece struck at once at v127, rendered on a track at 0 dB and C at 44.1 kHz, peaks at -1 dBFS or under")
+TEST_CASE ("bundled kits' levels at 44.1 kHz: the kick at v127 peaks at -12 dBFS, and the heaviest realistic hit at -1 dBFS or under")
 {
     auto catalog = bundledKits();
     REQUIRE_FALSE (catalog.kits().empty());
@@ -51,17 +84,16 @@ TEST_CASE ("bundled kits' headroom: every piece struck at once at v127, rendered
     for (const auto* kit : catalog.kits())
     {
         CAPTURE (kit->name);
-        engine::KitLibrary library (catalog);
-        commands::CommandBus bus (makeProject ({ drumsTrack (kit->name, { makeClip ("clp-all", 0, everyPieceAtOnce (kit->manifest)) }) }));
-        engine::EditSync sync (testEngine(), bus, &library);
-        library.waitUntilIdle();
+        const auto* kick = kit->manifest.pieceNamed ("kick");
+        REQUIRE (kick != nullptr);
+        const auto kickAlone = dbfs (renderedPeak (catalog, kit->name, { kick }));
+        MESSAGE ("kit " << kit->name << ": the kick at v127 peaks at " << kickAlone << " dBFS, rendered at 44.1 kHz");
+        CHECK (std::abs (kickAlone - kickPeak) < 0.05);
 
-        const auto audio = renderLoop (sync);
-        REQUIRE (audio.sampleRate == 44100.0);
-        const auto peak = audio.buffer.getMagnitude (0, audio.buffer.getNumSamples());
-        MESSAGE ("kit " << kit->name << ": every piece at once at v127 peaks at " << dbfs (peak) << " dBFS, rendered at 44.1 kHz");
-        CHECK (peak > 0.1f); // it played
-        CHECK (dbfs (peak) <= -1.0);
+        const auto pieces = heaviestHit (kit->manifest);
+        const auto hit = dbfs (renderedPeak (catalog, kit->name, pieces));
+        MESSAGE ("kit " << kit->name << ": the heaviest realistic hit (" << pieces.size() << " pieces) at v127 peaks at " << hit << " dBFS, rendered at 44.1 kHz");
+        CHECK (hit <= hitLimit);
     }
 }
 
@@ -105,7 +137,7 @@ TEST_CASE ("render: the electronic kit's audition project plays each piece of it
     }
 }
 
-TEST_CASE ("bundled kits' headroom at 48 kHz: converted as a 48 kHz device gets them, every piece struck at once at v127 peaks at -1 dBFS or under")
+TEST_CASE ("bundled kits' headroom at 48 kHz: converted as a 48 kHz device gets them, the heaviest realistic hit at v127 peaks at -1 dBFS or under")
 {
     auto catalog = bundledKits();
     REQUIRE_FALSE (catalog.kits().empty());
@@ -124,8 +156,8 @@ TEST_CASE ("bundled kits' headroom at 48 kHz: converted as a 48 kHz device gets 
         voices.setKit (std::move (playable));
         std::vector<engine::DrumEvent> events;
 
-        for (const auto& piece : kit->manifest.pieces)
-            events.push_back ({ engine::DrumEvent::Kind::hit, 0, piece.note, 127 });
+        for (const auto* piece : heaviestHit (kit->manifest))
+            events.push_back ({ engine::DrumEvent::Kind::hit, 0, piece->note, 127 });
 
         constexpr int length = 3 * 48000;
         std::vector<float> left (length, 0.0f);
@@ -137,8 +169,8 @@ TEST_CASE ("bundled kits' headroom at 48 kHz: converted as a 48 kHz device gets 
         for (int i = 0; i < length; ++i)
             peak = std::max ({ peak, std::abs (left[static_cast<std::size_t> (i)]), std::abs (right[static_cast<std::size_t> (i)]) });
 
-        MESSAGE ("kit " << kit->name << ": every piece at once at v127 peaks at " << dbfs (peak) << " dBFS, converted to 48 kHz");
+        MESSAGE ("kit " << kit->name << ": the heaviest realistic hit at v127 peaks at " << dbfs (peak) << " dBFS, converted to 48 kHz");
         CHECK (peak > 0.1f);
-        CHECK (dbfs (peak) <= -1.0);
+        CHECK (dbfs (peak) <= hitLimit);
     }
 }

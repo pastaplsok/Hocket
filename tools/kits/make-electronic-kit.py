@@ -16,9 +16,10 @@ in 64-bit float at 4x that rate, so clipping and square waves don't alias, then
 filtered down to 44.1 kHz, scaled to peak at -1 dBFS, faded to silence over its
 last 20 ms, and dithered (TPDF) to 16 bits. The balance between pieces is each
 piece's level in kit.json: its level_db below, plus one trim for the whole kit,
-set so that every piece struck at once at v127 peaks at KIT_PEAK_DBFS, between
-samples too: Hocket's headroom rule for kits, with half a dB to spare for
-conversion to other rates.
+set so that the kick at v127 peaks at KICK_PEAK_DBFS, the level every bundled
+kit's kick matches. Hocket's headroom rule for kits (SPEC §8.4): the heaviest
+realistic hit, HEAVIEST_HIT struck together at v127, peaks at HIT_PEAK_DBFS or
+under, between samples too; it writes nothing if not.
 
 Times are in ms and pitches in Hz. A decay is how long a sound takes to fall
 60 dB; an attack, how long it takes to rise from silence.
@@ -41,7 +42,9 @@ RATE = 44100
 OVERSAMPLE = 4
 FS = RATE * OVERSAMPLE
 SAMPLE_PEAK_DBFS = -1.0
-KIT_PEAK_DBFS = -1.5
+KICK_PEAK_DBFS = -12.0  # the kick at v127 (Lee, 2026-11-20)
+HEAVIEST_HIT = ("kick", "kick2", "snare", "clap", "hat-open", "crash")
+HIT_PEAK_DBFS = -1.0
 FADE_MS = 20.0
 FADE_IN = 8  # samples, 0.18 ms
 DESCRIPTION = "Electronic, 808-style, synthesized by Hocket"
@@ -334,26 +337,23 @@ def db(gain):
     return 20.0 * math.log10(gain)
 
 
+def peak_together(samples, levels, names):
+    """The peak of these pieces struck together at v127, between samples too, in dBFS."""
+    length = max(len(samples[name]) for name in names)
+    mix = np.zeros(length)
+    for name in names:
+        s = samples[name].astype(np.float64) / 32768.0
+        mix[:len(s)] += s * 10.0 ** (levels[name] / 20.0)
+    return db(true_peak(mix))
+
+
 def kit_levels(samples):
     """Each piece's level in kit.json, in steps of 0.1 dB: its level_db plus the
-    kit's trim, so that every piece struck at once at v127 peaks at KIT_PEAK_DBFS
-    or under, between samples too. Also that peak, in dBFS."""
-    length = max(len(s) for s in samples.values())
-
-    def peak(levels):
-        mix = np.zeros(length)
-        for piece in PIECES:
-            s = samples[piece["name"]].astype(np.float64) / 32768.0
-            mix[:len(s)] += s * 10.0 ** (levels[piece["name"]] / 20.0)
-        return db(true_peak(mix))
-
-    trim = KIT_PEAK_DBFS - peak({p["name"]: p["level_db"] for p in PIECES})
-    levels = {p["name"]: math.floor((p["level_db"] + trim) * 10.0 + 1e-9) / 10.0 for p in PIECES}
-
-    while peak(levels) > KIT_PEAK_DBFS:
-        levels = {name: round(level - 0.1, 1) for name, level in levels.items()}
-
-    return levels, peak(levels)
+    kit's trim, which puts the kick's peak at v127 at KICK_PEAK_DBFS."""
+    kick = next(p for p in PIECES if p["name"] == "kick")
+    kick_peak = db(np.max(np.abs(samples["kick"].astype(np.float64))) / 32768.0)
+    trim = round(KICK_PEAK_DBFS - kick_peak - kick["level_db"], 1)
+    return {p["name"]: round(p["level_db"] + trim, 1) for p in PIECES}
 
 
 # ==============================================================================
@@ -390,7 +390,9 @@ def make_kit():
     for piece in PIECES:
         samples[piece["name"]] = finish(VOICES[piece["voice"]](piece), piece["name"])
 
-    levels, kit_peak = kit_levels(samples)
+    levels = kit_levels(samples)
+    hit_peak = peak_together(samples, levels, HEAVIEST_HIT)
+    everything_peak = peak_together(samples, levels, [p["name"] for p in PIECES])
     files = {piece["name"] + ".wav": wav_bytes(samples[piece["name"]]) for piece in PIECES}
     files["kit.json"] = manifest_text(levels)
     files["LICENSE.txt"] = LICENSE.encode("utf-8")
@@ -404,9 +406,16 @@ def make_kit():
                          db(true_peak(s.astype(np.float64) / 32768.0)) + level))
     seconds = sum(len(s) for s in samples.values()) / RATE
     size = sum(len(data) for name, data in files.items() if name.endswith(".wav"))
-    report.append("%d pieces, %.1f s of audio, %.2f MB of WAVs; all struck at once at v127: %.2f dBFS"
-                  % (len(PIECES), seconds, size / 1e6, kit_peak))
-    return files, report
+    report.append("%d pieces, %.1f s of audio, %.2f MB of WAVs." % (len(PIECES), seconds, size / 1e6))
+    report.append("The heaviest realistic hit (%s) at v127 peaks at %.2f dBFS; the limit is %.1f dBFS."
+                  % (", ".join(HEAVIEST_HIT), hit_peak, HIT_PEAK_DBFS))
+    report.append("Every piece at once at v127, which no rule limits: %+.2f dBFS." % everything_peak)
+
+    problem = None
+    if hit_peak > HIT_PEAK_DBFS:
+        problem = ("The heaviest realistic hit peaks at %.2f dBFS, over the limit of %.1f dBFS, so nothing was written: "
+                   "lower the level_db of some of %s against the kick's." % (hit_peak, HIT_PEAK_DBFS, ", ".join(HEAVIEST_HIT)))
+    return files, report, problem
 
 
 def main():
@@ -415,7 +424,13 @@ def main():
     args = parser.parse_args()
 
     started = time.time()
-    files, report = make_kit()
+    files, report, problem = make_kit()
+
+    if problem:
+        print("\n".join(report))
+        print(problem)
+        return 1
+
     stale = sorted(name for name in (os.listdir(KIT_FOLDER) if os.path.isdir(KIT_FOLDER) else [])
                    if name.endswith(".wav") and name not in files)
 
