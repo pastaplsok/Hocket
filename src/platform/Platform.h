@@ -64,6 +64,14 @@ namespace hocket::platform
     // what went wrong, or empty.
     std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to);
 
+    // The CPU time the calling thread has used so far, user and kernel, in
+    // seconds, precise to microseconds: next to wall-clock time, it tells a
+    // thread that worked long from one the OS kept waiting. nullopt where it
+    // can't be measured. On Windows the first call in a process takes about
+    // 20 ms, measuring the CPU's cycle counter against the performance
+    // counter, so make one before timing anything.
+    std::optional<double> currentThreadCpuSeconds();
+
     // A file held so that no other holder can take it until this one lets go
     // or its process ends, crashes included: for "only one at a time". On
     // Windows nothing else can open the file meanwhile, not even to read it;

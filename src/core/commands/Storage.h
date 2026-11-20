@@ -22,8 +22,13 @@ namespace hocket::commands
     struct SaveInfo
     {
         SaveTime time {};
-        std::string author; // a display name; empty for a version Hocket didn't save (from before Hocket)
+        std::string author; // a display name; empty for a version Hocket didn't save
         std::string name;   // what the save was named, if anything
+
+        // With no author: the version is a save of Hocket's with files changed
+        // outside it since, kept by a save with overwrite, timed by the
+        // latest change. Otherwise it's from before Hocket.
+        bool changedOutside = false;
 
         bool operator== (const SaveInfo&) const = default;
     };
@@ -43,8 +48,13 @@ namespace hocket::commands
     std::string localTimeText (SaveTime time);
 
     // "save #4, by Lee, 2026-11-20 14:02, \"before the bridge experiment\"";
-    // "save #1, from before Hocket, 2026-11-18 09:15".
+    // "save #1, from before Hocket, 2026-11-18 09:15"; "save #5, changed
+    // outside Hocket, 2026-11-20 14:05".
     std::string describe (const KeptSave& save);
+
+    // "Lee", "before Hocket" or "changed outside Hocket": who a version is by,
+    // as a kept save's folder name has it.
+    std::string savedBy (const SaveInfo& info);
 
     // A clip file no clip uses any more, moved out of the way on save.
     struct MovedFile

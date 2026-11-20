@@ -110,8 +110,11 @@ namespace hocket::project
     // Validates project.json and reads each clip's .notes file through readFile.
     LoadResult parse (std::string_view projectJson, const FileReader& readFile);
 
-    // Loads a project folder from disk.
-    LoadResult load (const std::filesystem::path& folder);
+    // Loads a project folder from disk. `beforeReading`, if given, is called
+    // with each file's relative path ("project.json", "clips/bass.notes")
+    // just before it's read: for noting its stamp first, so a change made
+    // while it's read shows as a change afterwards.
+    LoadResult load (const std::filesystem::path& folder, const std::function<void (const std::string& relativePath)>& beforeReading = {});
 
     // Every file of the project in canonical form, keyed by relative path:
     // "project.json" and each clip file, once however many clips use it. The

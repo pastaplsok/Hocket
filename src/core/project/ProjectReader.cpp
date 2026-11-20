@@ -552,23 +552,28 @@ LoadResult parse (std::string_view projectJson, const FileReader& readFile)
     return Reader (projectJson, readFile).run();
 }
 
-LoadResult load (const std::filesystem::path& folder)
+LoadResult load (const std::filesystem::path& folder, const std::function<void (const std::string& relativePath)>& beforeReading)
 {
     std::error_code error;
 
     if (! std::filesystem::is_directory (folder, error))
         return { {}, { { {}, 0, 0, singleQuoted (utf8FromPath (folder)) + " isn't a folder; a Hocket project is a folder containing project.json" } } };
 
-    const auto projectJson = readTextFile (folder / pathFromUtf8 (projectFileName));
+    const auto read = [&folder, &beforeReading] (const std::string& relativePath)
+    {
+        if (beforeReading)
+            beforeReading (relativePath);
+
+        return readTextFile (folder / pathFromUtf8 (relativePath));
+    };
+
+    const auto projectJson = read (std::string (projectFileName));
 
     if (! projectJson)
         return { {}, { { projectFileName, 0, 0, "there's no project.json in " + singleQuoted (utf8FromPath (folder))
                                                      + "; a Hocket project folder needs one (SPEC §4.4)" } } };
 
-    return parse (*projectJson, [&folder] (const std::string& relativePath)
-    {
-        return readTextFile (folder / pathFromUtf8 (relativePath));
-    });
+    return parse (*projectJson, read);
 }
 
 std::string formatDiagnostic (const Diagnostic& diagnostic)

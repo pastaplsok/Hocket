@@ -12,6 +12,7 @@
 #include <shlobj.h>
 
 #include <fcntl.h>
+#include <intrin.h>
 #include <io.h>
 
 #include <algorithm>
@@ -226,6 +227,46 @@ std::string moveFile (const std::filesystem::path& from, const std::filesystem::
         return lastErrorMessage();
 
     return {};
+}
+
+namespace
+{
+    // Cycles of the CPU's time-stamp counter per second, which
+    // QueryThreadCycleTime counts in. Windows doesn't say, so it's measured
+    // against the performance counter over 20 ms; the counter runs at a
+    // constant rate on the CPUs Windows 11 supports. 0 if it can't be.
+    double cycleCounterRate()
+    {
+#if defined(_M_X64) || defined(_M_IX86)
+        LARGE_INTEGER frequency, start, end;
+
+        if (! QueryPerformanceFrequency (&frequency) || ! QueryPerformanceCounter (&start))
+            return 0.0;
+
+        const auto startCycles = __rdtsc();
+        Sleep (20);
+        const auto endCycles = __rdtsc();
+        QueryPerformanceCounter (&end);
+
+        const auto seconds = static_cast<double> (end.QuadPart - start.QuadPart) / static_cast<double> (frequency.QuadPart);
+        return seconds > 0.0 ? static_cast<double> (endCycles - startCycles) / seconds : 0.0;
+#else
+        return 0.0;
+#endif
+    }
+}
+
+std::optional<double> currentThreadCpuSeconds()
+{
+    // GetThreadTimes is only updated at the system timer's tick (15.6 ms by
+    // default), too coarse for audio blocks; the cycle count is exact.
+    static const auto rate = cycleCounterRate();
+    ULONG64 cycles = 0;
+
+    if (rate <= 0.0 || ! QueryThreadCycleTime (GetCurrentThread(), &cycles))
+        return {};
+
+    return static_cast<double> (cycles) / rate;
 }
 
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)

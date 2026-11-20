@@ -115,8 +115,14 @@ namespace hocket::testing
         void open()
         {
             bus.reset();
-            projectFolder.emplace (folder, loaded (folder), [this] { return now; });
-            bus.emplace (loaded (folder));
+            auto [result, opened] = storage::ProjectFolder::open (folder, [this] { return now; });
+
+            for (const auto& error : result.errors)
+                MESSAGE (project::formatDiagnostic (error));
+
+            REQUIRE (opened);
+            projectFolder.emplace (std::move (*opened));
+            bus.emplace (std::move (*result.project));
             bus->setStorage (&*projectFolder);
         }
 

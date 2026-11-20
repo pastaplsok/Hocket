@@ -19,10 +19,19 @@ std::string localTimeText (SaveTime time)
     }
 }
 
+std::string savedBy (const SaveInfo& info)
+{
+    if (! info.author.empty())
+        return info.author;
+
+    return info.changedOutside ? "changed outside Hocket" : "before Hocket";
+}
+
 std::string describe (const KeptSave& save)
 {
-    auto text = "save #" + std::to_string (save.number) + ", "
-              + (save.info.author.empty() ? std::string ("from before Hocket") : "by " + save.info.author) + ", " + localTimeText (save.info.time);
+    const auto by = save.info.author.empty() ? (save.info.changedOutside ? std::string ("changed outside Hocket") : std::string ("from before Hocket"))
+                                             : "by " + save.info.author;
+    auto text = "save #" + std::to_string (save.number) + ", " + by + ", " + localTimeText (save.info.time);
 
     if (! save.info.name.empty())
         text += ", \"" + save.info.name + "\"";

@@ -29,7 +29,7 @@ add_executable(hocket_engine_tests
     StressTests.cpp
     StructureSyncTests.cpp)
 
-target_link_libraries(hocket_engine_tests PRIVATE hocket_engine doctest::doctest)
+target_link_libraries(hocket_engine_tests PRIVATE hocket_engine hocket_platform doctest::doctest)
 
 # StackSampler names frames with dbghelp; the main asks for 1 ms timers with winmm.
 if(WIN32)

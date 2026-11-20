@@ -18,16 +18,24 @@
 // Clip files that were in the project, but that no clip uses any more, are
 // moved to unused/, never deleted. Files Hocket never had in the project are
 // never touched.
+//
+// It notes each project file's stamp (FileStamp) whenever Hocket reads or
+// writes it. A save that would overwrite a file changed on disk since then,
+// or a file Hocket never had in the project, writes nothing and names it;
+// with overwrite, it keeps the version on disk first, then saves.
 
 #include "core/commands/Storage.h"
+#include "core/project/FileStamp.h"
 
 #include <chrono>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace hocket::storage
 {
@@ -65,9 +73,12 @@ namespace hocket::storage
         // When a save happens; the system clock, unless a test says otherwise.
         using Clock = std::function<std::chrono::system_clock::time_point()>;
 
-        // `loaded` is the project as read from the folder, or an empty
-        // project for a new folder: its clip files are the ones Hocket has
-        // had in the project so far.
+        // Loads the project in `folder`, noting each file's stamp just before
+        // reading it. The folder is there when the project loaded.
+        static std::pair<project::LoadResult, std::optional<ProjectFolder>> open (std::filesystem::path folder, Clock clock = {});
+
+        // `loaded` is the project as just read from the folder, its files'
+        // stamps taken now; or an empty project for a new folder.
         ProjectFolder (std::filesystem::path folder, const project::Project& loaded, Clock clock = {});
 
         const std::filesystem::path& path() const { return folder; }
@@ -79,18 +90,35 @@ namespace hocket::storage
         std::vector<commands::KeptSave> keptSaves() override;
         project::LoadResult loadKeptSave (const commands::KeptSave& save) override;
 
+        // A project file ("project.json", "clips/bass.notes") as Hocket last
+        // read or wrote it: its stamp then, and the canonical text the session
+        // had for it, which the file matched. nullopt for a file Hocket never had.
+        std::optional<project::FileStamp> knownStamp (std::string_view file) const;
+        std::optional<std::string> knownText (std::string_view file) const;
+
+        // The session took in a project file changed outside Hocket (--watch):
+        // what was on disk at this stamp, which the session's text now matches.
+        void noteRead (const std::string& file, const project::FileStamp& stamp, std::string text);
+
     private:
+        struct Known
+        {
+            project::FileStamp stamp;
+            std::string text;
+        };
+
         std::filesystem::path folder;
         Clock clock;
 
-        // Every clip file Hocket has had in the project here, loaded or
-        // saved, that may still be on disk: the only files a save may move
-        // to unused/.
-        std::set<std::string, std::less<>> clipFiles;
+        // project.json and every clip file Hocket has had in the project here,
+        // loaded or saved, that may still be on disk. The clip files are the
+        // only ones a save may move to unused/.
+        std::map<std::string, Known, std::less<>> known;
 
         // Copies the version on disk into a new kept save. nullopt with no
-        // problem when there's no project on disk to keep.
-        std::optional<commands::KeptSave> keepVersionOnDisk (std::string& problem);
+        // problem when there's no project on disk to keep. With files changed
+        // outside Hocket, it's labelled so, at the latest change's time.
+        std::optional<commands::KeptSave> keepVersionOnDisk (const std::vector<std::string>& changedOutside, std::string& problem);
     };
 
     // Saves an empty project (120 BPM, 4/4, no tracks) in `folder`, which

@@ -60,10 +60,13 @@ namespace
     //     "format": "hocket-save",
     //     "time": "2026-11-20T13:02:37Z",
     //     "author": "Lee",
-    //     "name": "before the bridge experiment"
+    //     "name": "before the bridge experiment",
+    //     "changedOutside": false
     //   }
     //
-    // The time is UTC; an empty author is a version Hocket didn't save.
+    // The time is UTC. An empty author is a version Hocket didn't save: from
+    // before Hocket, or, with changedOutside, one of its saves with files
+    // changed outside it since.
 
     std::string saveInfoText (const commands::SaveInfo& info)
     {
@@ -72,6 +75,7 @@ namespace
         json["time"] = std::format ("{:%Y-%m-%dT%H:%M:%SZ}", info.time);
         json["author"] = info.author;
         json["name"] = info.name;
+        json["changedOutside"] = info.changedOutside;
         return json.dump (2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
     }
 
@@ -123,6 +127,9 @@ namespace
 
         if (json.contains ("name") && json.at ("name").is_string())
             info.name = json.at ("name").get<std::string>();
+
+        if (json.contains ("changedOutside") && json.at ("changedOutside").is_boolean())
+            info.changedOutside = json.at ("changedOutside").get<bool>();
 
         return info;
     }
@@ -258,6 +265,8 @@ namespace
         std::filesystem::path path;
         std::filesystem::path temporary;
         std::optional<std::string> was; // the text it replaces; nullopt for a new file
+        project::FileStamp stamp;       // the file's, taken before its text was read
+        project::FileStamp written {};  // the new file's, once written beside it: a rename keeps it
     };
 
     std::filesystem::path temporaryFor (const std::filesystem::path& path)
@@ -351,7 +360,7 @@ std::string keptSaveFolderName (int number, const commands::SaveInfo& info)
     auto time = commands::localTimeText (info.time);
     std::ranges::replace (time, ':', '-');
 
-    auto text = std::to_string (number) + " " + time + " " + (info.author.empty() ? std::string ("before Hocket") : info.author);
+    auto text = std::to_string (number) + " " + time + " " + commands::savedBy (info);
 
     if (! info.name.empty())
         text += " " + info.name;
@@ -362,8 +371,48 @@ std::string keptSaveFolderName (int number, const commands::SaveInfo& info)
 ProjectFolder::ProjectFolder (std::filesystem::path projectFolder, const project::Project& loaded, Clock saveClock)
     : folder (std::move (projectFolder)), clock (saveClock ? std::move (saveClock) : Clock ([] { return std::chrono::system_clock::now(); }))
 {
-    for (const auto& entry : loaded.notesFiles)
-        clipFiles.insert (entry.first);
+    // A new folder's empty project was never on disk.
+    if (loaded == project::Project {} && ! std::filesystem::exists (folder / pathFromUtf8 (projectFileName)))
+        return;
+
+    for (auto& [file, text] : project::write (loaded))
+        known[file] = { project::FileStamp::of (folder / pathFromUtf8 (file)), std::move (text) };
+}
+
+std::pair<project::LoadResult, std::optional<ProjectFolder>> ProjectFolder::open (std::filesystem::path folder, Clock clock)
+{
+    std::map<std::string, project::FileStamp, std::less<>> stamps;
+    auto loaded = project::load (folder, [&folder, &stamps] (const std::string& file)
+    {
+        stamps[file] = project::FileStamp::of (folder / pathFromUtf8 (file));
+    });
+
+    if (! loaded.project)
+        return { std::move (loaded), std::nullopt };
+
+    ProjectFolder opened (std::move (folder), project::Project {}, std::move (clock));
+
+    for (auto& [file, text] : project::write (*loaded.project))
+        opened.known[file] = { stamps[file], std::move (text) };
+
+    return { std::move (loaded), std::move (opened) };
+}
+
+std::optional<project::FileStamp> ProjectFolder::knownStamp (std::string_view file) const
+{
+    const auto found = known.find (file);
+    return found != known.end() ? std::optional<project::FileStamp> (found->second.stamp) : std::nullopt;
+}
+
+std::optional<std::string> ProjectFolder::knownText (std::string_view file) const
+{
+    const auto found = known.find (file);
+    return found != known.end() ? std::optional<std::string> (found->second.text) : std::nullopt;
+}
+
+void ProjectFolder::noteRead (const std::string& file, const project::FileStamp& stamp, std::string text)
+{
+    known[file] = { stamp, std::move (text) };
 }
 
 std::vector<commands::KeptSave> ProjectFolder::keptSaves()
@@ -410,7 +459,7 @@ project::LoadResult ProjectFolder::loadKeptSave (const commands::KeptSave& save)
     return project::load (folder / pathFromUtf8 (save.folder));
 }
 
-std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (std::string& problem)
+std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::vector<std::string>& changedOutside, std::string& problem)
 {
     const auto projectPath = folder / pathFromUtf8 (projectFileName);
     std::error_code error;
@@ -428,22 +477,55 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (std::string&
 
     // Its clip files: the ones its project.json names, and the ones Hocket
     // knows, should that project.json not read.
-    auto files = clipFiles;
+    std::set<std::string, std::less<>> files;
+
+    for (const auto& entry : known)
+        if (entry.first != projectFileName)
+            files.insert (entry.first);
 
     for (auto& file : clipFilesNamedIn (*projectText))
         files.insert (std::move (file));
 
+    // And any this save overwrites that neither names: one put there by hand.
+    for (const auto& file : changedOutside)
+        if (file != projectFileName)
+            files.insert (file);
+
+    // When a file last changed, by its date.
+    const auto modifiedTime = [this] (const std::filesystem::path& path) -> std::optional<commands::SaveTime>
+    {
+        std::error_code timeError;
+        const auto modified = std::filesystem::last_write_time (path, timeError);
+
+        if (timeError)
+            return {};
+
+        return std::chrono::floor<std::chrono::seconds> (std::chrono::clock_cast<std::chrono::system_clock> (modified));
+    };
+
     // Who saved it, and when. A version Hocket didn't save is from before
-    // Hocket, at project.json's date.
+    // Hocket, at project.json's date; one with files changed outside Hocket
+    // since its save is labelled so, at the latest change.
     const auto infoText = readTextFile (folder / pathFromUtf8 (saveInfoFile));
-    auto info = infoText ? parseSaveInfo (*infoText) : std::nullopt;
+    auto info = infoText && changedOutside.empty() ? parseSaveInfo (*infoText) : std::nullopt;
     const auto infoTextKept = info ? *infoText : std::string();
 
-    if (! info)
+    if (! changedOutside.empty())
     {
-        const auto modified = std::filesystem::last_write_time (projectPath, error);
-        info = commands::SaveInfo { error ? std::chrono::floor<std::chrono::seconds> (clock())
-                                          : std::chrono::floor<std::chrono::seconds> (std::chrono::clock_cast<std::chrono::system_clock> (modified)) };
+        info = commands::SaveInfo { std::chrono::floor<std::chrono::seconds> (clock()), {}, {}, true };
+        std::optional<commands::SaveTime> latest;
+
+        for (const auto& file : changedOutside)
+            if (const auto time = modifiedTime (folder / pathFromUtf8 (file)); time && (! latest || *time > *latest))
+                latest = time;
+
+        if (latest)
+            info->time = *latest;
+    }
+    else if (! info)
+    {
+        const auto time = modifiedTime (projectPath);
+        info = commands::SaveInfo { time ? *time : std::chrono::floor<std::chrono::seconds> (clock()) };
     }
 
     const auto saves = keptSaves();
@@ -548,13 +630,52 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     {
         const auto& text = files.at (file);
         const auto path = folder / pathFromUtf8 (file);
+        const auto stamp = project::FileStamp::of (path); // before reading, so a change while it's read shows later
         std::optional<std::string> was;
 
         if (const auto problem = onDisk (path, file, was); ! problem.empty())
             return failed (problem);
 
         if (! was || *was != text)
-            pending.push_back ({ file, &text, path, temporaryFor (path), std::move (was) });
+            pending.push_back ({ file, &text, path, temporaryFor (path), std::move (was), stamp });
+        else
+            known[file] = { stamp, text }; // what the session has, whatever its date says
+    }
+
+    // Files this save would overwrite that changed on disk since Hocket last
+    // read or wrote them, or that Hocket never had in the project (a new
+    // clip's file, named like one put there by hand).
+    std::vector<std::string> changedOutside;
+    std::vector<std::string> howTheyChanged;
+
+    for (const auto& file : pending)
+    {
+        const auto found = known.find (file.file);
+
+        if (found == known.end() ? ! file.stamp.exists : found->second.stamp == file.stamp)
+            continue;
+
+        changedOutside.push_back (file.file);
+        howTheyChanged.push_back (found == known.end() ? file.file + " is there already, but Hocket never had it in the project"
+                                  : ! file.stamp.exists ? file.file + " was deleted outside Hocket"
+                                                        : file.file + " changed outside Hocket");
+    }
+
+    if (! changedOutside.empty() && ! request.overwrite)
+    {
+        std::string changes;
+
+        for (std::size_t i = 0; i < howTheyChanged.size() && i < 10; ++i)
+            changes += (i == 0 ? "" : "; ") + howTheyChanged[i];
+
+        if (howTheyChanged.size() > 10)
+            changes += "; and " + std::to_string (howTheyChanged.size() - 10) + " more";
+
+        return failed ("it would overwrite changes made since Hocket last read or wrote " + std::string (changedOutside.size() == 1 ? "this file" : "these files")
+                       + ": " + changes + ". Nothing on disk changed. Someone may have edited "
+                       + (changedOutside.size() == 1 ? "it" : "them") + " by hand: ask before saving over "
+                       + (changedOutside.size() == 1 ? "it" : "them") + ". Saving with overwrite saves anyway, "
+                       + "keeping the version on disk as a kept save first, so it can be got back");
     }
 
     // Who saved it, and when, swapped in last. Written with any change, and
@@ -579,7 +700,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     // stops the save before anything has changed.
     for (std::size_t i = 0; i < pending.size(); ++i)
     {
-        const auto& file = pending[i];
+        auto& file = pending[i];
         std::error_code error;
         std::filesystem::create_directories (file.path.parent_path(), error);
 
@@ -595,6 +716,10 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
             return failed ("couldn't write the new " + file.file + " beside it, as " + file.file + std::string (temporarySuffix) + ": "
                            + withStop (problem) + " Nothing on disk changed");
         }
+
+        // Swapped in by a rename, the file keeps this stamp: so a change
+        // made outside the moment after can't pass for Hocket's own.
+        file.written = project::FileStamp::of (file.temporary);
     }
 
     commands::SaveResult result { true };
@@ -604,7 +729,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     if (projectChanged)
     {
         std::string problem;
-        result.kept = keepVersionOnDisk (problem);
+        result.kept = keepVersionOnDisk (changedOutside, problem);
 
         if (! problem.empty())
         {
@@ -634,6 +759,12 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
                 std::filesystem::remove_all (folder / pathFromUtf8 (result.kept->folder), error);
             }
 
+            // Put back, a file has what it had, under a new date. One Hocket
+            // knew as it was is still known; one changed outside still isn't.
+            for (const auto& back : std::span (pending).first (i))
+                if (const auto found = known.find (back.file); found != known.end() && std::ranges::find (changedOutside, back.file) == changedOutside.end())
+                    found->second.stamp = project::FileStamp::of (back.path);
+
             return failed (message + (i == 0 ? " Nothing on disk changed" : " Nothing on disk changed: the files already replaced were put back")
                            + ". If another program has the file open, close it there, then save again");
         }
@@ -642,22 +773,30 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
             result.written.push_back (file.file);
     }
 
+    for (const auto& file : pending)
+        if (file.file != saveInfoFile)
+            known[file.file] = { file.written, *file.text };
+
     // Clip files that were in the project and are still here, but that no
     // clip uses now. project.json no longer names them, so moving them can't
     // break it.
     std::vector<std::string> notMoved;
-    std::set<std::string, std::less<>> stillHere;
+    std::vector<std::string> leaving;
 
-    for (const auto& file : clipFiles)
+    for (const auto& entry : known)
+        if (entry.first != projectFileName && ! files.contains (entry.first))
+            leaving.push_back (entry.first);
+
+    for (const auto& file : leaving)
     {
-        if (files.contains (file))
-            continue;
-
         const auto path = folder / pathFromUtf8 (file);
         std::error_code error;
 
         if (! std::filesystem::exists (path, error))
+        {
+            known.erase (file);
             continue;
+        }
 
         const auto place = unusedPlace (folder, file);
         const auto destination = folder / pathFromUtf8 (place);
@@ -666,19 +805,13 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
 
         if (! problem.empty())
         {
-            notMoved.push_back (file + " (" + withoutStop (problem) + ")");
-            stillHere.insert (file);
+            notMoved.push_back (file + " (" + withoutStop (problem) + ")"); // the next save tries again
             continue;
         }
 
+        known.erase (file);
         result.moved.push_back ({ file, place });
     }
-
-    clipFiles = std::move (stillHere);
-
-    for (const auto& file : order)
-        if (file != projectFileName)
-            clipFiles.insert (file);
 
     std::vector<std::string> said;
 

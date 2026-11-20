@@ -2,7 +2,11 @@
 # Not in hocket_core, since it needs the platform layer, which links core.
 add_library(hocket_storage STATIC
     ProjectFolder.cpp
-    ProjectFolder.h)
+    ProjectFolder.h
+    ProjectWatcher.cpp
+    ProjectWatcher.h
+    WatchedFolder.cpp
+    WatchedFolder.h)
 
 target_link_libraries(hocket_storage
     PUBLIC

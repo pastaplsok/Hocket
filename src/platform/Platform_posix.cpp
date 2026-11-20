@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -154,6 +155,16 @@ std::string moveFile (const std::filesystem::path& from, const std::filesystem::
     unlink (from.c_str());
     syncFolder (to.parent_path());
     return {};
+}
+
+std::optional<double> currentThreadCpuSeconds()
+{
+    timespec time {};
+
+    if (clock_gettime (CLOCK_THREAD_CPUTIME_ID, &time) != 0)
+        return {};
+
+    return static_cast<double> (time.tv_sec) + static_cast<double> (time.tv_nsec) * 1.0e-9;
 }
 
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)

@@ -199,6 +199,11 @@ namespace hocket::commands
     struct Save
     {
         std::string name; // optional, one line: "before the bridge experiment"
+
+        // A save never overwrites a file changed outside Hocket since Hocket
+        // last read or wrote it: it writes nothing and names the file. With
+        // overwrite, it saves anyway, once the version on disk is kept.
+        bool overwrite = false;
     };
 
     //==============================================================================

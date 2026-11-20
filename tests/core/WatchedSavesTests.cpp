@@ -75,7 +75,7 @@ TEST_CASE ("a save that replaces another author's change says so, and how to get
     CHECK (saved.result.message == "#2 wrote clip clp-bass (2 notes)");
     REQUIRE (saved.warning);
     CHECK (*saved.warning == "warning: this save replaced changes made to clips/bass.notes since it was last loaded or saved "
-                             "(the latest: #1 \"wrote clip clp-bass (2 notes)\" by Claude (m0-demo)). Hocket doesn't write clip files yet, "
+                             "(the latest: #1 \"wrote clip clp-bass (2 notes)\" by Claude (m0-demo)). They weren't saved, "
                              "so the file didn't have them. Undoing #2 brings them back.");
 
     // The file and the notes match again.

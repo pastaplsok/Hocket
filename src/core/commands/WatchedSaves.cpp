@@ -52,7 +52,7 @@ std::string WatchedSaves::warningFor (const std::string& file) const
     if (replaced != nullptr)
         warning += " (the latest: #" + std::to_string (replaced->id) + " \"" + replaced->description + "\" by " + displayName (replaced->author) + ")";
 
-    warning += ". Hocket doesn't write clip files yet, so the file didn't have them.";
+    warning += ". They weren't saved, so the file didn't have them.";
 
     if (saveEntry != nullptr)
         warning += " Undoing #" + std::to_string (saveEntry->id) + " brings them back.";

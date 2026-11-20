@@ -11,6 +11,7 @@
 #include "EngineTesting.h"
 
 #include "core/notes/Notes.h"
+#include "platform/Platform.h"
 
 #include <doctest/doctest.h>
 
@@ -38,6 +39,16 @@ namespace
     constexpr int blockSize = FakeAudioDevice::blockSize;
     constexpr double blockSeconds = blockSize / FakeAudioDevice::sampleRate;
 
+    // How long each block took Tracktion: by the clock on the wall, and on the
+    // audio thread's CPU. A block over its budget with little CPU time was
+    // kept waiting, by the OS running something else or by a lock; one with
+    // about as much CPU time as wall time was work.
+    struct BlockTimes
+    {
+        std::vector<double> wall; // seconds
+        std::vector<double> cpu;  // seconds; negative where it couldn't be measured
+    };
+
     // Plays the device on a real-time thread, a block each time a sound card
     // would ask for one, into a buffer allocated up front. Plays until told to
     // stop, or until the buffer is full.
@@ -50,7 +61,11 @@ namespace
               capacity (static_cast<int> (maxSeconds / blockSeconds))
         {
             audio.setSize (2, capacity * blockSize);
-            processing.resize (static_cast<std::size_t> (capacity));
+            times.wall.resize (static_cast<std::size_t> (capacity));
+            times.cpu.resize (static_cast<std::size_t> (capacity));
+
+            // Its first call measures the CPU's cycle counter for 20 ms: not on the audio thread.
+            (void) platform::currentThreadCpuSeconds();
             REQUIRE (startRealtimeThread ({}));
         }
 
@@ -65,13 +80,13 @@ namespace
 
         // Once it's done: what it played, and how long each block took Tracktion.
         const juce::AudioBuffer<float>& output() const { return audio; }
-        const std::vector<double>& processingSeconds() const { return processing; }
+        const BlockTimes& blockTimes() const { return times; }
 
     private:
         FakeAudioDevice& device;
         const int capacity;
         juce::AudioBuffer<float> audio;
-        std::vector<double> processing;
+        BlockTimes times;
         std::atomic<int> played { 0 };
         std::atomic<int> lastBlock { capacity };
 
@@ -83,7 +98,11 @@ namespace
             {
                 // Block i is due when the blocks before it would have finished playing.
                 std::this_thread::sleep_until (start + std::chrono::duration_cast<Clock::duration> (std::chrono::duration<double> (i * blockSeconds)));
-                processing[static_cast<std::size_t> (i)] = device.playBlock (audio, i * blockSize);
+                const auto block = static_cast<std::size_t> (i);
+                const auto cpuBefore = platform::currentThreadCpuSeconds();
+                times.wall[block] = device.playBlock (audio, i * blockSize);
+                const auto cpuAfter = platform::currentThreadCpuSeconds();
+                times.cpu[block] = cpuBefore && cpuAfter ? *cpuAfter - *cpuBefore : -1.0;
                 played.store (i + 1);
             }
         }
@@ -114,20 +133,51 @@ namespace
         int blocks = 0;
         int overBudget = 0; // took longer than the block lasts: an xrun on a sound card
         double slowest = 0.0;
+        double slowestCpu = -1.0; // the slowest block's CPU time; negative if unmeasured
         double mean = 0.0;
+        std::vector<std::string> late; // each block over budget, with both its times and what they say
     };
 
-    Timing timing (const std::vector<double>& processing, int firstBlock, int endBlock)
+    // "block 812 took 6.14 ms, 0.21 ms of it on the audio thread's CPU: it
+    // was kept waiting (the OS ran something else, or a lock held it), not working"
+    std::string lateBlock (int block, double wall, double cpu)
+    {
+        std::ostringstream text;
+        text.precision (3);
+        text << "block " << block << " took " << wall * 1000.0 << " ms";
+
+        if (cpu < 0.0)
+            text << " (its CPU time couldn't be measured)";
+        else if (cpu < 0.5 * wall)
+            text << ", " << cpu * 1000.0 << " ms of it on the audio thread's CPU: it was kept waiting (the OS ran something else, or a lock held it), not working";
+        else
+            text << ", " << cpu * 1000.0 << " ms of it on the audio thread's CPU: it was working, so the work itself was too much";
+
+        return text.str();
+    }
+
+    Timing timing (const BlockTimes& times, int firstBlock, int endBlock)
     {
         Timing result;
 
         for (auto i = firstBlock; i < endBlock; ++i)
         {
-            const auto seconds = processing[static_cast<std::size_t> (i)];
+            const auto wall = times.wall[static_cast<std::size_t> (i)];
+            const auto cpu = times.cpu[static_cast<std::size_t> (i)];
             ++result.blocks;
-            result.overBudget += seconds > blockSeconds ? 1 : 0;
-            result.slowest = std::max (result.slowest, seconds);
-            result.mean += seconds;
+            result.mean += wall;
+
+            if (wall > blockSeconds)
+            {
+                ++result.overBudget;
+                result.late.push_back (lateBlock (i, wall, cpu));
+            }
+
+            if (wall > result.slowest)
+            {
+                result.slowest = wall;
+                result.slowestCpu = cpu;
+            }
         }
 
         result.mean /= std::max (1, result.blocks);
@@ -139,7 +189,21 @@ namespace
         std::ostringstream text;
         text.precision (3);
         text << t.blocks << " blocks, " << t.overBudget << " took longer than the " << blockSeconds * 1000.0 << " ms they last; slowest "
-             << t.slowest * 1000.0 << " ms, mean " << t.mean * 1000.0 << " ms";
+             << t.slowest * 1000.0 << " ms";
+
+        if (t.slowestCpu >= 0.0)
+            text << " (" << t.slowestCpu * 1000.0 << " ms on the CPU)";
+
+        text << ", mean " << t.mean * 1000.0 << " ms";
+
+        constexpr std::size_t shown = 10;
+
+        for (std::size_t i = 0; i < t.late.size() && i < shown; ++i)
+            text << (i == 0 ? ". Over budget: " : "; ") << t.late[i];
+
+        if (t.late.size() > shown)
+            text << "; and " << t.late.size() - shown << " more";
+
         return text.str();
     }
 
@@ -224,6 +288,57 @@ namespace
 
 }
 
+TEST_CASE ("the harness's CPU clock: a thread busy for 50 ms used about 50 ms of CPU, and one asleep for 50 ms almost none")
+{
+    (void) platform::currentThreadCpuSeconds(); // the first call's measuring, out of the way
+
+    const auto measure = [] (bool busy)
+    {
+        double used = -1.0;
+
+        std::thread thread ([busy, &used]
+        {
+            const auto before = platform::currentThreadCpuSeconds();
+            const auto until = Clock::now() + 50ms;
+
+            if (busy)
+                while (Clock::now() < until) {}
+            else
+                std::this_thread::sleep_until (until);
+
+            const auto after = platform::currentThreadCpuSeconds();
+            used = before && after ? *after - *before : -1.0;
+        });
+
+        thread.join();
+        return used;
+    };
+
+    const auto busy = measure (true);
+    const auto asleep = measure (false);
+    MESSAGE ("busy for 50 ms: " << busy * 1000.0 << " ms of CPU; asleep for 50 ms: " << asleep * 1000.0 << " ms");
+
+    // Busy, it may be preempted now and then, so a little under 50 ms.
+    CHECK (busy > 0.035);
+    CHECK (busy < 0.055);
+    CHECK (asleep >= 0.0);
+    CHECK (asleep < 0.003);
+}
+
+TEST_CASE ("the harness reports a block over budget with its wall-clock and CPU times, and whether it was kept waiting or working")
+{
+    const BlockTimes times { { 0.0002, 0.00614, 0.0003, 0.0061, 0.007 }, { 0.0002, 0.00021, 0.0003, 0.0060, -1.0 } };
+    const auto result = timing (times, 0, 5);
+
+    CHECK (result.overBudget == 3);
+    CHECK (result.slowest == doctest::Approx (0.007));
+    REQUIRE (result.late.size() == 3);
+    CHECK (result.late[0] == "block 1 took 6.14 ms, 0.21 ms of it on the audio thread's CPU: it was kept waiting (the OS ran something else, or a lock held it), not working");
+    CHECK (result.late[1] == "block 3 took 6.1 ms, 6 ms of it on the audio thread's CPU: it was working, so the work itself was too much");
+    CHECK (result.late[2] == "block 4 took 7 ms (its CPU time couldn't be measured)");
+    CHECK (describe (result).find (". Over budget: block 1 took 6.14 ms") != std::string::npos);
+}
+
 TEST_CASE ("stress: 200 rewrites at 20 a second during playback cause no xruns and no dropouts")
 {
     // A note held for the whole loop. The rewrites only change a comment, so
@@ -254,8 +369,8 @@ TEST_CASE ("stress: 200 rewrites at 20 a second during playback cause no xruns a
     CHECK_MESSAGE (rewritesTook < 10.5, "the rewrites took " << rewritesTook << " s");
 
     // No xruns: every block was ready in less time than it lasts.
-    const auto stressed = timing (audio.processingSeconds(), firstBlock, audio.blocksPlayed());
-    MESSAGE ("before the rewrites: " << describe (timing (audio.processingSeconds(), 0, firstBlock)));
+    const auto stressed = timing (audio.blockTimes(), firstBlock, audio.blocksPlayed());
+    MESSAGE ("before the rewrites: " << describe (timing (audio.blockTimes(), 0, firstBlock)));
     MESSAGE ("during the rewrites: " << describe (stressed));
 
 #ifdef NDEBUG
@@ -318,7 +433,7 @@ TEST_CASE ("stress: rewrites that move the notes cause no xruns, and the last on
     CHECK (bus.history().size() == rewrites);
     REQUIRE (audio.blocksPlayed() * blockSize >= 2 * barSamples);
 
-    const auto stressed = timing (audio.processingSeconds(), 0, audio.blocksPlayed());
+    const auto stressed = timing (audio.blockTimes(), 0, audio.blocksPlayed());
     MESSAGE ("moving notes: " << describe (stressed));
 
 #ifdef NDEBUG
@@ -445,7 +560,7 @@ namespace
     struct StressRun
     {
         juce::AudioBuffer<float> out;
-        std::vector<double> processing;
+        BlockTimes processing;
         int blocks = 0;
         int firstBlock = 0; // the first block played after the changes began
         double changesTook = 0.0;
@@ -505,7 +620,7 @@ namespace
         runMessagesUntil ([&audio] { return audio.isDone(); });
 
         run.out = audio.output();
-        run.processing = audio.processingSeconds();
+        run.processing = audio.blockTimes();
         run.blocks = audio.blocksPlayed();
         run.finalProject = bus.project();
         run.longestLockHold = sync.longestAudioLockHold();

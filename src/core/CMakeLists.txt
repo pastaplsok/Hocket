@@ -36,8 +36,7 @@ add_library(hocket_core STATIC
     notes/NotesSyntax.cpp
     notes/NotesSyntax.h
     notes/NotesWriter.cpp
-    project/ClipFileWatcher.cpp
-    project/ClipFileWatcher.h
+    project/FileStamp.h
     project/JsonText.cpp
     project/JsonText.h
     project/Project.cpp

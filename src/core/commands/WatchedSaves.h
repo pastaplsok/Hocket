@@ -1,11 +1,11 @@
 #pragma once
 
-// hocket-headless --play --watch's way into the bus (SPEC §6.1): each saved
-// clip file goes in as the person's write_clip, to the first clip using it
-// (linked clips share it). Hocket doesn't write clip files yet, so a change
-// made some other way, like an AI client's write_clip, isn't in the file, and
-// the next save of that file replaces it. That's undoable, but easy to miss,
-// so the save comes with a warning naming what it replaced.
+// hocket-headless --play --watch's way into the bus for clip files (SPEC
+// §6.1): each saved clip file goes in as the person's write_clip, to the
+// first clip using it (linked clips share it). A change made some other way
+// since the file was last loaded or saved, like an AI client's write_clip,
+// isn't in the file, so the file's save replaces it. That's undoable, but
+// easy to miss, so the save comes with a warning naming what it replaced.
 //
 // Message thread only, like the bus.
 
@@ -32,6 +32,10 @@ namespace hocket::commands
 
         // The text of a clip file ("clips/bass.notes"), just saved.
         Outcome save (const std::string& file, const std::string& text);
+
+        // The notes' canonical text when they last matched the file, as
+        // Hocket last saved or read it (storage::ProjectFolder knows).
+        void matched (const std::string& file, std::string text) { matchedFile[file] = std::move (text); }
 
     private:
         CommandBus& bus;

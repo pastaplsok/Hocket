@@ -12,9 +12,7 @@
 #include "api/TokenFile.h"
 #include "core/Paths.h"
 #include "core/commands/CommandBus.h"
-#include "core/commands/WatchedSaves.h"
 #include "core/kits/KitCatalog.h"
-#include "core/project/ClipFileWatcher.h"
 #include "core/project/Project.h"
 #include "core/units/Units.h"
 #include "engine/EditSync.h"
@@ -23,6 +21,7 @@
 #include "engine/kits/KitLibrary.h"
 #include "platform/Platform.h"
 #include "storage/ProjectFolder.h"
+#include "storage/WatchedFolder.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
@@ -85,8 +84,9 @@ namespace
                "                            e.g. -6dB, -infdB (silence). Default 0dB, as the project mixes it.\n"
                "                            Some drivers bypass the Windows volume slider: turn the device down first.\n"
                "                            Not kept. At Ctrl+C it prints the peak output level.\n"
-               "  --watch                   when a clip's .notes file is saved, play the change: it's sent\n"
-               "                            as a write_clip, so it can be undone like any other edit\n"
+               "  --watch                   when project.json or a clip's .notes file is saved outside Hocket,\n"
+               "                            play the change: it's sent as your command (a write_clip, or one\n"
+               "                            replacing the project), so it can be undone like any other edit\n"
                "  --user <name>             your name in the history and in messages to AI clients, e.g. \"was\n"
                "                            made by Lee, not Claude\". Default: user\n";
     }
@@ -361,20 +361,18 @@ namespace
 
     // Runs on the message thread while --play plays: stops the message loop on
     // Ctrl+C, says when playback stops by itself, closes API transactions left
-    // idle, and, with --watch, sends each saved clip file to the bus.
+    // idle, and, with --watch, sends each project file saved outside Hocket to
+    // the bus.
     class PlayLoop final : private juce::Timer
     {
     public:
         PlayLoop (hocket::commands::CommandBus& commandBus, const hocket::engine::EditSync& editSync,
-                  const hocket::engine::PlaybackDevice& playbackDevice, hocket::api::Handler& apiHandler, const std::filesystem::path& folder,
-                  bool watch, hocket::commands::Author localUser)
+                  const hocket::engine::PlaybackDevice& playbackDevice, hocket::api::Handler& apiHandler,
+                  hocket::storage::ProjectFolder& projectFolder, bool watch, hocket::commands::Author localUser)
             : sync (editSync), device (playbackDevice), api (apiHandler), deviceWhilePlaying (playbackDevice.description())
         {
             if (watch)
-            {
-                watcher.emplace (folder, commandBus.project());
-                saves.emplace (commandBus, std::move (localUser));
-            }
+                watched.emplace (commandBus, projectFolder, std::move (localUser));
 
             startTimer (50);
         }
@@ -385,8 +383,7 @@ namespace
         const hocket::engine::EditSync& sync;
         const hocket::engine::PlaybackDevice& device;
         hocket::api::Handler& api;
-        std::optional<hocket::project::ClipFileWatcher> watcher;
-        std::optional<hocket::commands::WatchedSaves> saves;
+        std::optional<hocket::storage::WatchedFolder> watched;
         std::string deviceWhilePlaying; // the device's description, as of the last check
         bool stopReported = false;
 
@@ -440,22 +437,15 @@ namespace
 
         void pollWatcher()
         {
-            if (! watcher)
+            if (! watched)
                 return;
 
-            for (const auto& change : watcher->poll())
+            for (const auto& report : watched->poll())
             {
-                if (! change.text)
-                {
-                    std::cerr << change.file << ": the file is gone or can't be read; the clips using it keep their notes\n";
-                    continue;
-                }
+                (report.ok ? std::cout : std::cerr) << report.file << ": " << report.message << std::endl;
 
-                const auto saved = saves->save (change.file, *change.text);
-                (saved.result.ok ? std::cout : std::cerr) << change.file << ": " << saved.result.message << std::endl;
-
-                if (saved.warning)
-                    std::cerr << change.file << ": " << *saved.warning << std::endl;
+                if (report.warning)
+                    std::cerr << report.file << ": " << *report.warning << std::endl;
             }
         }
     };
@@ -469,7 +459,10 @@ namespace
         }
 
         const auto folder = hocket::pathFromUtf8 (options.folder);
-        auto loaded = hocket::project::load (folder);
+        // Where saves go (SPEC §4.5), noting each file's stamp as it's read,
+        // so a save never overwrites a change made outside Hocket unasked.
+        // Made before the bus, so it outlives it.
+        auto [loaded, projectFolder] = hocket::storage::ProjectFolder::open (folder);
 
         for (const auto& error : loaded.errors)
             std::cerr << hocket::project::formatDiagnostic (error) << "\n";
@@ -587,12 +580,9 @@ namespace
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 
-        // Where saves go (SPEC §4.5). Made before the bus, so it outlives it.
-        hocket::storage::ProjectFolder projectFolder (folder, *loaded.project);
-
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
-        bus.setStorage (&projectFolder);
+        bus.setStorage (&*projectFolder);
 
         // The drum samplers' kits load on the library's thread, and play waits
         // for them. Made before the EditSync, whose samplers ask it for kits.
@@ -668,10 +658,10 @@ namespace
             return 1;
         }
 
-        std::cout << played.message << (options.watch ? "; saving a clip file plays the change" : "") << ". Ctrl+C to stop." << std::endl;
+        std::cout << played.message << (options.watch ? "; saving project.json or a clip file outside Hocket plays the change" : "") << ". Ctrl+C to stop." << std::endl;
 
         {
-            PlayLoop loop (bus, sync, playbackDevice, api, folder, options.watch, localUser);
+            PlayLoop loop (bus, sync, playbackDevice, api, *projectFolder, options.watch, localUser);
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 

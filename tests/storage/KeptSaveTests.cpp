@@ -4,7 +4,7 @@
 
 #include "StorageTesting.h"
 
-#include "core/project/ClipFileWatcher.h"
+#include "storage/ProjectWatcher.h"
 
 #include <set>
 
@@ -349,9 +349,9 @@ TEST_CASE ("loading and --watch ignore .hocket/ and unused/")
     const auto result = saved.bus->save ({}, lee);
     REQUIRE (result.kept);
 
-    using Clock = project::ClipFileWatcher::Clock;
+    using Clock = storage::ProjectWatcher::Clock;
     const auto start = Clock::now();
-    project::ClipFileWatcher watcher (saved.folder, saved.bus->project());
+    storage::ProjectWatcher watcher (*saved.projectFolder);
 
     // Broken files where loading and the watcher never look.
     writeFile (saved.file (result.kept->folder + "/project.json"), "{ not json");
@@ -362,8 +362,8 @@ TEST_CASE ("loading and --watch ignore .hocket/ and unused/")
     // And a change to a clip file, which the watcher does see.
     writeFile (saved.file ("clips/bass.notes"), "@length 4bars\n");
 
-    (void) watcher.poll (start);
-    const auto changes = watcher.poll (start + std::chrono::seconds (1));
+    (void) watcher.poll (saved.bus->project(), start);
+    const auto changes = watcher.poll (saved.bus->project(), start + std::chrono::seconds (1));
 
     REQUIRE (changes.size() == 1);
     CHECK (changes[0].file == "clips/bass.notes");

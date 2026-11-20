@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.23** — 2026-11-20
+> Status: **Draft v0.24** — 2026-11-20
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -257,7 +257,8 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
   - **Text-only copies stay enough once audio arrives** (Milestone 7): audio files are never modified (§4.3). Recording and importing write new files, and every edit (offsets, fades, gain, comps) lives in `project.json`. So a save's text files say everything about the project, and the audio they name is still in the folder. An audio file no clip uses any more goes to `unused/` like a clip file, never deleted, and reverting to a save that names it moves it back.
 - Loading, `--check`, `--watch` and the outside-change check all ignore `.hocket/` and `unused/`. The repository's example projects keep `.hocket/` out of git.
 - **The recovery copy:** a few seconds after changes stop, Hocket writes the whole project outside its folder (`%LOCALAPPDATA%\Hocket\Recovery` on Windows), so a crash loses nothing. It's removed after a save, or at a clean exit with nothing unsaved; a clean exit with unsaved changes keeps it and says so. Opening a project that has a newer recovery copy says so, and `--play --recover` loads it.
-- Saving never overwrites a file that changed outside Hocket since Hocket last read or wrote it (§6.1): it writes nothing and names the file. Saving with `overwrite` writes anyway, after keeping the outside version as a kept save too. `--watch` covers `project.json` as well: a saved change becomes one command that replaces the project's structure, checked and undoable like any other (the command a revert uses).
+- **Outside changes:** saving never overwrites a file that changed outside Hocket since Hocket last read or wrote it (§6.1), was deleted outside it, or is at a new clip's path but was never in the project (put there by hand): it writes nothing, and names each file and what happened to it. Saving with `overwrite` writes anyway, after keeping the version on disk as a kept save, labelled "changed outside Hocket" at its latest change's time. Hocket notes each project file's size and modified time whenever it reads it (just before) or writes it (the new file's, before it's swapped in, so a change made the moment after still shows). A file whose text the save wouldn't change never stops it, and `.hocket/` and `unused/` are never checked.
+  - `--watch` covers `project.json` as well: a saved change becomes one command that replaces the project, checked and undoable like any other (the command a revert uses). It's read with each clip file as the session has it, unsaved changes included, unless that file also changed on disk or is new, when it's read from disk. A change `--watch` can't take in (a `project.json` that doesn't read, say) is reported once, and the session carries on as it was; the next save won't overwrite it unasked.
 
 ---
 
@@ -381,7 +382,7 @@ Validity rules: a note may not start at or after the clip's end, but may extend 
 
 If the project folder is modified externally while the DAW is open, the DAW **detects it and asks** the user whether to reload or merge. It never silently overwrites either side.
 
-Milestone 0's headless host has an opt-in exception for development, `--play --watch`: each saved clip file is sent as a `write_clip`, so it's validated and undoable like any other edit. Milestone 0 never writes the folder, so nothing on disk is overwritten. The flip side: a change made through the API never reaches the file, so the next save of that file replaces it. When a save does that, `--watch` warns, naming the latest change it replaced and the entry to undo to get it back.
+The headless host has an opt-in exception for development, `--play --watch`: each file of the project saved outside Hocket is taken in without asking, as the person's command, so it's validated and undoable like any other edit: a clip file as a `write_clip`, `project.json` as one command replacing the project (§4.5). It compares the files with what Hocket last read or wrote, so Hocket's own saves are never taken for outside changes. A change made through the API since the last save isn't in the file, so a file's save outside Hocket replaces it; when it does, `--watch` warns, naming the latest change it replaced and the entry to undo to get it back. Hocket's own saves never overwrite an outside change unasked (§4.5).
 
 ### 6.2 The API speaks the text format
 Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a patch. The model's "language" is identical whether working live or on saved files.
