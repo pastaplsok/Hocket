@@ -119,8 +119,13 @@ namespace hocket::commands
         // Any client can save, and it's not a history entry: like transport,
         // it changes nothing in the project, so it doesn't split an open
         // transaction or end a gesture. An open transaction's edits so far
-        // are saved, since they're in the project.
-        SaveResult save (const Author& author);
+        // are saved, since they're in the project. The version it replaces
+        // is kept (SPEC §4.5).
+        SaveResult save (const Save& request, const Author& author);
+
+        // The versions saves have replaced, oldest first, which Revert
+        // brings back; none without storage.
+        std::vector<KeptSave> keptSaves() const;
 
         // Whether the project differs from the last save, as far as the
         // history can tell: undoing (or redoing) back to the saved state
@@ -191,6 +196,7 @@ namespace hocket::commands
 
         Result runTransportCommand (const Command&);
         edits::Plan plan (const Command&) const;
+        edits::Plan planRevert (const Revert&) const;
 
         // Applies a command's edits, and says what they did.
         Edits applyCommand (std::vector<Edit> forward);

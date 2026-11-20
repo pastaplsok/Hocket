@@ -42,7 +42,7 @@ TEST_CASE ("the project a bus starts with counts as saved; a change makes it uns
     REQUIRE (bus.execute (SetTempo { 130 }, claude).ok);
     CHECK (bus.hasUnsavedChanges());
 
-    const auto saved = bus.save (lee);
+    const auto saved = bus.save ({}, lee);
 
     CHECK (saved.ok);
     CHECK (saved.message == "saved");
@@ -58,7 +58,7 @@ TEST_CASE ("undoing or redoing back to the saved state counts as saved")
     auto& bus = fixture.bus;
 
     REQUIRE (bus.execute (SetTempo { 130 }, lee).ok); // #1
-    REQUIRE (bus.save (lee).ok);
+    REQUIRE (bus.save ({}, lee).ok);
     REQUIRE (bus.execute (SetTempo { 140 }, lee).ok); // #2
     CHECK (bus.hasUnsavedChanges());
 
@@ -85,7 +85,7 @@ TEST_CASE ("undoing or redoing back to the saved state counts as saved")
 
     SUBCASE ("once a new change drops the saved entry, nothing gets back to it, even the same change again")
     {
-        REQUIRE (bus.save (lee).ok);                       // at #2
+        REQUIRE (bus.save ({}, lee).ok);                       // at #2
         REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok); // #1
         REQUIRE (bus.execute (SetTempo { 140 }, lee).ok);  // #3, as #2 was, but the history can't tell
         CHECK (bus.hasUnsavedChanges());
@@ -121,19 +121,19 @@ TEST_CASE ("a gesture's steps after a save are unsaved, and a gesture that ends 
     SUBCASE ("steps merged into the saved entry")
     {
         REQUIRE (bus.execute (SetTempo { 130, "drag" }, lee).ok); // #1
-        REQUIRE (bus.save (lee).ok);
+        REQUIRE (bus.save ({}, lee).ok);
         REQUIRE (bus.execute (SetTempo { 140, "drag" }, lee).ok); // still #1
         REQUIRE (bus.history().size() == 1);
         CHECK (bus.hasUnsavedChanges());
 
-        REQUIRE (bus.save (lee).ok);
+        REQUIRE (bus.save ({}, lee).ok);
         REQUIRE (bus.execute (SetTempo { 130, "drag" }, lee).ok);
         CHECK (bus.hasUnsavedChanges()); // the same value as the first save, but the history can't tell
     }
 
     SUBCASE ("a gesture back where it started, from a save")
     {
-        REQUIRE (bus.save (lee).ok);
+        REQUIRE (bus.save ({}, lee).ok);
         REQUIRE (bus.execute (SetTempo { 130, "drag" }, lee).ok);
         CHECK (bus.hasUnsavedChanges());
         REQUIRE (bus.execute (SetTempo { 120, "drag" }, lee).ok); // no entry left
@@ -152,7 +152,7 @@ TEST_CASE ("saving with a transaction open saves its edits so far, which count a
     CHECK (bus.hasUnsavedChanges());
 
     // Lee saves while Claude's transaction is open: no entry, no split.
-    const auto saved = bus.save (lee);
+    const auto saved = bus.save ({}, lee);
 
     REQUIRE (saved.ok);
     CHECK (fixture.storage.saves.back().project.tempo == 130);
@@ -207,7 +207,7 @@ TEST_CASE ("a save that fails, or that has nowhere to go, leaves the changes uns
         fixture.storage.fail = true;
         REQUIRE (fixture.bus.execute (SetTempo { 130 }, lee).ok);
 
-        const auto saved = fixture.bus.save (lee);
+        const auto saved = fixture.bus.save ({}, lee);
 
         CHECK_FALSE (saved.ok);
         CHECK (saved.message == "didn't save: the disk is full");
@@ -219,7 +219,7 @@ TEST_CASE ("a save that fails, or that has nowhere to go, leaves the changes uns
         CommandBus bus (makeProject());
         REQUIRE (bus.execute (SetTempo { 130 }, lee).ok);
 
-        const auto saved = bus.save (lee);
+        const auto saved = bus.save ({}, lee);
 
         CHECK_FALSE (saved.ok);
         CHECK (saved.message == "can't save: this session has no project folder to save to");
@@ -229,7 +229,7 @@ TEST_CASE ("a save that fails, or that has nowhere to go, leaves the changes uns
     SUBCASE ("no author")
     {
         Fixture fixture;
-        const auto saved = fixture.bus.save (Author {});
+        const auto saved = fixture.bus.save ({}, Author {});
 
         CHECK_FALSE (saved.ok);
         CHECK (testing::contains (saved.message, "saving needs an author"));
@@ -243,7 +243,7 @@ TEST_CASE ("a save neither ends a gesture nor enters the history")
     auto& bus = fixture.bus;
 
     REQUIRE (bus.execute (SetTempo { 130, "drag" }, lee).ok);
-    REQUIRE (bus.save (claude).ok);
+    REQUIRE (bus.save ({}, claude).ok);
     REQUIRE (bus.execute (SetTempo { 140, "drag" }, lee).ok);
 
     REQUIRE (bus.history().size() == 1);

@@ -94,7 +94,7 @@ TEST_CASE ("random command sequences: refusals change nothing, every project rea
         CHECK (counts.second >= 20);
     }
 
-    CHECK (outcomes.size() == 14); // every project command (not play and stop)
+    CHECK (outcomes.size() == 15); // every project command but revert, which needs kept saves (not play and stop)
     MESSAGE ("undos: " << undos << ", redos: " << redos);
     CHECK (undos >= 200);
     CHECK (redos >= 50);

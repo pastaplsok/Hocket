@@ -51,4 +51,7 @@ desktop.ini
 # Scratch renders and analysis output
 renders/
 scratch/
+# Hocket's own folder in a project: who saved it, and every kept save
+# (SPEC §4.5). The example projects keep it out of git.
+examples/*/.hocket/
 # NOTE: audio files are NOT ignored globally — test fixtures may need them.

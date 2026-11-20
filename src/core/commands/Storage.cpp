@@ -1,0 +1,32 @@
+#include "core/commands/Storage.h"
+
+#include <format>
+
+namespace hocket::commands
+{
+std::string localTimeText (SaveTime time)
+{
+    // The time zone database can be missing (an old Windows, a stripped
+    // system): then it's UTC, and says so.
+    try
+    {
+        const auto local = std::chrono::current_zone()->to_local (time);
+        return std::format ("{:%Y-%m-%d %H:%M}", std::chrono::floor<std::chrono::minutes> (local));
+    }
+    catch (const std::exception&)
+    {
+        return std::format ("{:%Y-%m-%d %H:%M} UTC", std::chrono::floor<std::chrono::minutes> (time));
+    }
+}
+
+std::string describe (const KeptSave& save)
+{
+    auto text = "save #" + std::to_string (save.number) + ", "
+              + (save.info.author.empty() ? std::string ("from before Hocket") : "by " + save.info.author) + ", " + localTimeText (save.info.time);
+
+    if (! save.info.name.empty())
+        text += ", \"" + save.info.name + "\"";
+
+    return text;
+}
+}

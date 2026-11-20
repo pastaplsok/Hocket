@@ -176,6 +176,32 @@ namespace hocket::commands
     };
 
     //==============================================================================
+    // Replaces the whole project with another, valid one, as one history entry
+    // that undo takes back: for a revert to a kept save, and for project.json
+    // saved outside Hocket. It's carried out as the smallest changes that get
+    // there, so a track it doesn't change carries on playing untouched.
+    struct ReplaceProject
+    {
+        project::Project project;
+        std::string description; // the history entry's; "replaced the project" if empty
+    };
+
+    // Brings back a kept save (SPEC §4.5), by its number ("#4"), as one
+    // history entry: the session's project becomes the save's, read and
+    // checked like a project folder. Nothing on disk changes until the next save.
+    struct Revert
+    {
+        int save = 0;
+    };
+
+    // What a save is asked to do (SPEC §4.5); saving isn't a history entry,
+    // so it isn't a Command (CommandBus::save).
+    struct Save
+    {
+        std::string name; // optional, one line: "before the bridge experiment"
+    };
+
+    //==============================================================================
     // Transport commands (SPEC §3.1). They don't change the project, so they
     // never enter the history, can't be undone, and don't split an open
     // transaction; their results say what the setting was before. Their
@@ -221,8 +247,8 @@ namespace hocket::commands
     };
 
     using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, SetInstrument,
-                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, Play, Stop, Seek, SetLoopRegion, ClearLoopRegion,
-                                 SetLooping>;
+                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, ReplaceProject, Revert, Play, Stop, Seek,
+                                 SetLoopRegion, ClearLoopRegion, SetLooping>;
 
     // Play, Stop, Seek, SetLoopRegion, ClearLoopRegion or SetLooping.
     bool isTransportCommand (const Command&);

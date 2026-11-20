@@ -443,6 +443,19 @@ void EditSync::syncTrack (const std::string& trackId)
         if (! clips.contains (clip.id))
             syncClip (clip.id);
 
+    // Clips the Edit has here that the track no longer has: a track removed
+    // and added again with the same ID in one command (a project replaced
+    // whole, when its type changed) comes as two changes, and neither names
+    // its clips. Each goes, or moves to where it is now.
+    std::vector<std::string> left;
+
+    for (const auto& [clipId, clip] : clips)
+        if (clip->getTrack() == found->second.track.get() && std::ranges::find (source->clips, clipId, &project::Clip::id) == source->clips.end())
+            left.push_back (clipId);
+
+    for (const auto& clipId : left)
+        syncClip (clipId);
+
     syncTrackOrder();
 }
 
@@ -455,7 +468,11 @@ void EditSync::syncDevices (const project::Track& source, SyncedTrack& synced)
     {
         const auto device = std::ranges::find (source.devices, plugin->first, &project::Device::id);
 
-        if (device != source.devices.end())
+        // A project replaced whole (a revert) can give an ID another type of
+        // device: the plugin goes, and the device's is made below.
+        const auto isSampler = dynamic_cast<DrumSamplerPlugin*> (plugin->second.get()) != nullptr;
+
+        if (device != source.devices.end() && isSampler == (device->type == project::DeviceType::drumSampler))
         {
             if (auto* sampler = dynamic_cast<DrumSamplerPlugin*> (plugin->second.get()))
                 sampler->setKit (kitLibrary, device->kit);

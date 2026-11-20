@@ -10,6 +10,7 @@ namespace hocket::commands
 namespace
 {
     constexpr std::size_t maxTransactionNameLength = 100;
+    constexpr std::size_t maxSaveNameLength = 100;
 
     std::string doubleQuoted (std::string_view text)
     {
@@ -148,6 +149,8 @@ edits::Plan CommandBus::plan (const Command& command) const
                                else
                                    return planning::plan (currentProject, c);
                            },
+                           [this] (const Revert& c) { return planRevert (c); },
+
                            // Transport commands never get here.
                            [] (const Play&) { return edits::Plan {}; },
                            [] (const Stop&) { return edits::Plan {}; },
@@ -157,6 +160,55 @@ edits::Plan CommandBus::plan (const Command& command) const
                            [] (const SetLooping&) { return edits::Plan {}; },
                        },
                        command);
+}
+
+edits::Plan CommandBus::planRevert (const Revert& command) const
+{
+    using planning::refused;
+
+    if (storage == nullptr)
+        return refused ("revert: this session has no project folder, so there are no kept saves to go back to");
+
+    const auto saves = storage->keptSaves();
+    const auto found = std::ranges::find (saves, command.save, &KeptSave::number);
+
+    if (found == saves.end())
+    {
+        if (saves.empty())
+            return refused ("revert: there are no kept saves yet. Each save keeps the version it replaces, so there's one to go back to after the next save");
+
+        std::vector<std::string> numbers;
+
+        for (const auto& save : saves)
+            numbers.push_back ("#" + std::to_string (save.number));
+
+        return refused ("revert: there's no save #" + std::to_string (command.save) + "; the kept saves are " + planning::listText (numbers));
+    }
+
+    auto loaded = storage->loadKeptSave (*found);
+
+    if (! loaded.project)
+    {
+        std::vector<std::string> problems;
+
+        for (std::size_t i = 0; i < loaded.errors.size() && i < 3; ++i)
+            problems.push_back (project::formatDiagnostic (loaded.errors[i]));
+
+        if (loaded.errors.size() > 3)
+            problems.push_back ("and " + planning::countText (loaded.errors.size() - 3, "more problem"));
+
+        auto message = "revert: " + describe (*found) + " can't be read, in " + found->folder + ": ";
+
+        for (std::size_t i = 0; i < problems.size(); ++i)
+            message += (i == 0 ? "" : "; ") + problems[i];
+
+        return refused (message);
+    }
+
+    if (project::write (*loaded.project) == project::write (currentProject))
+        return planning::unchanged ("the project is already as " + describe (*found) + " has it, so nothing changed and no history entry was added");
+
+    return planning::plan (currentProject, ReplaceProject { std::move (*loaded.project), "reverted to " + describe (*found) });
 }
 
 //==============================================================================
@@ -434,20 +486,30 @@ void CommandBus::setTransport (Transport* newTransport)
     transport = newTransport;
 }
 
-SaveResult CommandBus::save (const Author& author)
+SaveResult CommandBus::save (const Save& request, const Author& author)
 {
     if (author.name.empty())
         return { false, "saving needs an author, e.g. \"Lee\" or \"Claude\"" };
 
+    // It names the save in the list of kept saves, one per line, and the folder it's kept in.
+    if (! request.name.empty() && ! project::isOneLineText (request.name, maxSaveNameLength))
+        return { false, "didn't save: a save's name is one line of text, 1 to " + std::to_string (maxSaveNameLength)
+                            + " bytes with no control characters, e.g. \"before the bridge experiment\"" };
+
     if (storage == nullptr)
         return { false, "can't save: this session has no project folder to save to" };
 
-    auto result = storage->save (currentProject, author);
+    auto result = storage->save (currentProject, request, author);
 
     if (result.ok)
         savedRevision = revision();
 
     return result;
+}
+
+std::vector<KeptSave> CommandBus::keptSaves() const
+{
+    return storage != nullptr ? storage->keptSaves() : std::vector<KeptSave> {};
 }
 
 std::optional<bool> CommandBus::isPlaying() const

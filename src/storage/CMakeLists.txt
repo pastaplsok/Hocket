@@ -8,6 +8,7 @@ target_link_libraries(hocket_storage
     PUBLIC
         hocket_core
     PRIVATE
-        hocket_platform)
+        hocket_platform
+        nlohmann_json::nlohmann_json)
 
 hocket_enable_warnings(hocket_storage)

@@ -2,6 +2,7 @@
 
 // Helpers for the command bus's tests.
 
+#include "common/FakeStorage.h"
 #include "core/commands/CommandBus.h"
 
 #include <doctest/doctest.h>
@@ -86,28 +87,6 @@ namespace hocket::testing
     {
         return text.find (part) != std::string::npos;
     }
-
-    // Storage that keeps each project it's asked to save, or fails when told to.
-    struct FakeStorage final : commands::Storage
-    {
-        commands::SaveResult save (const project::Project& project, const commands::Author& author) override
-        {
-            if (fail)
-                return { false, "didn't save: the disk is full" };
-
-            saves.push_back ({ project, author });
-            return { true, "saved" };
-        }
-
-        struct Save
-        {
-            project::Project project;
-            commands::Author author;
-        };
-
-        std::vector<Save> saves;
-        bool fail = false;
-    };
 
     // A transport that records what it's asked to do, with a playhead a test
     // puts where it likes.

@@ -29,6 +29,14 @@ namespace hocket::commands::planning
     edits::Plan plan (const project::Project& project, const RemoveClip& command);
     edits::Plan plan (const project::Project& project, const MakeClipUnique& command);
 
+    // ProjectCommands.cpp. The new project must be valid as written; a
+    // replacement that writes out the same changes nothing.
+    edits::Plan plan (const project::Project& project, const ReplaceProject& command);
+
+    // The edits that turn `from` into `to` exactly, touching only what
+    // differs, in an order each can apply in.
+    std::vector<edits::Edit> replacementEdits (const project::Project& from, const project::Project& to);
+
     // A refusal: what was being done, why not, and how to fix it.
     edits::Plan refused (std::string message);
 

@@ -14,7 +14,9 @@ add_library(hocket_core STATIC
     commands/Edits.h
     commands/Planning.cpp
     commands/Planning.h
+    commands/ProjectCommands.cpp
     commands/SongCommands.cpp
+    commands/Storage.cpp
     commands/Storage.h
     commands/TrackCommands.cpp
     commands/Transport.h

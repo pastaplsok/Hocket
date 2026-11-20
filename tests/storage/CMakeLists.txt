@@ -1,6 +1,8 @@
 add_executable(hocket_storage_tests
     FileTests.cpp
-    ProjectFolderTests.cpp)
+    KeptSaveTests.cpp
+    ProjectFolderTests.cpp
+    StorageTesting.h)
 
 target_link_libraries(hocket_storage_tests PRIVATE hocket_storage hocket_platform doctest::doctest_with_main)
 target_include_directories(hocket_storage_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests")

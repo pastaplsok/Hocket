@@ -247,6 +247,52 @@ namespace
     }
 }
 
+TEST_CASE ("sync: random replacements of the whole project during playback keep the Edit matching the model, through undo and redo")
+{
+    int replaced = 0;
+
+    for (std::uint32_t seed = 1; seed <= 8; ++seed)
+    {
+        CAPTURE (seed);
+        Rng rng { seed };
+        FakeAudioDevice device;
+        auto kitCatalog = randomSequenceKits();
+        CommandBus bus (randomSequenceProject());
+        bus.setKitCatalog (&kitCatalog);
+        engine::EditSync sync (testEngine(), bus);
+        REQUIRE (timedPlay (bus, lee).ok);
+
+        for (int step = 0; step < 15; ++step)
+        {
+            CAPTURE (step);
+
+            if (chance (rng, 15))
+                (void) bus.undo (lee, UndoScope::anyAuthor);
+            else if (chance (rng, 10))
+                (void) bus.redo (lee);
+            else if (chance (rng, 25))
+                (void) bus.execute (randomCommand (rng, bus.project(), true, false), claude);
+            else
+                replaced += bus.execute (randomReplacement (rng, bus.project()), claude).ok ? 1 : 0;
+
+            checkEditMatches (sync, bus);
+            device.play (randomInt (rng, 0, 40) * FakeAudioDevice::blockSize);
+            checkEditMatches (sync, bus);
+        }
+
+        const auto entries = bus.history().size();
+        undoAll (bus, sync);
+
+        for (std::size_t i = 0; i < entries; ++i)
+            REQUIRE (bus.redo (lee).ok);
+
+        checkEditMatches (sync, bus);
+    }
+
+    MESSAGE ("replacements applied: " << replaced);
+    CHECK (replaced >= 50);
+}
+
 TEST_CASE ("sync: random commands during playback, with the loop region and looping changing, keep the Edit matching the model, cut short while a region plays once")
 {
     int checkedCutShort = 0; // clips checked while a region played once, reaching past its end

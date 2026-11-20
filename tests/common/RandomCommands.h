@@ -176,14 +176,17 @@ namespace hocket::testing
         }
     }
 
+    inline commands::ReplaceProject randomReplacement (Rng& rng, const project::Project& project);
+
     // A random project command for this project, often invalid. Without
-    // songCommands, never a tempo or time signature.
-    inline commands::Command randomCommand (Rng& rng, const project::Project& project, bool songCommands = true)
+    // songCommands, never a tempo or time signature; without replacements,
+    // never a ReplaceProject.
+    inline commands::Command randomCommand (Rng& rng, const project::Project& project, bool songCommands = true, bool replacements = true)
     {
         using namespace commands;
         using namespace randomParts;
 
-        switch (randomInt (rng, songCommands ? 0 : 2, 15))
+        switch (randomInt (rng, songCommands ? 0 : 2, 16))
         {
             case 0: return SetTempo { pick (rng, std::array<double, 6> { 60, 90, 120.5, 140, 10, 400 }), gesture (rng) };
             case 1: return SetTimeSignature { pick (rng, std::array<std::string, 9> { "4/4", "2/4", "8/8", "3/4", "6/8", "12/8", "5/4", "4/2", "6/3" }) };
@@ -231,7 +234,76 @@ namespace hocket::testing
             case 11: return MoveClip { clipId (rng, project), position (rng), chance (rng, 40) ? trackId (rng, project) : std::string() };
             case 12: return RemoveClip { clipId (rng, project) };
             case 13: return MakeClipUnique { clipId (rng, project), {} };
+
+            case 16:
+                if (replacements)
+                    return randomReplacement (rng, project);
+
+                [[fallthrough]];
+
             default: return WriteClip { clipId (rng, project), notesText (rng) };
+        }
+    }
+
+    // The project made invalid in one of a few ways.
+    inline project::Project brokenProject (Rng& rng, project::Project project)
+    {
+        const auto hasTracks = ! project.tracks.empty();
+
+        switch (randomInt (rng, 0, 4))
+        {
+            case 1: project.notesFiles["clips/stray.notes"] = *notes::parse ("@length 1bar\n").clip; break; // no clip uses it
+            case 2:
+                if (hasTracks)
+                    project.tracks.front().clips.push_back ({ "clp-broken", "clips/missing.notes", 0 }); // no such file
+                else
+                    project.tempo = 0;
+                break;
+            case 3:
+                if (hasTracks)
+                    project.tracks.push_back (project.tracks.front()); // its IDs twice
+                else
+                    project.tempo = 10;
+                break;
+            case 4:
+                if (hasTracks)
+                    project.tracks.front().name = "Bad\nname";
+                else
+                    project.tempo = 301;
+                break;
+            default: project.tempo = 400; break;
+        }
+
+        return project;
+    }
+
+    // A project to replace this one with (commands::ReplaceProject): mostly
+    // up to eight random commands away from it, applied to a copy, so tracks
+    // and clips come and go, move, and change type with the same ID; now and
+    // then the starting project, as a revert would bring back; this one
+    // again, which changes nothing; or one that isn't valid.
+    inline commands::ReplaceProject randomReplacement (Rng& rng, const project::Project& project)
+    {
+        using namespace commands;
+
+        switch (randomInt (rng, 0, 9))
+        {
+            case 0: return { randomSequenceProject(), "reverted to the start" };
+            case 1: return { project, {} };
+            case 2:
+            case 3: return { brokenProject (rng, project), {} };
+
+            default:
+            {
+                auto kits = randomSequenceKits();
+                CommandBus scratch (project);
+                scratch.setKitCatalog (&kits);
+
+                for (int i = randomInt (rng, 1, 8); i > 0; --i)
+                    (void) scratch.execute (randomCommand (rng, scratch.project(), true, false), Author { "scratch" });
+
+                return { scratch.project(), {} };
+            }
         }
     }
 
