@@ -77,6 +77,7 @@ Result CommandBus::execute (const Command& command, const Author& author)
     {
         // A transaction is one entry anyway: a gesture in it just adds to it.
         transaction->edits.append (std::move (applied));
+        transaction->revision = nextRevision++;
         gesture.reset();
         return { true, planned.description + " in your open transaction " + doubleQuoted (transaction->name)
                            + "; it becomes a history entry when you commit" + remarks };
@@ -116,6 +117,7 @@ Result CommandBus::execute (const Command& command, const Author& author)
         }
 
         entry.info.description = planned.description;
+        entry.revision = nextRevision++;
         return { true, "#" + std::to_string (entry.info.id) + " " + planned.description + remarks };
     }
 
@@ -214,9 +216,17 @@ void CommandBus::applyInverse (const Edits& entryEdits)
     notify (changes);
 }
 
-void CommandBus::record (const Author& author, std::string description, Edits edits)
+CommandBus::Revision CommandBus::revision() const
 {
-    done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (edits) });
+    if (transaction && ! transaction->edits.empty())
+        return transaction->revision;
+
+    return done.empty() ? 0 : done.back().revision;
+}
+
+void CommandBus::record (const Author& author, std::string description, Edits edits, Revision revision)
+{
+    done.push_back ({ { nextEntryId++, author, std::move (description) }, std::move (edits), revision != 0 ? revision : nextRevision++ });
     undone.clear();
     gesture.reset(); // any new entry ends a gesture; execute starts one again if this is its first step
 }
@@ -226,7 +236,9 @@ void CommandBus::closeTransactionPart()
     if (! transaction || transaction->edits.empty())
         return;
 
-    record (transaction->author, transaction->name + " (part " + std::to_string (transaction->part) + ")", std::exchange (transaction->edits, {}));
+    // The project doesn't change, so the entry keeps the part's revision.
+    record (transaction->author, transaction->name + " (part " + std::to_string (transaction->part) + ")", std::exchange (transaction->edits, {}),
+            std::exchange (transaction->revision, 0));
     ++transaction->part;
 }
 
@@ -272,7 +284,7 @@ Result CommandBus::commitTransaction (const Author& author)
 
     const auto name = finished.part == 1 ? finished.name : finished.name + " (part " + std::to_string (finished.part) + ")";
     const auto id = nextEntryId;
-    record (finished.author, name, std::move (finished.edits));
+    record (finished.author, name, std::move (finished.edits), finished.revision);
     return { true, "#" + std::to_string (id) + " " + name };
 }
 
@@ -293,7 +305,7 @@ Result CommandBus::interruptTransaction (const Author& author)
     const auto name = finished.part == 1 ? finished.name + " (interrupted)"
                                          : finished.name + " (part " + std::to_string (finished.part) + ", interrupted)";
     const auto id = nextEntryId;
-    record (finished.author, name, std::move (finished.edits));
+    record (finished.author, name, std::move (finished.edits), finished.revision);
 
     return { true, closed + (finished.part == 1 ? "; its edits are " : "; its earlier parts are already in the history, and the last part is ")
                        + "#" + std::to_string (id) + " " + doubleQuoted (name) };
@@ -420,6 +432,22 @@ void CommandBus::removeListener (int listenerId)
 void CommandBus::setTransport (Transport* newTransport)
 {
     transport = newTransport;
+}
+
+SaveResult CommandBus::save (const Author& author)
+{
+    if (author.name.empty())
+        return { false, "saving needs an author, e.g. \"Lee\" or \"Claude\"" };
+
+    if (storage == nullptr)
+        return { false, "can't save: this session has no project folder to save to" };
+
+    auto result = storage->save (currentProject, author);
+
+    if (result.ok)
+        savedRevision = revision();
+
+    return result;
 }
 
 std::optional<bool> CommandBus::isPlaying() const

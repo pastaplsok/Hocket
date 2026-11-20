@@ -10,10 +10,12 @@
 #include "core/commands/Changes.h"
 #include "core/commands/Commands.h"
 #include "core/commands/Edits.h"
+#include "core/commands/Storage.h"
 #include "core/commands/Transport.h"
 #include "core/kits/KitCatalog.h"
 #include "core/project/Project.h"
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <set>
@@ -106,6 +108,26 @@ namespace hocket::commands
         void setKitCatalog (kits::KitCatalog* catalog) { kitCatalog = catalog; }
         kits::KitCatalog* kits() const { return kitCatalog; }
 
+        //==============================================================================
+        // Saving (SPEC §4.5). The project the bus starts with counts as saved:
+        // it's what was loaded.
+
+        // Where save() writes. Without one, saving fails. It must outlive
+        // the bus, or be removed with nullptr first.
+        void setStorage (Storage* newStorage) { storage = newStorage; }
+
+        // Any client can save, and it's not a history entry: like transport,
+        // it changes nothing in the project, so it doesn't split an open
+        // transaction or end a gesture. An open transaction's edits so far
+        // are saved, since they're in the project.
+        SaveResult save (const Author& author);
+
+        // Whether the project differs from the last save, as far as the
+        // history can tell: undoing (or redoing) back to the saved state
+        // counts as saved. A change that's then put back by hand, with no
+        // undo, still counts as unsaved.
+        bool hasUnsavedChanges() const { return revision() != savedRevision; }
+
     private:
         using Edit = edits::Edit;
 
@@ -120,10 +142,18 @@ namespace hocket::commands
             void append (Edits&& more);
         };
 
+        // Each state of the project the history can reach has a revision
+        // number, never reused: the newest entry's (0 when there's none), or
+        // an open transaction's while it holds edits. Entries below the
+        // newest can't change while it's there, so its number stands for the
+        // whole state, and undo and redo go back to earlier numbers.
+        using Revision = std::uint64_t;
+
         struct Entry
         {
             HistoryEntry info;
             Edits edits;
+            Revision revision = 0; // the state after its edits; a new one each time a gesture merges into it
         };
 
         // The gesture whose next step can still merge into the newest entry (SPEC §3.1).
@@ -141,6 +171,7 @@ namespace hocket::commands
             std::string name;
             int part = 1; // > 1 once another author's command has split it
             Edits edits;  // the current part's
+            Revision revision = 0; // the state after the current part's edits; the entry they become keeps it
         };
 
         project::Project currentProject;
@@ -154,6 +185,9 @@ namespace hocket::commands
         Transport* transport = nullptr;
         TransportSettings transportState;
         kits::KitCatalog* kitCatalog = nullptr;
+        Storage* storage = nullptr;
+        Revision nextRevision = 1;
+        Revision savedRevision = 0;
 
         Result runTransportCommand (const Command&);
         edits::Plan plan (const Command&) const;
@@ -163,7 +197,10 @@ namespace hocket::commands
         void applyForward (const Edits&);
         void applyInverse (const Edits&);
 
-        void record (const Author& author, std::string description, Edits edits);
+        Revision revision() const;
+
+        // A new entry, whose state is `revision`, or a new revision if 0.
+        void record (const Author& author, std::string description, Edits edits, Revision revision = 0);
         void closeTransactionPart();
         void notify (const std::vector<Change>&);
     };

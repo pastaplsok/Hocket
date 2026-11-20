@@ -10,7 +10,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <utility>
 
@@ -80,6 +83,77 @@ std::filesystem::path currentProgramFolder()
 {
     std::error_code error;
     return std::filesystem::read_symlink ("/proc/self/exe", error).parent_path();
+}
+
+namespace
+{
+    std::string errnoMessage()
+    {
+        return std::strerror (errno);
+    }
+
+    // Makes a rename in this folder durable: the folder's entry is on the disk too.
+    void syncFolder (const std::filesystem::path& folder)
+    {
+        const auto descriptor = open (folder.empty() ? "." : folder.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+
+        if (descriptor >= 0)
+        {
+            fsync (descriptor);
+            close (descriptor);
+        }
+    }
+}
+
+std::string writeFileToDisk (const std::filesystem::path& file, std::string_view bytes)
+{
+    const auto descriptor = open (file.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+
+    if (descriptor < 0)
+        return errnoMessage();
+
+    std::string error;
+    auto remaining = bytes;
+
+    while (error.empty() && ! remaining.empty())
+    {
+        const auto written = write (descriptor, remaining.data(), remaining.size());
+
+        if (written < 0 && errno != EINTR)
+            error = errnoMessage();
+        else if (written > 0)
+            remaining.remove_prefix (static_cast<std::size_t> (written));
+    }
+
+    if (error.empty() && fsync (descriptor) != 0)
+        error = errnoMessage();
+
+    close (descriptor);
+
+    if (! error.empty())
+        unlink (file.c_str());
+
+    return error;
+}
+
+std::string replaceFile (const std::filesystem::path& from, const std::filesystem::path& to)
+{
+    if (rename (from.c_str(), to.c_str()) != 0)
+        return errnoMessage();
+
+    syncFolder (to.parent_path());
+    return {};
+}
+
+std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to)
+{
+    // A hard link fails if `to` exists, so nothing is ever moved over another file.
+    if (link (from.c_str(), to.c_str()) != 0)
+        return errnoMessage();
+
+    unlink (from.c_str());
+    syncFolder (to.parent_path());
+    return {};
 }
 
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)

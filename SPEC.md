@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.21** — 2026-11-20
+> Status: **Draft v0.22** — 2026-11-20
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -246,8 +246,8 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 
 ### 4.5 Saving
 **Saving is explicit, keeps every earlier save, and has an automatic recovery copy** (planned with Lee on 2026-11-20).
-- Save is a command any client can send: the GUI, MCP's `save`, or the `S` key in `hocket-headless --play`'s console, which saves as the person. Like transport, it isn't a history entry. Hocket knows whether anything is unsaved; undoing back to the saved state counts as saved.
-- Each file is written atomically (to a temporary file beside it, then swapped in), clip files before `project.json`, so a crash mid-save never leaves `project.json` naming a missing clip. Only files whose text changed are written. `--new <folder>` makes an empty project (120 BPM, 4/4, no tracks) in a new or empty folder.
+- Save is a command any client can send: the GUI, MCP's `save`, or the `S` key in `hocket-headless --play`'s console, which saves as the person. Like transport, it isn't a history entry, so it doesn't split an open transaction; a transaction's edits so far are saved, since they're in the project. Hocket knows whether anything is unsaved, from the history: undoing or redoing back to the saved state counts as saved, while a change put back by hand counts as unsaved.
+- Each file is written atomically (to a temporary file beside it, then swapped in), clip files before `project.json`, so a crash mid-save never leaves `project.json` naming a missing clip. Every changed file's new text is written beside it before any is swapped in, and a swap that fails (another program holding the file, say) puts back the files already swapped, so a save that fails leaves the folder as it was, and says why. Only files whose text changed are written. `--new <folder>` makes an empty project (120 BPM, 4/4, no tracks) in a new or empty folder, making the folder if need be.
 - **Unused files:** a clip file that was in the project, but that no clip uses any more, is moved on save to `unused/`, keeping its path (`unused/clips/verse-2.notes`), and numbered if that name is taken. Nothing is ever deleted, and files Hocket never had in the project are never touched. If an undo brings the clip back, the next save writes the file in `clips/` again.
 - **Kept saves:** before a save writes anything, it keeps the version it replaces in `.hocket/saves/<number> <time> <author>[ <name>]/`: a complete copy of the project's text files as they were (`project.json` and every clip file), so any one restores by itself, with the revert command or by hand. A save can be named ("before the bridge experiment"). Folder names are made valid on Windows whatever the author or the name contains. Every save is kept, for now.
   - **This is the person's way back from an experiment.** Any client can save, an AI client included (Milestone 1 has no GUI, and Claude saves the demo song), so no save may lose a version that was saved: each is kept. A revert command restores a kept save into the session as one history entry, which can itself be undone, and a list command shows the kept saves (number, time, author, name). MCP's `save` is described as for when the user asks, and its result names the save it kept.

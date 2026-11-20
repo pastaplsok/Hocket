@@ -47,6 +47,23 @@ namespace hocket::platform
     // installed next to it (the bundled drum kits) are found.
     std::filesystem::path currentProgramFolder();
 
+    // Writes `bytes` to `file`, replacing any file of that name, and returns
+    // only once they're on the disk, so a crash or power cut afterwards can't
+    // leave it empty or partial. Returns what went wrong, or empty; on failure
+    // it leaves no file behind.
+    std::string writeFileToDisk (const std::filesystem::path& file, std::string_view bytes);
+
+    // Puts the file `from` in place of `to` in one step: anything opening `to`
+    // finds the old file or the new one, never neither, nor part of one. `to`
+    // need not exist. Returns once the move is on the disk; returns what went
+    // wrong, or empty. On Windows it fails while another program has `to` open
+    // without letting others delete it, as some editors do.
+    std::string replaceFile (const std::filesystem::path& from, const std::filesystem::path& to);
+
+    // Moves a file, but never over another: fails if `to` exists. Returns
+    // what went wrong, or empty.
+    std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to);
+
     // A file held so that no other holder can take it until this one lets go
     // or its process ends, crashes included: for "only one at a time". On
     // Windows nothing else can open the file meanwhile, not even to read it;

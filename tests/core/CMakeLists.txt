@@ -16,6 +16,7 @@ add_executable(hocket_core_tests
     ProjectPropertyTests.cpp
     ProjectTests.cpp
     RulesTests.cpp
+    SaveTrackingTests.cpp
     SongCommandTests.cpp
     TrackCommandTests.cpp
     TransportCommandTests.cpp

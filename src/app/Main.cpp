@@ -22,6 +22,7 @@
 #include "engine/PlaybackDevice.h"
 #include "engine/kits/KitLibrary.h"
 #include "platform/Platform.h"
+#include "storage/ProjectFolder.h"
 
 #include <tracktion_engine/tracktion_engine.h>
 
@@ -55,6 +56,9 @@ namespace
     void printUsage (std::ostream& out)
     {
         out << "usage: hocket-headless --check <project-folder>   validate a project; errors go to stderr\n"
+               "       hocket-headless --new <project-folder> [--user <name>]\n"
+               "                                                  make an empty project (120 BPM, 4/4, no tracks)\n"
+               "                                                  in a new or empty folder\n"
                "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>]\n"
                "                       [--sample-rate <Hz>] [--buffer-size <samples>] [--master-volume <dB>]\n"
                "                       [--watch] [--user <name>]\n"
@@ -202,6 +206,47 @@ namespace
 
         auto kits = installedKits();
         reportKits (project, kits);
+        return 0;
+    }
+
+    struct NewOptions
+    {
+        std::string folder;
+        std::string user = "user";
+    };
+
+    std::optional<NewOptions> parseNewOptions (const std::vector<std::string>& arguments)
+    {
+        if (arguments.size() < 3 || arguments[1] != "--new")
+            return {};
+
+        NewOptions options { arguments[2] };
+
+        for (std::size_t i = 3; i < arguments.size(); ++i)
+        {
+            if (arguments[i] == "--user" && i + 1 < arguments.size() && ! arguments[i + 1].empty())
+                options.user = arguments[++i];
+            else
+                return {};
+        }
+
+        return options;
+    }
+
+    int newProject (const NewOptions& options)
+    {
+        const auto folder = hocket::pathFromUtf8 (options.folder);
+
+        if (const auto error = hocket::storage::createProject (folder, { options.user }); ! error.empty())
+        {
+            std::cerr << error << "\n";
+            return 1;
+        }
+
+        std::error_code error;
+        const auto absolute = std::filesystem::absolute (folder, error);
+        std::cout << "Made an empty project in " << hocket::utf8FromPath (error ? folder : absolute)
+                  << ": 120 BPM, 4/4, no tracks. --play plays it, and serves the API to build it with.\n";
         return 0;
     }
 
@@ -542,8 +587,12 @@ namespace
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 
+        // Where saves go (SPEC §4.5). Made before the bus, so it outlives it.
+        hocket::storage::ProjectFolder projectFolder (folder, *loaded.project);
+
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
+        bus.setStorage (&projectFolder);
 
         // The drum samplers' kits load on the library's thread, and play waits
         // for them. Made before the EditSync, whose samplers ask it for kits.
@@ -665,6 +714,9 @@ int main (int argc, char* argv[])
 
         if (arguments.size() == 3 && arguments[1] == "--check")
             return checkProject (arguments[2]);
+
+        if (const auto options = parseNewOptions (arguments))
+            return newProject (*options);
 
         if (const auto options = parsePlayOptions (arguments))
             return playProject (*options);

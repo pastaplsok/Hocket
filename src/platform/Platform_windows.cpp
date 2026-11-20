@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <io.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 #include <vector>
@@ -150,6 +151,81 @@ std::optional<std::filesystem::path> documentsFolder()
 std::filesystem::path currentProgramFolder()
 {
     return programPath (GetCurrentProcess()).parent_path();
+}
+
+namespace
+{
+    // The system's message for the last error, e.g. "The process cannot
+    // access the file because it is being used by another process."
+    std::string lastErrorMessage()
+    {
+        const auto code = GetLastError();
+        wchar_t* text = nullptr;
+        const auto length = FormatMessageW (FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code,
+                                            0, reinterpret_cast<wchar_t*> (&text), 0, nullptr);
+
+        std::string message;
+
+        if (length > 0 && text != nullptr)
+            message = utf8FromWide (text);
+
+        LocalFree (text);
+
+        while (! message.empty() && (message.back() == '\n' || message.back() == '\r' || message.back() == ' '))
+            message.pop_back();
+
+        return message.empty() ? "Windows error " + std::to_string (code) : message;
+    }
+}
+
+std::string writeFileToDisk (const std::filesystem::path& file, std::string_view bytes)
+{
+    const auto handle = CreateFileW (file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+    if (handle == INVALID_HANDLE_VALUE)
+        return lastErrorMessage();
+
+    std::string error;
+    auto remaining = bytes;
+
+    while (error.empty() && ! remaining.empty())
+    {
+        const auto chunk = static_cast<DWORD> (std::min<std::size_t> (remaining.size(), 1u << 30));
+        DWORD written = 0;
+
+        if (! WriteFile (handle, remaining.data(), chunk, &written, nullptr) || written == 0)
+            error = lastErrorMessage();
+        else
+            remaining.remove_prefix (written);
+    }
+
+    // Until this, the bytes may be only in the system's cache.
+    if (error.empty() && ! FlushFileBuffers (handle))
+        error = lastErrorMessage();
+
+    CloseHandle (handle);
+
+    if (! error.empty())
+        DeleteFileW (file.c_str());
+
+    return error;
+}
+
+std::string replaceFile (const std::filesystem::path& from, const std::filesystem::path& to)
+{
+    if (! MoveFileExW (from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return lastErrorMessage();
+
+    return {};
+}
+
+std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to)
+{
+    // Without MOVEFILE_REPLACE_EXISTING, it fails if `to` exists.
+    if (! MoveFileExW (from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH))
+        return lastErrorMessage();
+
+    return {};
 }
 
 std::optional<FileLock> FileLock::acquire (const std::filesystem::path& file)

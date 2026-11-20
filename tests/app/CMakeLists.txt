@@ -55,3 +55,37 @@ set_tests_properties(hocket_headless_master_volume_needs_a_unit PROPERTIES
     FIXTURES_REQUIRED unicode_project
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "--master-volume: '-12' isn't a valid volume: it has no unit; volume is written in dB")
+
+# --new makes an empty project in a new folder (SPEC §4.5), which --check
+# finds valid, and refuses a folder with anything in it. The folder is
+# removed first, so each run makes it afresh.
+set(new_project_folder "${unicode_folder}/new ünï/song")
+
+add_test(NAME hocket_headless_new_project_setup
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "${unicode_folder}/new ünï")
+set_tests_properties(hocket_headless_new_project_setup PROPERTIES FIXTURES_SETUP new_project_clean)
+
+add_test(NAME hocket_headless_new_project
+    COMMAND hocket_headless --new "${new_project_folder}" --user Lee)
+set_tests_properties(hocket_headless_new_project PROPERTIES
+    FIXTURES_REQUIRED new_project_clean
+    FIXTURES_SETUP new_project
+    PASS_REGULAR_EXPRESSION "Made an empty project in .*new ünï.song: 120 BPM, 4/4, no tracks")
+
+add_test(NAME hocket_headless_check_new_project
+    COMMAND hocket_headless --check "${new_project_folder}")
+set_tests_properties(hocket_headless_check_new_project PROPERTIES
+    FIXTURES_REQUIRED new_project
+    PASS_REGULAR_EXPRESSION "OK: 120 BPM, 4/4, 0 tracks, 0 clips")
+
+add_test(NAME hocket_headless_new_refuses_a_project
+    COMMAND hocket_headless --new "${new_project_folder}")
+set_tests_properties(hocket_headless_new_refuses_a_project PROPERTIES
+    FIXTURES_REQUIRED new_project
+    WILL_FAIL TRUE)
+
+add_test(NAME hocket_headless_new_says_why_it_refuses
+    COMMAND hocket_headless --new "${new_project_folder}")
+set_tests_properties(hocket_headless_new_says_why_it_refuses PROPERTIES
+    FIXTURES_REQUIRED new_project
+    PASS_REGULAR_EXPRESSION "song' isn't empty: it holds a project already")

@@ -1,5 +1,6 @@
 add_subdirectory(core)
 add_subdirectory(platform)
+add_subdirectory(storage)
 add_subdirectory(engine)
 add_subdirectory(api)
 add_subdirectory(app)
