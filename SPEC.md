@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.20** — 2026-11-20
+> Status: **Draft v0.21** — 2026-11-20
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -245,10 +245,16 @@ Lanes may be written as **breakpoints or shapes**; the DAW expands shapes intern
 - **Canonical form:** keys in the order shown, 2-space indent, one value per line, UTF-8 with LF line endings and a final newline. A drums track's `drumMap` comes between `devices` and `clips`, sorted by note, and a drum sampler's `kit` after its `type`. Clips on a track are sorted by start; tracks and devices keep their order. Whole-number tempos are written without a decimal point.
 
 ### 4.5 Saving
-**Saving is explicit, with an automatic recovery copy.**
-- Save is a command any client can send: the GUI, or MCP's `save`. Like transport, it isn't a history entry. Each file is written atomically.
-- After changes, Hocket keeps a recovery copy of the project outside its folder (`%LOCALAPPDATA%\Hocket\Recovery` on Windows), so a crash loses nothing. Opening a project that has a newer recovery copy offers it.
-- Saving never overwrites a file that changed outside Hocket since Hocket last read or wrote it (§6.1).
+**Saving is explicit, keeps every earlier save, and has an automatic recovery copy** (planned with Lee on 2026-11-20).
+- Save is a command any client can send: the GUI, MCP's `save`, or the `S` key in `hocket-headless --play`'s console, which saves as the person. Like transport, it isn't a history entry. Hocket knows whether anything is unsaved; undoing back to the saved state counts as saved.
+- Each file is written atomically (to a temporary file beside it, then swapped in), clip files before `project.json`, so a crash mid-save never leaves `project.json` naming a missing clip. Only files whose text changed are written. `--new <folder>` makes an empty project (120 BPM, 4/4, no tracks) in a new or empty folder.
+- **Unused files:** a clip file that was in the project, but that no clip uses any more, is moved on save to `unused/`, keeping its path (`unused/clips/verse-2.notes`), and numbered if that name is taken. Nothing is ever deleted, and files Hocket never had in the project are never touched. If an undo brings the clip back, the next save writes the file in `clips/` again.
+- **Kept saves:** before a save writes anything, it keeps the version it replaces in `.hocket/saves/<number> <time> <author>[ <name>]/`: a complete copy of the project's text files as they were (`project.json` and every clip file), so any one restores by itself, with the revert command or by hand. A save can be named ("before the bridge experiment"). Folder names are made valid on Windows whatever the author or the name contains. Every save is kept, for now.
+  - **This is the person's way back from an experiment.** Any client can save, an AI client included (Milestone 1 has no GUI, and Claude saves the demo song), so no save may lose a version that was saved: each is kept. A revert command restores a kept save into the session as one history entry, which can itself be undone, and a list command shows the kept saves (number, time, author, name). MCP's `save` is described as for when the user asks, and its result names the save it kept.
+  - **Text-only copies stay enough once audio arrives** (Milestone 7): audio files are never modified (§4.3). Recording and importing write new files, and every edit (offsets, fades, gain, comps) lives in `project.json`. So a save's text files say everything about the project, and the audio they name is still in the folder. An audio file no clip uses any more goes to `unused/` like a clip file, never deleted, and reverting to a save that names it moves it back.
+- Loading, `--check`, `--watch` and the outside-change check all ignore `.hocket/` and `unused/`. The repository's example projects keep `.hocket/` out of git.
+- **The recovery copy:** a few seconds after changes stop, Hocket writes the whole project outside its folder (`%LOCALAPPDATA%\Hocket\Recovery` on Windows), so a crash loses nothing. It's removed after a save, or at a clean exit with nothing unsaved; a clean exit with unsaved changes keeps it and says so. Opening a project that has a newer recovery copy says so, and `--play --recover` loads it.
+- Saving never overwrites a file that changed outside Hocket since Hocket last read or wrote it (§6.1): it writes nothing and names the file. Saving with `overwrite` writes anyway, after keeping the outside version as a kept save too. `--watch` covers `project.json` as well: a saved change becomes one command that replaces the project's structure, checked and undoable like any other.
 
 ---
 
@@ -482,7 +488,7 @@ Raw data remains available on explicit request (e.g. for a script).
 **Native device types and parameters are Hocket's, whatever runs them.** A native device's type and parameter names (`hocket:synth`, `cutoff`) are Hocket's from the start, since they're part of the file format and the API.
 - Behind a Hocket name, one of Tracktion's devices may stand in until Hocket's own replaces it, wherever it passes the real-time stress tests (§3.2). The replacement changes no project files.
 - Hocket's own synth comes first. It replaces 4OSC, which allocates on the audio thread and renders slowly.
-- Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at +11 to +13.5 dBFS, by where its oscillators' phases fall.)
+- Hocket's synth leaves headroom by default: a full-velocity chord on one track stays under full scale with the track at 0 dB. (On 4OSC, a five-note chord at v127 peaks at +11 to +13.5 dBFS, by where its oscillators' phases fall.) Until then, 4OSC is trimmed by 12 dB, so one note at v127 peaks at about −12 dBFS, as the bundled kits' kicks do (Lee, 2026-11-20); that chord then peaks at about −1.4 to +1.5 dBFS.
 - So far there's `hocket:synth`, which Tracktion's 4OSC plays until Milestone 4, and `hocket:drum-sampler`, with a kit (§8.4).
 - The drum sampler is Hocket's own from the start. Tracktion's `SamplerPlugin` takes a lock the message thread shares, and allocates for every note-on, on the audio thread.
   - Velocity sets a hit's level: its gain is the piece's level × (velocity / 127)², General MIDI's default curve (v100 is −4.2 dB, v64 −11.9 dB, v28 −26 dB). It adds no gain of its own: at v127, a piece at a level of 0 dB plays its sample exactly.

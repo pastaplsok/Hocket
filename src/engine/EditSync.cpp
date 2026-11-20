@@ -41,9 +41,23 @@ namespace
     {
         switch (device.type)
         {
-            // 4OSC stands in for Hocket's synth until Milestone 4 (SPEC §8.1).
+            // 4OSC stands in for Hocket's synth until Milestone 4 (SPEC §8.1),
+            // trimmed so one note at v127 peaks at about -12 dBFS, as the
+            // bundled kits' kicks do (Lee, 2026-11-20). Untrimmed, its one
+            // note peaks at about 0 dBFS, and a five-note chord at +10.6 to
+            // +13.5 dBFS (RenderTests.cpp, "hocket:synth's level").
             case project::DeviceType::synth:
-                return edit.getPluginCache().createNewPlugin (tracktion::FourOscPlugin::xmlTypeName, {});
+            {
+                auto plugin = edit.getPluginCache().createNewPlugin (tracktion::FourOscPlugin::xmlTypeName, {});
+
+                // The parameter itself, which the audio reads, and its stored
+                // value with it; setting only the stored value reaches the
+                // parameter later, through a listener.
+                if (auto* fourOsc = dynamic_cast<tracktion::FourOscPlugin*> (plugin.get()))
+                    fourOsc->masterLevel->setParameter (-12.0f, juce::sendNotificationSync);
+
+                return plugin;
+            }
 
             // Hocket's own (SPEC §8.1), with its kit loading on the library's thread.
             case project::DeviceType::drumSampler:

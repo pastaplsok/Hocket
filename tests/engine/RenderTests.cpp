@@ -16,10 +16,12 @@ using namespace hocket::testing;
 namespace
 {
     // Where the first note starts in a render, in seconds; -1 if it's silent.
+    // The threshold is 12 dB under firstSoundAt's usual one, as 4OSC is
+    // trimmed by 12 dB (2026-11-20), so it finds the same point in the attack.
     double firstNoteAt (engine::EditSync& sync)
     {
         const auto audio = renderLoop (sync);
-        const auto sample = firstSoundAt (audio.buffer);
+        const auto sample = firstSoundAt (audio.buffer, 0, 2.5e-4f);
         return sample < 0 ? -1.0 : sample / audio.sampleRate;
     }
 
@@ -41,7 +43,33 @@ TEST_CASE ("the demo project renders: not silent, two bars long, starting on its
 
     CHECK (audio.buffer.getNumSamples() == audio.sampleAt (4.0)); // 2 bars at 120 BPM
     CHECK (peakBetween (audio.buffer, 0, audio.buffer.getNumSamples()) > 0.05f);
-    CHECK (firstSoundAt (audio.buffer) < audio.sampleAt (0.002));
+    CHECK (firstSoundAt (audio.buffer, 0, 2.5e-4f) < audio.sampleAt (0.002)); // as firstNoteAt: 4OSC is trimmed by 12 dB
+}
+
+TEST_CASE ("hocket:synth's level: one note at v127 peaks at about -12 dBFS, the bundled kits' kick level; a five-note chord says how loud it gets")
+{
+    // 4OSC stands in for Hocket's synth until Milestone 4, trimmed so its
+    // level sits with the kits' (Lee, 2026-11-20). Played on the fake device,
+    // whose float buffers keep a peak over full scale, which a render's file
+    // would clip. Its oscillators' phases differ from run to run, so a few runs.
+    const auto peakOf = [] (const std::string& line)
+    {
+        FakeAudioDevice device;
+        commands::CommandBus bus (makeProject ({ makeTrack ("trk-keys", "Keys", { makeClip ("clp-keys", 0, "@length 1bar\n\n" + line + "\n") }) }));
+        engine::EditSync sync (testEngine(), bus);
+        REQUIRE (timedPlay (bus, testing::lee).ok);
+        device.play (static_cast<int> (FakeAudioDevice::sampleRate * 1.5));
+        const auto& out = device.output().buffer;
+        return 20.0 * std::log10 (static_cast<double> (peakBetween (out, 0, out.getNumSamples())));
+    };
+
+    for (int run = 0; run < 3; ++run)
+    {
+        const auto note = peakOf ("1.1 C3 1/1 v127");
+        const auto chord = peakOf ("1.1 [C3 E3 G3 C4 E4] 1/1 v127");
+        MESSAGE ("one note at v127 peaks at " << note << " dBFS; the chord C3 E3 G3 C4 E4 at " << chord << " dBFS");
+        CHECK (std::abs (note - -12.0) < 1.0);
+    }
 }
 
 TEST_CASE ("notes sound where the clip and the .notes text put them; write_clip and undo move them")
@@ -116,7 +144,7 @@ TEST_CASE ("in any time signature, notes sound where their positions put them, a
         CHECK (sync.loopRange().getLength().inSeconds() == doctest::Approx (c.expectedLoop));
 
         const auto audio = renderLoop (sync);
-        const auto sample = firstSoundAt (audio.buffer);
+        const auto sample = firstSoundAt (audio.buffer, 0, 2.5e-4f); // as firstNoteAt: 4OSC is trimmed by 12 dB
         const auto at = sample < 0 ? -1.0 : sample / audio.sampleRate;
         CHECK_MESSAGE (near (at, c.expectedNote), "the note sounded at " << at << " s");
     }
