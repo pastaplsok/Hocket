@@ -63,46 +63,69 @@ $command = "/c `"ping -n 5 127.0.0.1 > nul & `"$headless`" $playArguments > `"$p
 $info = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', $command
 $info.UseShellExecute = $false
 $info.CreateNoWindow = $true
+
+# Start-Process joins its arguments with spaces and quotes none of them (Windows
+# PowerShell 5.1), so each is quoted here: "^Loading kit" would otherwise
+# arrive as two arguments.
+function Join-Arguments ([object[]] $Arguments) {
+    ($Arguments | ForEach-Object { '"' + ([string] $_).Replace('"', '\"') + '"' }) -join ' '
+}
+
+function Send-PlainCtrlC ([int] $ProcessId) {
+    Start-Process powershell -ArgumentList (Join-Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sendCtrlC, $ProcessId)) `
+                  -WindowStyle Hidden -Wait | Out-Null
+}
+
+$sendCtrlC = Join-Path $PSScriptRoot 'Send-CtrlC.ps1'
+$senderErrors = Join-Path $work 'sender-errors.txt'
+Write-Host "Nothing to press: the script sends Ctrl+C to --play itself. It takes about 10 s."
 $play = [Diagnostics.Process]::Start($info)
 
-$sender = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-CtrlC.ps1'),
-                                                  $play.Id, '-Log', $playLog, '-WhenLogSays', '^Loading kit', '-ReadyFile', $readyFile, '-TimeoutSeconds', 60 `
-                                   -WindowStyle Hidden -PassThru
-$null = $sender.Handle # without it, Windows PowerShell can't read its exit code later
+try {
+    $sender = Start-Process powershell -ArgumentList (Join-Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $sendCtrlC, $play.Id, '-Log', $playLog,
+                                                                       '-WhenLogSays', '^Loading kit', '-ReadyFile', $readyFile, '-TimeoutSeconds', 60)) `
+                                       -WindowStyle Hidden -PassThru -RedirectStandardError $senderErrors
+    $null = $sender.Handle # without it, Windows PowerShell can't read its exit code later
 
-$sender.WaitForExit()
-$senderReadyFirst = (Test-Path $readyFile) -and ((-not (Test-Path $playLog)) -or ((Get-Item $readyFile).LastWriteTime -lt (Get-Item $playLog).CreationTime))
-
-if (-not $play.WaitForExit(30000)) {
-    # It didn't stop: stop it the plain way, so the device is let go.
-    Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-CtrlC.ps1'), $play.Id `
-                  -WindowStyle Hidden -Wait | Out-Null
-    if (-not $play.WaitForExit(15000)) { $play.Kill() }
-    $play.WaitForExit()
-    $result = 'FAIL'
-    $detail = "--play didn't stop within 30 s of the Ctrl+C (the sender's exit code was $($sender.ExitCode))"
-}
-else {
+    $sender.WaitForExit()
+    $senderReadyFirst = (Test-Path $readyFile) -and ((-not (Test-Path $playLog)) -or ((Get-Item $readyFile).LastWriteTime -lt (Get-Item $playLog).CreationTime))
+    $stoppedInTime = ($sender.ExitCode -eq 0) -and $play.WaitForExit(30000)
     $log = if (Test-Path $playLog) { Get-Content $playLog -Raw } else { '' }
     $stoppedLoading = $log -match 'stopped before playing, while the kits were loading'
     $loaded = $log -match '(?m)^Loaded in'
-    $clean = ($play.ExitCode -eq 0) -and -not (Test-Path $tokenFile)
 
     if ($sender.ExitCode -ne 0) {
         $result = 'FAIL'
-        $detail = "the Ctrl+C sender failed (exit code $($sender.ExitCode); 4 means --play never said it was loading a kit)"
+        $detail = "the Ctrl+C sender failed (exit code $($sender.ExitCode); 4 means --play never said it was loading a kit, 5 that it ended first). Its errors: " +
+                  ((Get-Content $senderErrors -ErrorAction SilentlyContinue | Select-Object -First 3) -join ' ')
     }
-    elseif ($stoppedLoading -and $clean) {
-        $result = 'PASS'
-        $detail = "stopped while the kit was loading; exit code 0; no token file left"
-    }
-    elseif ($loaded -and $clean) {
-        $result = 'INCONCLUSIVE'
-        $detail = "the kit had loaded before the Ctrl+C landed, so this run proves nothing (it did stop cleanly); try -SampleRate 96000"
+    elseif (-not $stoppedInTime) {
+        $result = 'FAIL'
+        $detail = "--play didn't stop within 30 s of the Ctrl+C"
     }
     else {
-        $result = 'FAIL'
-        $detail = "exit code $($play.ExitCode); token file left: $(Test-Path $tokenFile)"
+        $clean = ($play.ExitCode -eq 0) -and -not (Test-Path $tokenFile)
+
+        if ($stoppedLoading -and $clean) {
+            $result = 'PASS'
+            $detail = "stopped while the kit was loading; exit code 0; no token file left"
+        }
+        elseif ($loaded -and $clean) {
+            $result = 'INCONCLUSIVE'
+            $detail = "the kit had loaded before the Ctrl+C landed, so this run proves nothing (it did stop cleanly); try -SampleRate 96000"
+        }
+        else {
+            $result = 'FAIL'
+            $detail = "exit code $($play.ExitCode); token file left: $(Test-Path $tokenFile)"
+        }
+    }
+}
+finally {
+    # Whatever happened, even a Ctrl+C in this window: --play is stopped the
+    # plain way, so the device is let go, and killed only if that fails.
+    if (-not $play.HasExited) {
+        Send-PlainCtrlC $play.Id
+        if (-not $play.WaitForExit(15000)) { $play.Kill() }
     }
 }
 
