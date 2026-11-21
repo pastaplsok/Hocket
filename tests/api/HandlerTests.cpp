@@ -2,6 +2,8 @@
 #include "api/Protocol.h"
 #include "core/Paths.h"
 #include "core/project/Project.h"
+#include "common/FakeStorage.h"
+#include "common/TestKits.h"
 
 #include <doctest/doctest.h>
 #include <nlohmann/json.hpp>
@@ -161,7 +163,7 @@ TEST_CASE ("hello with the token lets a client in")
     CHECK_FALSE (client.closed);
     CHECK (fixture.logged ("Claude (drums) connected (session session-1)"));
 
-    CHECK (client.request ("tools/list").at ("result").at ("tools").size() == 9);
+    CHECK (client.request ("tools/list").at ("result").at ("tools").size() == 22);
 }
 
 TEST_CASE ("anything before hello, or a wrong token, is refused and the connection closed")
@@ -315,8 +317,23 @@ TEST_CASE ("tools/list gives every tool a description and an input schema")
         CHECK (tool.at ("inputSchema").at ("type") == "object");
     }
 
-    CHECK (names == std::set<std::string> { "get_project_overview", "read_clip", "write_clip", "undo", "history",
-                                            "begin_transaction", "commit", "rollback", "transport" });
+    CHECK (names == std::set<std::string> { "get_project_overview", "read_clip", "write_clip", "patch_clip", "add_clip", "move_clip", "remove_clip",
+                                            "make_clip_unique", "add_track", "set_track", "remove_track", "set_song", "transport", "undo",
+                                            "redo", "history", "begin_transaction", "commit", "rollback", "save", "list_saves", "revert" });
+
+    // Only the reading tools are marked read-only (SPEC 6.4).
+    std::set<std::string> readOnly;
+
+    for (const auto& tool : tools)
+        if (tool.at ("annotations").at ("readOnlyHint").get<bool>())
+            readOnly.insert (tool.at ("name").get<std::string>());
+
+    CHECK (readOnly == std::set<std::string> { "get_project_overview", "read_clip", "history", "list_saves" });
+
+    // The standard drum map is in write_clip's description.
+    const auto write = std::find_if (tools.begin(), tools.end(), [] (const Json& tool) { return tool.at ("name") == "write_clip"; });
+    CHECK (contains (write->at ("description").get<std::string>(), "kick2=35, kick=36, sidestick=37, snare=38,"));
+    CHECK (contains (write->at ("description").get<std::string>(), "triangle-mute=80, triangle-open=81."));
 
     const auto begin = std::find_if (tools.begin(), tools.end(), [] (const Json& tool) { return tool.at ("name") == "begin_transaction"; });
     CHECK (contains (begin->at ("description").get<std::string>(), "send no requests for 10 minutes"));
@@ -329,14 +346,17 @@ TEST_CASE ("get_project_overview summarizes the project")
     auto client = fixture.connectAs ("session-1");
 
     CHECK (client.text ("get_project_overview")
-           == "Tempo 120 BPM, 4/4. The song is 2 bars long, from 1.1 to 3.1. There's no audio engine here, so it can't play.\n"
+           == "Tempo 120 BPM, 4/4. The song is 2 bars long, from 1.1 to 3.1.\n"
+              "Transport: there's no audio engine here, so it can't play.\n"
               "\n"
               "Tracks, in display order:\n"
               "- trk-bass \"Bass\" (midi; volume 0dB, pan C), devices: dev-bass-synth (hocket:synth)\n"
-              "  - clip clp-bass: 1.1 to 3.1 (@length 2bars), 14 notes, file clips/bass.notes\n"
+              "  - clip clp-bass: 1.1 to 3.1 (@length 2bars), 14 notes\n"
+              "\n"
+              "Installed kits: none, so a drum sampler has nothing to play.\n"
               "\n"
               "History: empty; nothing has changed since Hocket opened the project.\n"
-              "No transaction is open.\n");
+              "No transaction is open. Nothing is unsaved.\n");
 
     client.call ("begin_transaction", { { "name", "wrote bridge" } });
     client.call ("write_clip", { { "clip_id", "clp-bass" }, { "notes", "@length 1bar\n\n1.1 C2 1/4 v100\n" } });
@@ -366,9 +386,11 @@ TEST_CASE ("get_project_overview says whether the song is playing")
     fixture.bus.setTransport (&transport);
     auto client = fixture.connectAs ("session-1");
 
-    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's stopped; transport play loops it.\n"));
+    CHECK (contains (client.text ("get_project_overview"),
+                     "from 1.1 to 3.1.\nTransport: stopped. Play plays the whole song, 1.1 to 3.1, on a loop, from 1.1.\n"
+                     "Output: nothing has played since Hocket started.\n"));
     client.call ("transport", { { "action", "play" } });
-    CHECK (contains (client.text ("get_project_overview"), "from 1.1 to 3.1. It's playing, on a loop.\n"));
+    CHECK (contains (client.text ("get_project_overview"), "Transport: playing the whole song, 1.1 to 3.1, on a loop; the playhead is at 1.1.\n"));
 
     fixture.bus.setTransport (nullptr);
 }
@@ -423,8 +445,8 @@ TEST_CASE ("the overview and read_clip show linked clips, mix settings, and what
     REQUIRE (connection.hello().contains ("result"));
 
     CHECK (connection.text ("get_project_overview")
-           == "Tempo 120 BPM, 6/8 (a beat is an eighth note; BPM counts quarter notes). The song is 3 bars long, from 1.1 to 4.1. "
-              "There's no audio engine here, so it can't play.\n"
+           == "Tempo 120 BPM, 6/8 (a beat is an eighth note; BPM counts quarter notes). The song is 3 bars long, from 1.1 to 4.1.\n"
+              "Transport: there's no audio engine here, so it can't play.\n"
               "\n"
               "Tracks, in display order:\n"
               "- trk-bass \"Bass\" (midi; volume 0dB, pan C), devices: dev-bass-synth (hocket:synth)\n"
@@ -433,16 +455,18 @@ TEST_CASE ("the overview and read_clip show linked clips, mix settings, and what
               "- trk-lead \"Lead\" (midi; volume -6.5dB, pan L20, muted, soloed), devices: none\n"
               "  - clip clp-lead: 2.1 to 3.1 (@length 1bar), 1 note, file clips/bass.notes (linked with clp-bass, clp-bass-again)\n"
               "\n"
+              "Installed kits: none, so a drum sampler has nothing to play.\n"
+              "\n"
               "History: empty; nothing has changed since Hocket opened the project.\n"
-              "No transaction is open.\n");
+              "No transaction is open. Nothing is unsaved.\n");
 
     const auto read = connection.call ("read_clip", { { "clip_id", "clp-lead" } });
     CHECK (read.at ("content")[0].at ("text")
            == "clip clp-lead on track trk-lead \"Lead\"\n"
               "file: clips/bass.notes (linked with clp-bass, clp-bass-again)\n"
               "from 2.1 to 3.1 (@length 1bar), 1 note\n"
-              "The next block is the clip's .notes text, exactly as stored. To change the clip, edit that text and send all of it to write_clip; "
-              "its linked clips change with it, since they share the file.");
+              "The next block is the clip's .notes text, exactly as stored. To change the clip, edit that text and send all of it to write_clip, "
+              "or send the notes that change to patch_clip; its linked clips change with it, since they share the file.");
 
     const auto written = connection.call ("write_clip", { { "clip_id", "clp-lead" }, { "notes", "@length 1bar\n\n1.6.2 C2 1/16 v100\n" } });
     CHECK (written.at ("isError") == false);
@@ -470,16 +494,20 @@ TEST_CASE ("on a drums track: the overview shows the kit and drum map, and clips
     Connection connection { handler, 1 };
     REQUIRE (connection.hello().contains ("result"));
 
-    CHECK (contains (connection.text ("get_project_overview"),
-                     "- trk-drums \"Drums\" (drums; volume 0dB, pan C), devices: dev-drums-kit (hocket:drum-sampler, kit \"acoustic\")\n"
-                     "  - kit 'acoustic' isn't installed. No kits are installed: bundled kits go in kits\\ next to Hocket's programs, and the user's "
-                     "own in Documents\\Hocket\\Kits, named \"user/<folder>\", so the track is silent\n"
-                     "  - drum map: kick=36, snare=38, hat-closed=42\n"
-                     "  - clip clp-beat: 1.1 to 2.1 (@length 1bar), 3 notes, file clips/beat.notes\n"));
+    // A map far from the standard one is listed whole; the kit's line says why the track is silent.
+    const auto overview = connection.text ("get_project_overview");
+    CHECK (contains (overview, "- trk-drums \"Drums\" (drums; volume 0dB, pan C), devices: dev-drums-kit (hocket:drum-sampler, kit \"acoustic\"), "
+                               "drum map: empty, kick=36, snare=38, hat-closed=42\n"
+                               "  - clip clp-beat: 1.1 to 2.1 (@length 1bar), 3 notes\n"
+                               "\n"
+                               "Kits in use, with the drum map names each plays on its track (the map's other names are silent):\n"
+                               "- \"acoustic\" on trk-drums: kit 'acoustic' isn't installed. No kits are installed: bundled kits go in kits\\ next to "
+                               "Hocket's programs, and the user's own in Documents\\Hocket\\Kits, named \"user/<folder>\", so the track is silent\n"
+                               "Installed kits: none, so a drum sampler has nothing to play.\n"));
 
     const auto read = connection.call ("read_clip", { { "clip_id", "clp-beat" } });
     CHECK (contains (read.at ("content")[0].at ("text").get<std::string>(),
-                     "Its notes are named by trk-drums's drum map, which get_project_overview lists; notes the map doesn't name are written as note names.\n"));
+                     "Its notes are named by trk-drums's drum map, which get_project_overview shows; notes the map doesn't name are written as note names.\n"));
     CHECK (read.at ("content")[1].at ("text") == "@length 1bar\n\n1.1      [kick hat-closed]  1/16  v100\n1.2      snare 1/16  v100\n");
 
     // Notes the map doesn't name are listed, and the kit isn't installed, so none sound.
@@ -591,21 +619,21 @@ TEST_CASE ("the overview says where each track's kit came from, and which of the
     REQUIRE (connection.hello().contains ("result"));
 
     const auto overview = connection.text ("get_project_overview");
-    CHECK (contains (overview, "  - kit \"electronic\" (bundled; Electronic, 808-style): plays 2 of the drum map's 3 names: kick, snare (the kit's "
-                               "'snare-tight'); the other 1 is silent. It also has pieces on notes the drum map doesn't name, written as note "
-                               "names: A#2 (note 46, 'hat-open')\n"));
-    CHECK (contains (overview, "  - kit \"user/dusty-909\" (the user's own, in C:\\Users\\Me\\Documents\\Hocket\\Kits\\dusty-909; My 909): plays all "
-                               "the drum map's 3 names: kick, snare, hat-closed\n"));
-    CHECK (contains (overview, "  - kit 'dusty-909' isn't installed (did you mean 'user/dusty-909'?). The installed kits are 'electronic' (bundled), "
-                               "'user/dusty-909' (the user's own), 'user/loud' (the user's own), so the track is silent\n"));
-    CHECK (contains (overview, "  - kit \"user/loud\" (the user's own, in C:\\Kits\\loud; Loud): plays 2 of the drum map's 3 names: kick, snare; the other 1 "
-                               "is silent. Its files have changed since it loaded, but can't be used as they are, so the version that loaded plays on: "
-                               "kit.json has an error: kit.json:7:22: piece 'snare': \"note\" should be a MIDI note number from 0 to 127, e.g. 36. Loading "
-                               "it found: the sample for piece 'clap' couldn't be decoded. Pieces' samples peak above full scale: kick at +2.31 dBFS, snare "
-                               "at +0.04 dBFS\n"));
-    CHECK (contains (overview, "  - kit \"electronic\" (bundled; Electronic, 808-style): the drum map is empty, so it names none of the kit's pieces. "
+    CHECK (contains (overview, "\n- electronic on trk-a (bundled; Electronic, 808-style): kick, snare (the kit's 'snare-tight'). It also has pieces on "
+                               "notes the drum map doesn't name, written as note names: A#2 (note 46, 'hat-open')\n"));
+    CHECK (contains (overview, "\n- user/dusty-909 on trk-b (the user's own, in C:\\Users\\Me\\Documents\\Hocket\\Kits\\dusty-909; My 909): kick, snare, "
+                               "hat-closed\n"));
+    CHECK (contains (overview, "\n- \"dusty-909\" on trk-c: kit 'dusty-909' isn't installed (did you mean 'user/dusty-909'?). The installed kits are "
+                               "'electronic' (bundled), 'user/dusty-909' (the user's own), 'user/loud' (the user's own), so the track is silent\n"));
+    CHECK (contains (overview, "\n- user/loud on trk-e (the user's own, in C:\\Kits\\loud; Loud): kick, snare. Its files have changed since it loaded, "
+                               "but can't be used as they are, so the version that loaded plays on: kit.json has an error: kit.json:7:22: piece 'snare': "
+                               "\"note\" should be a MIDI note number from 0 to 127, e.g. 36. Loading it found: the sample for piece 'clap' couldn't be "
+                               "decoded. Pieces' samples peak above full scale: kick at +2.31 dBFS, snare at +0.04 dBFS\n"));
+    CHECK (contains (overview, "\n- electronic on trk-d (bundled; Electronic, 808-style): the drum map is empty, so it names none of the kit's pieces. "
                                "It also has pieces on notes the drum map doesn't name, written as note names: C2 (note 36, 'kick'), D2 (note 38, "
                                "'snare-tight'), A#2 (note 46, 'hat-open')\n"));
+    CHECK (contains (overview, "drum map: empty\n"));
+    CHECK (contains (overview, "\nInstalled kits: electronic (bundled, 3 pieces), user/dusty-909 (the user's, 3 pieces), user/loud (the user's, 2 pieces).\n"));
 }
 
 TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")
@@ -620,7 +648,8 @@ TEST_CASE ("read_clip gives the stored text verbatim, in a block of its own")
            == "clip clp-bass on track trk-bass \"Bass\"\n"
               "file: clips/bass.notes\n"
               "from 1.1 to 3.1 (@length 2bars), 14 notes\n"
-              "The next block is the clip's .notes text, exactly as stored. To change the clip, edit that text and send all of it to write_clip.");
+              "The next block is the clip's .notes text, exactly as stored. To change the clip, edit that text and send all of it to write_clip, "
+              "or send the notes that change to patch_clip.");
     CHECK (result.at ("content")[1].at ("text") == demoClipText()); // the example is in canonical form
     CHECK (fixture.logLines.size() == 1); // just the connection: reading isn't logged, only failing to
 
@@ -924,4 +953,270 @@ TEST_CASE ("an internal error before hello closes the connection")
     const auto response = connection.hello();
     CHECK (response.at ("error").at ("code") == -32603);
     CHECK (connection.closed);
+}
+
+//==============================================================================
+// Step 10's tools (SPEC §6.4).
+
+namespace
+{
+    std::string textOf (const Json& result)
+    {
+        return result.at ("content")[0].at ("text").get<std::string>();
+    }
+
+    bool failed (const Json& result)
+    {
+        return result.at ("isError").get<bool>();
+    }
+
+    // A transport whose playhead, progress and wraps a test sets.
+    struct ToolTransport final : commands::Transport
+    {
+        void play() override { playing = true; }
+        void stop() override { playing = false; }
+        bool isPlaying() const override { return playing; }
+        notes::Ticks playheadPosition() const override { return playhead; }
+        void jumpTo (notes::Ticks position) override { playhead = position; }
+        void loopChanged() override {}
+        commands::PlayProgress playProgress() const override { return progress; }
+
+        bool playing = false;
+        notes::Ticks playhead = 0;
+        commands::PlayProgress progress;
+    };
+
+    struct ToolMeter final : commands::OutputMeter
+    {
+        commands::OutputLevel levelSincePlay() const override { return level; }
+        void restart() override { level = {}; }
+
+        commands::OutputLevel level;
+    };
+}
+
+TEST_CASE ("tracks: added, changed in one entry, with the drum map as changes to the standard one, and removed")
+{
+    Fixture fixture;
+    kits::KitCatalog catalog;
+    catalog.add (testing::testKit ("electronic", { { "kick", 36 }, { "snare", 38 }, { "hat-closed", 42 } }, "Electronic"));
+    fixture.bus.setKitCatalog (&catalog);
+    auto client = fixture.connectAs ("session-1");
+
+    const auto added = client.call ("add_track", { { "type", "drums" }, { "name", "Drums" }, { "instrument", "hocket:drum-sampler" },
+                                                   { "kit", "electronic" }, { "before", "trk-bass" } });
+    CHECK_FALSE (failed (added));
+    CHECK (textOf (added).starts_with ("#1 added track trk-drums \"Drums\" before trk-bass. Its instrument is dev-drums-kit, a hocket:drum-sampler "
+                                       "playing kit 'electronic'."));
+
+    auto overview = client.text ("get_project_overview");
+    CHECK (contains (overview, "- trk-drums \"Drums\" (drums; volume 0dB, pan C), devices: dev-drums-kit (hocket:drum-sampler, kit \"electronic\"), "
+                               "drum map: standard\n  - no clips\n"));
+    CHECK (contains (overview, "\n- electronic on trk-drums (bundled; Electronic): kick, snare, hat-closed\n"));
+    CHECK (contains (overview, "\nInstalled kits: electronic (bundled, 3 pieces).\n"));
+
+    // Several settings, one entry; the overview's form of the map goes back in as it is.
+    const auto changed = client.call ("set_track", { { "track_id", "trk-drums" }, { "name", "Kit" }, { "volume", "-6dB" },
+                                                     { "drum_map", "rim=37, -cabasa" } });
+    CHECK_FALSE (failed (changed));
+    CHECK (textOf (changed).starts_with ("#2 renamed track trk-drums \"Drums\" to \"Kit\"; set trk-drums's volume to -6dB; changed trk-drums's drum map: "));
+    CHECK (fixture.bus.history().size() == 2);
+    CHECK (contains (client.text ("get_project_overview"), "drum map: standard, rim=37, -cabasa\n"));
+
+    CHECK_FALSE (failed (client.call ("set_track", { { "track_id", "trk-drums" }, { "drum_map", "standard" } })));
+    CHECK (contains (client.text ("get_project_overview"), "drum map: standard\n"));
+
+    // Mistakes say how to write it.
+    CHECK (textOf (client.call ("set_track", { { "track_id", "trk-drums" } })).starts_with ("set_track: give at least one of"));
+    CHECK (contains (textOf (client.call ("set_track", { { "track_id", "trk-drums" }, { "drum_map", "rim:37" } })), "\"rim:37\" isn't a change"));
+    CHECK (contains (textOf (client.call ("set_track", { { "track_id", "trk-drums" }, { "drum_map", "rim=x" } })), "needs a MIDI note number"));
+    CHECK (contains (textOf (client.call ("set_track", { { "track_id", "trk-drums" }, { "drum_map", "rim=37, standard" } })), "must come first"));
+    CHECK (textOf (client.call ("add_track", { { "type", "drums" }, { "name", "More" }, { "kit", "electronic" } }))
+           == "add_track: a kit goes with the instrument \"hocket:drum-sampler\"; give both");
+
+    CHECK (textOf (client.call ("set_track", { { "track_id", "trk-bass" }, { "instrument", "none" } })) == "#4 removed trk-bass's instrument dev-bass-synth");
+    CHECK (textOf (client.call ("remove_track", { { "track_id", "trk-drums" } })) == "#5 removed track trk-drums \"Kit\"");
+
+    fixture.bus.setKitCatalog (nullptr);
+}
+
+TEST_CASE ("clips: added, linked, made unique, moved and removed, and a file shown only when the ID doesn't imply it")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+
+    CHECK (textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "3.1" }, { "bars", 2 } }))
+           == "#1 added clip clp-bass-2 on trk-bass at 3.1 (empty, 2bars). Its notes are in clips/bass-2.notes");
+
+    const auto linked = textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "5.1" }, { "linked_to", "clp-bass" } }));
+    CHECK (linked.starts_with ("#2 added clip clp-bass-3 on trk-bass at 5.1, linked to clp-bass"));
+
+    const auto overview = client.text ("get_project_overview");
+    CHECK (contains (overview, "  - clip clp-bass-2: 3.1 to 5.1 (@length 2bars), 0 notes\n"));
+    CHECK (contains (overview, "  - clip clp-bass-3: 5.1 to 7.1 (@length 2bars), 14 notes, file clips/bass.notes (linked with clp-bass)\n"));
+
+    CHECK (textOf (client.call ("make_clip_unique", { { "clip_id", "clp-bass-3" } })) == "#3 made clip clp-bass-3 unique, with its own file clips/bass-3.notes");
+    CHECK (textOf (client.call ("move_clip", { { "clip_id", "clp-bass-3" }, { "start", "9.1" } })) == "#4 moved clp-bass-3 to 9.1");
+    CHECK (textOf (client.call ("remove_clip", { { "clip_id", "clp-bass-2" } })) == "#5 removed clip clp-bass-2 from trk-bass");
+
+    // With notes: write_clip's notices.
+    CHECK (textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "13.1" }, { "notes", "@length 1bar\n\n1.1 C2 1/4 v100\n" } }))
+               .starts_with ("#6 added clip"));
+
+    // Exactly one kind of content.
+    CHECK (contains (textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "15.1" } })), "none was given"));
+    CHECK (contains (textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "15.1" }, { "bars", 1 }, { "copy_of", "clp-bass" } })),
+                     "2 were given"));
+    CHECK (contains (textOf (client.call ("add_clip", { { "track_id", "trk-bass" }, { "start", "15.1" }, { "bars", 0 } })), "1 to 999"));
+}
+
+TEST_CASE ("patch_clip changes notes, and when one isn't there, shows the clip's lines there now")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+
+    const auto patched = client.call ("patch_clip", { { "clip_id", "clp-bass" },
+                                                      { "edits", Json::array ({ { { "old", "1.3  Eb2 1/8 v95" }, { "new", "1.3 F2 1/8 v95" } },
+                                                                                { { "new", "2.4.4 C2 1/16 v60" } } }) } });
+    CHECK_FALSE (failed (patched));
+    CHECK (textOf (patched) == "#1 wrote clip clp-bass (15 notes)\nEdit 1 removed 1 note and added 1; edit 2 added 1 note.");
+    CHECK (contains (client.call ("read_clip", { { "clip_id", "clp-bass" } }).at ("content")[1].at ("text").get<std::string>(),
+                     "1.3      F2    1/8   v95\n"));
+
+    // Found, but at another velocity: which, and the stored line.
+    const auto wrong = client.call ("patch_clip", { { "clip_id", "clp-bass" }, { "edits", Json::array ({ { { "old", "1.3.3 G2 1/8 v90" } } }) } });
+    CHECK (failed (wrong));
+    CHECK (textOf (wrong) == "patch_clip on clp-bass: edit 1: 1.3.3 G2 is in the clip, but with velocity v85, not v90, so nothing was changed. "
+                             "Its line is:\n1.3.3    G2    1/8   v85");
+
+    // Not there: the bar's lines now.
+    CHECK (contains (textOf (client.call ("patch_clip", { { "clip_id", "clp-bass" }, { "edits", Json::array ({ { { "old", "2.1 G1 1/4 v100" } } }) } })),
+                     "edit 1: 2.1 G1 isn't in the clip, so nothing was changed. Its lines in bar 2 now:\n2.1      Ab1   1/4   v100\n"));
+    CHECK (fixture.bus.history().size() == 1);
+
+    // The arguments' shape.
+    CHECK (textOf (client.call ("patch_clip", { { "clip_id", "clp-bass" }, { "edits", Json::array() } })).starts_with ("patch_clip: 'edits' is empty"));
+    CHECK (textOf (client.call ("patch_clip", { { "clip_id", "clp-bass" }, { "edits", Json::array ({ { { "add", "x" } } }) } }))
+           == "patch_clip: edit 1: there's no argument 'add'; its arguments are 'old', 'new'");
+}
+
+TEST_CASE ("read_clip with bars gives those bars' lines, with the header and @length")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+
+    const auto bar2 = client.call ("read_clip", { { "clip_id", "clp-bass" }, { "bars", "2" } });
+    CHECK (contains (textOf (bar2), "The next block is bar 2 of the clip's .notes text, as stored: its header, its @length line, and the lines whose notes "
+                                    "start in bar 2. patch_clip can change these notes; write_clip needs the whole text"));
+    CHECK (bar2.at ("content")[1].at ("text")
+           == "# bass.notes — Milestone 0 demo: a two-bar bass line in C minor\n@length 2bars\n\n"
+              "2.1      Ab1   1/4   v100\n2.2      Ab1   1/8   v75\n2.2.3    C2    1/8   v85\n2.3      G1    1/4   v100\n2.4      G1    1/8   v80\n"
+              "2.4.3    Bb1   1/8   v90\n");
+
+    CHECK (client.call ("read_clip", { { "clip_id", "clp-bass" }, { "bars", "1-2" } }).at ("content")[1].at ("text") == demoClipText());
+    CHECK (textOf (client.call ("read_clip", { { "clip_id", "clp-bass" }, { "bars", "3" } }))
+           == "read_clip: 'bars' \"3\" isn't in the clip: the clip has 2 bars, so bars run from 1 to 2");
+    CHECK (textOf (client.call ("read_clip", { { "clip_id", "clp-bass" }, { "bars", "one" } })).starts_with ("read_clip: 'bars' is a bar of the clip"));
+}
+
+TEST_CASE ("set_song sets the tempo and the time signature as one entry")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+
+    CHECK (textOf (client.call ("set_song", { { "tempo", 96.5 }, { "time_signature", "2/4" } })) == "#1 set the tempo to 96.5; set the time signature to 2/4");
+    CHECK (fixture.bus.history().size() == 1);
+    CHECK (textOf (client.call ("set_song", { { "tempo", 100 } })) == "#2 set the tempo to 100");
+    CHECK (textOf (client.call ("set_song")) == "set_song: give 'tempo', 'time_signature', or both");
+}
+
+TEST_CASE ("transport: settings in order, its state with no arguments, and the output line")
+{
+    Fixture fixture;
+    auto client = fixture.connectAs ("session-1");
+    CHECK (client.text ("transport") == "Transport: there's no audio engine here, so it can't play.");
+
+    ToolTransport transport;
+    ToolMeter meter;
+    fixture.bus.setTransport (&transport);
+    fixture.bus.setOutputMeter (&meter);
+
+    CHECK (client.text ("transport") == "Transport: stopped. Play plays the whole song, 1.1 to 3.1, on a loop, from 1.1.\n"
+                                        "Output: nothing has played since Hocket started.");
+
+    CHECK (client.text ("transport", { { "loop_region", "2.1 to 3.1" }, { "action", "play" } })
+           == "loop region 2.1 to 3.1 (1 bar), was the whole song; play starts at 2.1\nplaying the loop region 2.1 to 3.1 on a loop");
+
+    // A minute and a half of the one-bar loop at 120 BPM: 45 bars, so 45 complete passes, and a little over.
+    transport.playhead = 3840 + 960;
+    transport.progress = { true, 90.4, 45 * 3840 + 960 };
+    meter.level = { 1.2f, 312 };
+    CHECK (client.text ("transport") == "Transport: playing the loop region 2.1 to 3.1, on a loop; the playhead is at 2.2.\n"
+                                        "Output since play started: 1 min 30 s, 45 complete passes; peak +1.6 dBFS, 312 samples over full scale, so the mix clips.");
+
+    meter.level = { 0.5f, 0 };
+    CHECK (contains (client.text ("get_project_overview"), "Output since play started: 1 min 30 s, 45 complete passes; peak -6.0 dBFS, never over full scale.\n"));
+
+    // A step that fails stops the rest, and says what was done before it.
+    const auto refused = client.call ("transport", { { "loop", false }, { "seek", "9.1" }, { "action", "stop" } });
+    CHECK (failed (refused));
+    CHECK (contains (textOf (refused), "Done before it: loop off, was on"));
+    CHECK (transport.playing);
+
+    CHECK (textOf (client.call ("transport", { { "loop_region", "2.1-3.1" } })).starts_with ("transport: 'loop_region' is a start and an end"));
+    CHECK (client.text ("transport", { { "loop_region", "whole song" } }).starts_with ("loop region cleared, was 2.1 to 3.1"));
+
+    fixture.bus.setOutputMeter (nullptr);
+    fixture.bus.setTransport (nullptr);
+}
+
+TEST_CASE ("redo checks who did the undo, and history narrows to one author")
+{
+    Fixture fixture;
+    auto claude = fixture.connectAs ("session-1");
+    auto other = fixture.connectAs ("session-2");
+
+    claude.call ("set_song", { { "tempo", 100 } });
+    other.call ("set_song", { { "tempo", 110 } });
+    REQUIRE_FALSE (failed (other.call ("undo")));
+
+    const auto refused = claude.call ("redo");
+    CHECK (failed (refused));
+    CHECK (textOf (refused).starts_with ("didn't redo: the most recent undo, of #2 \"set the tempo to 110\", was done by Claude in another session"));
+    CHECK_FALSE (failed (claude.call ("redo", { { "force", true } })));
+
+    CHECK (claude.text ("history", { { "author", "you" } }) == "The only entry of yours:\n#1 you: set the tempo to 100");
+    CHECK (claude.text ("history", { { "author", "others" } }) == "The only entry by others:\n#2 Claude in another session: set the tempo to 110");
+    CHECK (claude.text ("history", { { "author", "Lee" } })
+           == "None of the 2 entries is by Lee. The history's authors: Claude in another session, you.");
+}
+
+TEST_CASE ("save, list_saves and revert")
+{
+    Fixture fixture;
+    testing::FakeStorage storage;
+    fixture.bus.setStorage (&storage);
+    auto client = fixture.connectAs ("session-1");
+
+    CHECK (client.text ("list_saves") == "No kept saves yet. Each save keeps the version it replaces, so there's one to go back to after the next save.\n"
+                                         "Nothing is unsaved.");
+
+    client.call ("set_song", { { "tempo", 100 } });
+    CHECK (contains (client.text ("get_project_overview"), "There are unsaved changes; save writes them.\n"));
+    CHECK (client.text ("save", { { "name", "faster" } }) == "saved");
+    REQUIRE (storage.saves.size() == 1);
+    CHECK (storage.saves[0].name == "faster");
+
+    storage.keep (1, demoProject(), "before the tempo");
+    CHECK (contains (client.text ("list_saves"), "1 kept save:\nsave #1, by Lee, "));
+    CHECK (contains (client.text ("list_saves"), "\"before the tempo\"\nNothing is unsaved."));
+
+    CHECK (client.text ("revert", { { "save", 1 } }).starts_with ("#2 reverted to save #1, by Lee, "));
+    CHECK (fixture.bus.project().tempo == 120.0);
+    CHECK (failed (client.call ("revert", { { "save", 7 } })));
+
+    storage.fail = true;
+    CHECK (failed (client.call ("save")));
+
+    fixture.bus.setStorage (nullptr);
 }

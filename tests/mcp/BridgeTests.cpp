@@ -179,6 +179,11 @@ TEST_CASE ("tool calls reach the running Hocket, where the client is the author 
     CHECK (contains (client.text ("undo"), "undid #1 \"wrote clip clp-bass (1 note)\" by Claude (drums)"));
     CHECK (client.call ("read_clip", { { "clip_id", "clp-bass" } }).at ("content")[1].at ("text") == original);
 
+    // Arguments of every shape reach it as sent: an array of objects, a number.
+    CHECK (client.text ("patch_clip", { { "clip_id", "clp-bass" }, { "edits", Json::array ({ { { "old", "1.1 C2 1/8 v100" } } }) } })
+           == "#2 wrote clip clp-bass (13 notes)\nEdit 1 removed 1 note.");
+    CHECK (client.text ("set_song", { { "tempo", 97.5 } }) == "#3 set the tempo to 97.5");
+
     // One connection for all of it.
     CHECK (std::ranges::count_if (fixture.bridgeLog, [] (const std::string& line) { return contains (line, "connected to "); }) == 1);
 }
