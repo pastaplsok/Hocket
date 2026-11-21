@@ -427,7 +427,7 @@ try {
     #--------------------------------------------------------------------------
     $init = Start-Bridge
     $toolCount = @((Send-Request 'tools/list' @{}).result.tools).Count
-    Add-Result 'hocket-mcp starts and lists the tools' ($init.result.serverInfo.name -eq 'hocket-mcp' -and $toolCount -eq 9) "$toolCount tools, MCP $($init.result.protocolVersion)"
+    Add-Result 'hocket-mcp starts and lists the tools' ($init.result.serverInfo.name -eq 'hocket-mcp' -and $toolCount -eq 22) "$toolCount tools, MCP $($init.result.protocolVersion)"
 
     $original = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
     $write = Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: Claude's change`n@length 2bars`n" }

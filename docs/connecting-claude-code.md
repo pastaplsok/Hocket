@@ -22,6 +22,20 @@ claude mcp add --scope user hocket -- "$env:LOCALAPPDATA\Hocket\bin\hocket-mcp.e
 
 `--scope user` makes it available in every folder. `claude mcp list` should then show `hocket: ... ✔ Connected`, even with Hocket not running. In a session, `/mcp` lists hocket and its tools.
 
+### Using the tools without a prompt each time
+
+By default Claude Code asks before each call of a tool it hasn't been allowed. To allow all of Hocket's tools, in every project, add an allow rule to your user settings, `%USERPROFILE%\.claude\settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [ "mcp__hocket" ]
+  }
+}
+```
+
+`mcp__hocket__*` does the same. `/permissions` in a session adds a rule interactively and shows which settings file it goes to; a project's `.claude/settings.json` or `.claude/settings.local.json` allows them in that project only. Every change Claude makes through Hocket can be undone, and the history says who made it.
+
 ## 3. Work on a song
 
 1. Start Hocket on the project: `hocket-headless --play <project folder>` (CLAUDE.md has the device options).
@@ -29,8 +43,9 @@ claude mcp add --scope user hocket -- "$env:LOCALAPPDATA\Hocket\bin\hocket-mcp.e
 
 Worth knowing:
 - **Who did what.** Hocket's history tags each change with its author. Claude Code appears as "Claude", labelled with the name of the folder the session started in: "Claude (my-song)". Each session is its own author, so two sessions never take back each other's changes by accident.
-- **Undo.** Claude's `undo` only takes back Claude's own changes. If the newest change is yours, it refuses and says so, unless you ask it to force.
-- **Start and stop Hocket whenever you like.** hocket-mcp finds it again on the next call, as the same author. After a restart, the first result tells Claude that the history has started over and the project may have changed. Milestone 0's Hocket never saves, so changes made through the API are gone after a restart.
+- **Undo and redo.** Claude's `undo` only takes back Claude's own changes. If the newest change is yours, it refuses and says so, unless you ask it to force. Its `redo` likewise won't put back a change you undid.
+- **Saving.** `S` in `--play`'s console saves, and so does Claude's `save` tool when you ask it to. Every save keeps the version it replaces, and `list_saves` and `revert` bring one back. A crash leaves a recovery copy (SPEC §4.5).
+- **Start and stop Hocket whenever you like.** hocket-mcp finds it again on the next call, as the same author. After a restart, the first result tells Claude that the history has started over and the project may have changed. Changes not saved before Hocket stops are gone, apart from the recovery copy a crash leaves.
 
 ## Options
 
