@@ -32,7 +32,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 | 7 | Hocket's drum sampler, the first Hocket device, and how kits work | Done (2026-11-18). The kits' build step and bundled-kit test moved to step 8 |
 | 8 | The first bundled drum kit | Done (2026-11-20): the electronic kit, synthesized, heard and liked; it stays open to tweaks until Lee calls it final |
 | 9 | Saving, the recovery copy, and changes made outside Hocket | Done (2026-11-21) |
-| 10 | MCP tools for all of it | Not started |
+| 10 | MCP tools for all of it | In progress: the tool set is proposed, waiting for Lee (2026-11-21) |
 | – | Bug sweep, before step 11 | Not started |
 | 11 | Demo song, acceptance run, SPEC updates | Not started |
 
@@ -504,6 +504,14 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
   - **There's no `redo` tool**, though the bus has `redo`. The forced-kill check had to make a fresh change where a redo would have done. Worth adding to the set.
   - **Whether anything is unsaved** (`hasUnsavedChanges()`) isn't in the overview; with it, Claude can say so when asked to stop, or before suggesting a revert. A session started with `--recover` shows it as entry #1 in `history`.
   - The installed `hocket-mcp` still matches the build after step 9 (API build `3549402bfaad3165`, checked 2026-11-21): no tool or API message changed. Step 10 changes it, so install again then.
+- **Claude's proposal for the set (2026-11-21), waiting for Lee's decisions.** 22 tools, 13 of them new; flat schemas (no action switches but `transport`'s); values as `project.json` writes them; results are the bus's messages. Drafted in full (descriptions and schemas) and measured: tools/list grows from 6,171 to about 16,900 characters (roughly 1,700 to 4,500 tokens); descriptions 7,600 characters, schemas 7,000.
+  - Reading: `get_project_overview` (adds the transport: what play plays, loop, where play starts, the playhead; the output's peak and samples over full scale since play last started; the installed kits, since `add_track` takes a kit's name and descriptions can't list them without changing the fingerprint; whether anything is unsaved), `read_clip`, `history {limit, author: "you" | "others" | a name}`, `list_saves {limit}`.
+  - Clips: `write_clip` (its description says resizing is `@length`), `patch_clip {clip_id, edits: [{old, new}]}` (exact-text replacements on `read_clip`'s text, each old text found exactly once, all or none, like Claude's own Edit tool), `add_clip {track_id, start, one of bars | notes | linked_to | copy_of, id?, file?}`, `move_clip {clip_id, start, track_id?}`, `remove_clip {clip_id}`, `make_clip_unique {clip_id, file?}`.
+  - Tracks and song: `add_track {type, name, instrument?, kit?, before?, after?, id?}`, `set_track {track_id, any of name, before, after, volume, pan, mute, solo, instrument ("none" too), kit, drum_map ("kick=36, snare=38", as the overview lists it)}` as one history entry per call, `remove_track {track_id}`, `set_song {tempo?, time_signature?}` as one entry.
+  - `transport {loop_region? ("5.1 to 9.1" | "whole song"), loop?, seek?, action? (play | stop)}`, applied in that order. A command that wraps the playhead or stops playback says so in its result.
+  - History: `undo {force}`, `redo {force}` (refuses when someone else did the undo), `begin_transaction`, `commit`, `rollback`.
+  - Saving: `save {name?, overwrite?}` (save when the user asks; `overwrite` only when they say to), `revert {save}` (only when the user asks).
+  - Questions for Lee: `patch_clip` as text replacements, or note-level add/remove; `set_track` as one tool, or a separate `set_mix`; the output peak counted from each transport play, or from when `--play` opened the device.
 
 **Bug sweep, after step 10 and before step 11** (Lee, 2026-11-17)
 - In separate fresh sessions, one area of the code each, reporting findings without fixing them. Which areas: to discuss with Lee when we get there.
