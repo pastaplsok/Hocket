@@ -1,5 +1,6 @@
 #include "core/commands/CommandBus.h"
 #include "core/commands/Planning.h"
+#include "core/notes/NotesSyntax.h"
 #include "core/project/Rules.h"
 
 #include <algorithm>
@@ -68,8 +69,10 @@ Result CommandBus::execute (const Command& command, const Author& author)
     if (transaction && transaction->author != author)
         closeTransactionPart();
 
+    const auto wasPlaying = playingBeforeChange();
     auto applied = applyCommand (std::move (planned.edits));
-    const auto remarks = planned.remarks.empty() ? std::string() : ". " + planned.remarks;
+    const auto playback = playbackAfterChange (wasPlaying);
+    const auto remarks = (planned.remarks.empty() ? std::string() : ". " + planned.remarks) + (playback.empty() ? std::string() : ". " + playback);
 
     // Undone entries assumed the project as it was; after a new edit they can't be redone.
     undone.clear();
@@ -194,8 +197,12 @@ Result CommandBus::executeAsOne (const std::vector<Command>& commands, const Aut
     if (transaction && transaction->author != author)
         closeTransactionPart();
 
+    const auto wasPlaying = playingBeforeChange();
     auto applied = applyCommand (std::move (all));
     undone.clear();
+
+    if (auto playback = playbackAfterChange (wasPlaying); ! playback.empty())
+        remarks.push_back (std::move (playback));
 
     const auto description = join (descriptions, "; ");
     const auto remarkText = remarks.empty() ? std::string() : ". " + join (remarks, ". ");
@@ -216,7 +223,45 @@ Result CommandBus::executeAsOne (const std::vector<Command>& commands, const Aut
 
 Result CommandBus::runTransportCommand (const Command& command)
 {
-    return commands::runTransportCommand (command, currentProject, transportState, transport);
+    const auto wasPlaying = transport != nullptr && transport->isPlaying();
+    auto result = commands::runTransportCommand (command, currentProject, transportState, transport);
+
+    // The output's level counts from each play (SPEC §6.4).
+    if (result.ok && std::holds_alternative<Play> (command) && ! wasPlaying && outputMeter != nullptr)
+        outputMeter->restart();
+
+    // A wrap a seek or a new loop region made is in its own result.
+    if (transport != nullptr)
+        transport->takeWrap();
+
+    return result;
+}
+
+bool CommandBus::playingBeforeChange()
+{
+    if (transport == nullptr)
+        return false;
+
+    transport->takeWrap();
+    return transport->isPlaying();
+}
+
+std::string CommandBus::playbackAfterChange (bool wasPlaying)
+{
+    if (transport == nullptr || ! wasPlaying)
+        return {};
+
+    const auto range = playRange (currentProject, transportState);
+    const auto position = [this] (notes::Ticks ticks) { return notes::formatPosition (ticks, currentProject.meter); };
+
+    if (const auto wrap = transport->takeWrap())
+        return "The song now ends at " + position (range.end) + ", before where the playhead was, so playback wrapped from " + position (wrap->from)
+             + " to " + position (wrap->to);
+
+    if (! transportState.looping && transport->isPlaying() && transport->playheadPosition() >= range.end)
+        return "The song now ends at " + position (range.end) + ", before the playhead, and loop is off, so playback stops there";
+
+    return {};
 }
 
 edits::Plan CommandBus::plan (const project::Project& project, const Command& command) const
@@ -451,12 +496,16 @@ Result CommandBus::rollbackTransaction (const Author& author)
     auto finished = std::move (*transaction);
     transaction.reset();
 
+    const auto wasPlaying = playingBeforeChange();
     applyInverse (finished.edits);
 
     auto message = "rolled back " + doubleQuoted (finished.name);
 
     if (finished.part > 1)
         message += "; its earlier parts were already in the history because other changes came in between, so undo those separately if needed";
+
+    if (const auto playback = playbackAfterChange (wasPlaying); ! playback.empty())
+        message += ". " + playback;
 
     return { true, message };
 }
@@ -494,10 +543,13 @@ Result CommandBus::undo (const Author& author, UndoScope scope)
     auto entry = std::move (done.back());
     done.pop_back();
 
+    const auto wasPlaying = playingBeforeChange();
     applyInverse (entry.edits);
     gesture.reset();
 
-    const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
+    const auto playback = playbackAfterChange (wasPlaying);
+    const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author)
+                       + (playback.empty() ? std::string() : ". " + playback);
     entry.undoneBy = author;
     undone.push_back (std::move (entry));
     return { true, message };
@@ -524,10 +576,13 @@ Result CommandBus::redo (const Author& author, UndoScope scope)
     auto entry = std::move (undone.back());
     undone.pop_back();
 
+    const auto wasPlaying = playingBeforeChange();
     applyForward (entry.edits);
     gesture.reset();
 
-    const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
+    const auto playback = playbackAfterChange (wasPlaying);
+    const auto message = "redid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author)
+                       + (playback.empty() ? std::string() : ". " + playback);
     done.push_back (std::move (entry));
     return { true, message };
 }

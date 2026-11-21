@@ -128,3 +128,37 @@ TEST_CASE ("the peak is described in dBFS, and clipping is warned about with a l
     // Never below what --master-volume takes.
     CHECK (engine::clippingWarning (gain (120.0), 5, 6.0).find ("--master-volume -96dB ") != std::string::npos);
 }
+
+TEST_CASE ("the bus's output level restarts at each transport play, while the run's total carries on")
+{
+    FakeAudioDevice device;
+    commands::CommandBus bus (makeProject ({ makeTrack ("trk-keys", "Keys", { makeClip ("clp-keys", 0, "@length 1bar\n\n1.1 [C3 E3 G3 C4 E4] 1/1 v127\n") }) }));
+    engine::EditSync sync (testEngine(), bus);
+    engine::MasterOutput master (testEngine().getDeviceManager(), 6.0);
+    bus.setOutputMeter (&master);
+
+    REQUIRE (timedPlay (bus, testing::lee).ok);
+    device.play (2 * window);
+    REQUIRE (master.clippedSamples() > 0);
+    CHECK (master.levelSincePlay().peak == master.peak());
+    CHECK (master.levelSincePlay().clippedSamples == master.clippedSamples());
+
+    // Stopped, and played again: the level starts from nothing, the run's total doesn't.
+    REQUIRE (bus.execute (commands::Stop {}, testing::lee).ok);
+    device.play (window);
+    const auto runPeak = master.peak();
+    const auto runClipped = master.clippedSamples();
+
+    REQUIRE (timedPlay (bus, testing::lee).ok);
+    CHECK (master.levelSincePlay().peak == 0.0f);
+    CHECK (master.levelSincePlay().clippedSamples == 0);
+    CHECK (master.peak() == runPeak);
+    CHECK (master.clippedSamples() == runClipped);
+
+    device.play (2 * window);
+    CHECK (master.levelSincePlay().peak > 1.0f);
+    CHECK (master.levelSincePlay().clippedSamples > 0);
+    CHECK (master.clippedSamples() == runClipped + master.levelSincePlay().clippedSamples);
+
+    bus.setOutputMeter (nullptr);
+}

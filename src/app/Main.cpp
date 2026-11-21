@@ -652,7 +652,7 @@ namespace
             std::cerr << warning << std::endl;
 
         // Before anything plays. Declared after the engine, so it's destroyed first.
-        const hocket::engine::MasterOutput master (engine.getDeviceManager(), options.masterVolume);
+        hocket::engine::MasterOutput master (engine.getDeviceManager(), options.masterVolume);
         std::cout << "Master level " << hocket::units::format (master.volume(), hocket::units::volume()) << " (--master-volume <dB> changes it)\n";
 
         if (stoppedBeforePlaying (""))
@@ -664,6 +664,7 @@ namespace
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
         bus.setStorage (&*projectFolder);
+        bus.setOutputMeter (&master); // made before the bus, so it outlives it
 
         // --recover: the copy's changes, as one entry the person can undo,
         // unsaved, before the Edit is built, so it's built with them.

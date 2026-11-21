@@ -47,6 +47,22 @@ namespace hocket::commands
     // (SPEC §3.3). A position inside the range stays where it is.
     notes::Ticks wrapInto (notes::Ticks position, TickRange range);
 
+    // How much has played since play last started (SPEC §6.4, the output line).
+    struct PlayProgress
+    {
+        bool started = false;   // false: nothing has played this session
+        double seconds = 0.0;   // from when play started to now, or to when it stopped
+        notes::Ticks ticks = 0; // how far the playhead went in that time, every pass of a loop counted
+    };
+
+    // A move of the playhead that a change to the project made while it
+    // played: a wrap into what plays, when the song came to end before it (SPEC §3.3).
+    struct PlayheadWrap
+    {
+        notes::Ticks from = 0;
+        notes::Ticks to = 0;
+    };
+
     // Carries out transport commands for the bus, which keeps the settings
     // (CommandBus::transportSettings) and checks each command before it gets
     // here. The engine provides one; without it, transport commands fail.
@@ -54,6 +70,13 @@ namespace hocket::commands
     {
     public:
         virtual ~Transport() = default;
+
+        // Since play last started.
+        virtual PlayProgress playProgress() const { return {}; }
+
+        // The wrap a change to the project or the transport made since this
+        // was last asked, if any, and forgets it.
+        virtual std::optional<PlayheadWrap> takeWrap() { return {}; }
 
         // Plays playRange from startPosition, on a loop or once, as the bus's
         // settings say; never called while playing.
@@ -70,6 +93,22 @@ namespace hocket::commands
         // The loop region, or looping, changed in the bus's settings. While
         // playing, a playhead outside the new playRange wraps into it (wrapInto).
         virtual void loopChanged() = 0;
+    };
+
+    // The level of what's played: --play's master meter (SPEC §9). Its peak and
+    // count restart each time a transport play starts (SPEC §6.4).
+    struct OutputLevel
+    {
+        float peak = 0.0f;                // the loudest sample since play started; 1.0 is full scale
+        std::uint64_t clippedSamples = 0; // samples over full scale since then, which the driver cuts off
+    };
+
+    class OutputMeter
+    {
+    public:
+        virtual ~OutputMeter() = default;
+        virtual OutputLevel levelSincePlay() const = 0;
+        virtual void restart() = 0;
     };
 
     // For the bus: checks a transport command against the project and the

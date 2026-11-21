@@ -15,6 +15,12 @@ struct MasterOutput::Meter
     std::atomic<float> peak { 0.0f };
     std::atomic<std::uint64_t> clipped { 0 };
 
+    // The same since a transport play last started. The message thread sets
+    // them to zero; the audio thread only ever stores a block's own peak, so
+    // a restart can't be undone by an old value.
+    std::atomic<float> peakSincePlay { 0.0f };
+    std::atomic<std::uint64_t> clippedSincePlay { 0 };
+
     static_assert (std::atomic<float>::is_always_lock_free && std::atomic<std::uint64_t>::is_always_lock_free);
 };
 
@@ -62,7 +68,11 @@ namespace
                             over += std::abs (samples[i]) > 1.0f ? 1 : 0;
 
                 meter->clipped.fetch_add (over, std::memory_order_relaxed);
+                meter->clippedSincePlay.fetch_add (over, std::memory_order_relaxed);
             }
+
+            if (blockPeak > meter->peakSincePlay.load (std::memory_order_relaxed))
+                meter->peakSincePlay.store (blockPeak, std::memory_order_relaxed);
 
             // The only writer, so no compare-and-swap is needed.
             if (blockPeak > meter->peak.load (std::memory_order_relaxed))
@@ -126,6 +136,17 @@ float MasterOutput::peak() const
 std::uint64_t MasterOutput::clippedSamples() const
 {
     return meter->clipped.load (std::memory_order_relaxed);
+}
+
+commands::OutputLevel MasterOutput::levelSincePlay() const
+{
+    return { meter->peakSincePlay.load (std::memory_order_relaxed), meter->clippedSincePlay.load (std::memory_order_relaxed) };
+}
+
+void MasterOutput::restart()
+{
+    meter->peakSincePlay.store (0.0f, std::memory_order_relaxed);
+    meter->clippedSincePlay.store (0, std::memory_order_relaxed);
 }
 
 //==============================================================================

@@ -95,6 +95,44 @@ namespace hocket::engine
         // Edit. None otherwise, and then the Edit's clips are the model's.
         std::optional<notes::Ticks> clipsEndBy;
 
+        // How much has played since play last started (playProgress). The
+        // playhead's unlooped position counts every sample since it was last
+        // placed, whatever the loop, and a song has one tempo, so what has
+        // played since a baseline is exact. The baseline is taken at play,
+        // and again wherever this moves the playhead (a seek, a wrap), with
+        // what had played up to then added in. Tracktion places it itself
+        // after a new tempo map; the 50 ms sampling covers that.
+        struct Progress
+        {
+            bool started = false;
+            bool running = false;
+            std::chrono::steady_clock::time_point startedAt {};
+            std::chrono::steady_clock::time_point lastSampledAt {};
+            notes::Ticks ticks = 0;          // up to the baseline
+            std::int64_t baseUnlooped = 0;   // the playhead's unlooped position at the baseline, in samples
+            std::int64_t basePlayout = 0;    // its playout sync position then: another means it was placed since
+            notes::Ticks basePlace = 0;      // its place in the song then
+        };
+
+        class ProgressTimer final : public juce::Timer
+        {
+        public:
+            explicit ProgressTimer (EditSync& owner) : sync (owner) {}
+            void timerCallback() override { sync.sampleProgress(); }
+
+        private:
+            EditSync& sync;
+        };
+
+        Progress progress;
+        ProgressTimer progressTimer { *this };
+        std::optional<commands::PlayheadWrap> lastWrap; // for takeWrap
+
+        void sampleProgress();           // adds what has played to progress.ticks, and takes a new baseline
+        void takeProgressBaseline();
+        notes::Ticks ticksPlayed() const; // progress.ticks and what has played since the baseline
+        notes::Ticks ticksAt (std::int64_t samplePosition, double sampleRate) const;
+
         void changed (const commands::Change&);
 
         // Each brings one thing in the Edit in line with the model: makes it,
@@ -164,6 +202,8 @@ namespace hocket::engine
         notes::Ticks playheadPosition() const override;
         void jumpTo (notes::Ticks position) override;
         void loopChanged() override;
+        commands::PlayProgress playProgress() const override;
+        std::optional<commands::PlayheadWrap> takeWrap() override;
 
         // With loop off, stops playback once the playhead reaches the end,
         // and gives the clips their ends back after any stop.

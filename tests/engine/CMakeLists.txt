@@ -16,6 +16,7 @@ add_executable(hocket_engine_tests
     KitLibraryTests.cpp
     LivePlaybackTests.cpp
     LiveRevertTests.cpp
+    LiveProgressTests.cpp
     LiveStructureTests.cpp
     LiveTempoTests.cpp
     LiveTransportTests.cpp

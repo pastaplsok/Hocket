@@ -18,6 +18,9 @@ namespace
     // How often, with loop off, playback checks whether it has reached the end.
     constexpr int endCheckIntervalMs = 5;
 
+    // How often what has played is sampled from the playhead (EditSync::sampleProgress).
+    constexpr int progressIntervalMs = 50;
+
     juce::String juceString (const std::string& utf8)
     {
         return juce::String::fromUTF8 (utf8.data(), static_cast<int> (utf8.size()));
@@ -290,30 +293,45 @@ void EditSync::updateLoop (Outside outside)
     // loop off too, as the bus has reported (SPEC §3.1); but with loop off,
     // a song that now ends before the playhead has been played to its end,
     // so the playhead plays on from where it is, and timerCallback stops it.
+    // What has played so far counts the rest of the pass a wrap ends.
+    sampleProgress();
+
     const auto loop = tracktion::toSamples (range, sampleRate);
     const auto wrap = looping || outside == Outside::wrap;
-    const AudioLock audioLock (*this);
-    const auto place = playHead->getPosition();
-    const auto wrapped = ! wrap || loop.contains (place)
-                           ? place
-                           : loop.getStart() + juce::negativeAwareModulo (place - loop.getStart(), std::max<std::int64_t> (1, loop.getLength()));
+    std::int64_t place = 0;
+    std::int64_t wrapped = 0;
 
-    // The playhead counts its place from where it was last set, by remainder
-    // of the loop's length, so the place is set even when it doesn't move:
-    // with looping off, so the old loop doesn't clamp it, and before the new
-    // loop is on. Not moving, it's set without telling Tracktion's players it
-    // jumped, or they'd end the notes sounding and strike them again.
-    // Wrapping, it did jump, and they're told: the notes sounding end, and
-    // those on at the new place start.
-    playHead->setLoopRange (false, loop, false);
+    {
+        const AudioLock audioLock (*this);
+        place = playHead->getPosition();
+        wrapped = ! wrap || loop.contains (place)
+                    ? place
+                    : loop.getStart() + juce::negativeAwareModulo (place - loop.getStart(), std::max<std::int64_t> (1, loop.getLength()));
 
-    if (wrapped == place)
-        playHead->overridePosition (place);
-    else
-        playHead->setPosition (wrapped);
+        // The playhead counts its place from where it was last set, by remainder
+        // of the loop's length, so the place is set even when it doesn't move:
+        // with looping off, so the old loop doesn't clamp it, and before the new
+        // loop is on. Not moving, it's set without telling Tracktion's players it
+        // jumped, or they'd end the notes sounding and strike them again.
+        // Wrapping, it did jump, and they're told: the notes sounding end, and
+        // those on at the new place start.
+        playHead->setLoopRange (false, loop, false);
 
-    if (looping)
-        playHead->setLoopRange (true, loop, false);
+        if (wrapped == place)
+            playHead->overridePosition (place);
+        else
+            playHead->setPosition (wrapped);
+
+        if (looping)
+            playHead->setLoopRange (true, loop, false);
+    }
+
+    // Worked out once the lock is let go: a new tempo map may be built.
+    if (wrapped != place)
+        lastWrap = commands::PlayheadWrap { ticksAt (place, sampleRate), ticksAt (wrapped, sampleRate) };
+
+    if (progress.running)
+        takeProgressBaseline();
 }
 
 void EditSync::syncTempo()
@@ -711,10 +729,24 @@ void EditSync::play()
     // Loop off: play runs to the end, and stops (SPEC §3.1).
     if (! settings.looping)
         startTimer (endCheckIntervalMs);
+
+    // What plays from here is counted from here (SPEC §6.4).
+    const auto now = std::chrono::steady_clock::now();
+    progress = { true, true, now, now };
+    takeProgressBaseline();
+
+    // Tracktion may place the playhead at the start only once play has
+    // begun, so that's where it's counted from if it does.
+    progress.basePlace = commands::startPosition (bus.project(), settings);
+    progressTimer.startTimer (progressIntervalMs);
 }
 
 void EditSync::stop()
 {
+    sampleProgress();
+    progress.running = false;
+    progressTimer.stopTimer();
+
     playRequested = false;
     stopTimer();
     tracktionEdit->getTransport().stop (false, false);
@@ -741,7 +773,12 @@ notes::Ticks EditSync::playheadPosition() const
     if (playHead == nullptr)
         return commands::startPosition (bus.project(), bus.transportSettings());
 
-    const auto beats = tracktionEdit->tempoSequence.toBeats (tracktion::TimePosition::fromSamples (playHead->getPosition(), sampleRate));
+    return ticksAt (playHead->getPosition(), sampleRate);
+}
+
+notes::Ticks EditSync::ticksAt (std::int64_t samplePosition, double sampleRate) const
+{
+    const auto beats = tracktionEdit->tempoSequence.toBeats (tracktion::TimePosition::fromSamples (samplePosition, sampleRate));
     return std::max<notes::Ticks> (0, std::llround (beats.inBeats() * static_cast<double> (notes::ticksPerQuarterNote)));
 }
 
@@ -752,10 +789,86 @@ void EditSync::jumpTo (notes::Ticks position)
     if (playHead == nullptr)
         return;
 
+    // Played up to here; a jump isn't playing.
+    sampleProgress();
+
     // A jump: Tracktion's players end the notes sounding, and strike those on
     // at the new place. The bus has put it inside what plays, so the loop
     // doesn't clamp it.
     playHead->setPosition (tracktion::toSamples (timeOf (position), sampleRate));
+
+    if (progress.running)
+        takeProgressBaseline();
+}
+
+void EditSync::sampleProgress()
+{
+    if (! progress.running)
+        return;
+
+    // Stopped by itself: what played ends at the last sample.
+    if (! isPlaying())
+    {
+        progress.running = false;
+        progressTimer.stopTimer();
+        return;
+    }
+
+    progress.ticks = ticksPlayed();
+    takeProgressBaseline();
+    progress.lastSampledAt = std::chrono::steady_clock::now();
+}
+
+void EditSync::takeProgressBaseline()
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (playHead == nullptr)
+        return;
+
+    progress.baseUnlooped = playHead->getUnloopedPosition();
+    progress.basePlayout = playHead->getPlayoutSyncPosition();
+    progress.basePlace = ticksAt (playHead->getPosition(), sampleRate);
+}
+
+notes::Ticks EditSync::ticksPlayed() const
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (! progress.running || playHead == nullptr)
+        return progress.ticks;
+
+    const auto unlooped = playHead->getUnloopedPosition();
+
+    if (playHead->getPlayoutSyncPosition() == progress.basePlayout && unlooped >= progress.baseUnlooped)
+        return progress.ticks + std::max<notes::Ticks> (0, ticksAt (unlooped, sampleRate) - ticksAt (progress.baseUnlooped, sampleRate));
+
+    // Tracktion has placed the playhead since (after a new tempo map, say):
+    // from its place then to its place now, which wrapped if it's behind.
+    const auto place = ticksAt (playHead->getPosition(), sampleRate);
+
+    if (place >= progress.basePlace)
+        return progress.ticks + (place - progress.basePlace);
+
+    const auto range = commands::playRange (bus.project(), bus.transportSettings());
+    return progress.ticks + std::max<notes::Ticks> (0, range.end - progress.basePlace) + std::max<notes::Ticks> (0, place - range.start);
+}
+
+commands::PlayProgress EditSync::playProgress() const
+{
+    if (! progress.started)
+        return {};
+
+    const auto running = progress.running && isPlaying();
+    const auto end = running ? std::chrono::steady_clock::now() : progress.lastSampledAt;
+    const auto ticks = running ? ticksPlayed() : progress.ticks;
+
+    return { true, std::chrono::duration<double> (end - progress.startedAt).count(), ticks };
+}
+
+std::optional<commands::PlayheadWrap> EditSync::takeWrap()
+{
+    return std::exchange (lastWrap, std::nullopt);
 }
 
 void EditSync::loopChanged()
@@ -837,6 +950,10 @@ void EditSync::timerCallback()
     // Asked for, so not a stop by itself. By now the playhead may be a block
     // or two past the end, but the clips end there (clipsEndBy), so nothing
     // after it was heard.
+    sampleProgress();
+    progress.running = false;
+    progressTimer.stopTimer();
+
     stopTimer();
     playRequested = false;
     transport.stop (false, false);

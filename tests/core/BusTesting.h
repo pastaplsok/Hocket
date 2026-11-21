@@ -115,10 +115,23 @@ namespace hocket::testing
 
         void loopChanged() override { calls.push_back ("loop changed"); }
 
+        std::optional<commands::PlayheadWrap> takeWrap() override { return std::exchange (wrap, std::nullopt); }
+
         std::vector<std::string> take() { return std::exchange (calls, {}); }
 
         std::vector<std::string> calls;
         bool playing = false;
         notes::Ticks playhead = 0;
+        std::optional<commands::PlayheadWrap> wrap; // as the engine would set it while a change applies
+    };
+
+    // An output meter that counts its restarts.
+    struct FakeMeter final : commands::OutputMeter
+    {
+        commands::OutputLevel levelSincePlay() const override { return level; }
+        void restart() override { ++restarts; }
+
+        commands::OutputLevel level;
+        int restarts = 0;
     };
 }

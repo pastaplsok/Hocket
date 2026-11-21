@@ -217,3 +217,69 @@ TEST_CASE ("drum map changes: refusals")
     CHECK (contains (refusal ({ "trk-nope", ChangeDrumMap::Base::current, {}, {} }), "trk-nope"));
     CHECK (bus.history().empty());
 }
+
+//==============================================================================
+TEST_CASE ("a change during playback says how it moved the playhead, or that playback stops")
+{
+    CommandBus bus (makeProject());
+    FakeTransport transport;
+    bus.setTransport (&transport);
+    REQUIRE (bus.execute (Play {}, lee).ok);
+
+    // As the engine does: it wraps the playhead while the change applies, and the bus asks afterwards.
+    std::optional<PlayheadWrap> wrapOnChange;
+    bus.addListener ([&] (const Change&) { if (wrapOnChange) transport.wrap = wrapOnChange; });
+
+    // Removing clp-a ends the song at 2.1; the playhead was at 2.3.
+    wrapOnChange = PlayheadWrap { bar + 2 * 960, 2 * 960 };
+    CHECK (bus.execute (RemoveClip { "clp-a" }, claude).message
+           == "#1 removed clip clp-a from trk-bass. The song now ends at 2.1, before where the playhead was, so playback wrapped from 2.3 to 1.3");
+
+    // Undo and redo say it too, and several commands as one.
+    wrapOnChange.reset();
+    CHECK (bus.undo (claude, UndoScope::callersOwn).message == "undid #1 \"removed clip clp-a from trk-bass\" by Claude");
+    wrapOnChange = PlayheadWrap { bar + 2 * 960, 2 * 960 };
+    CHECK (bus.redo (claude, UndoScope::callersOwn).message.ends_with ("so playback wrapped from 2.3 to 1.3"));
+    wrapOnChange.reset();
+
+    // A wrap from before the change (a seek's, say) isn't this change's.
+    transport.wrap = PlayheadWrap { 0, 0 };
+    CHECK (bus.execute (SetTempo { 100.0 }, claude).message == "#2 set the tempo to 100");
+
+    // Loop off: the playhead plays on past the new end, and the engine stops it there.
+    REQUIRE (bus.undo (claude, UndoScope::callersOwn).ok);
+    REQUIRE (bus.undo (claude, UndoScope::callersOwn).ok);
+    REQUIRE (bus.execute (SetLooping { false }, lee).ok);
+    transport.playhead = bar + 2 * 960;
+    CHECK (bus.executeAsOne ({ RemoveClip { "clp-a" }, SetTempo { 90.0 } }, claude).message
+           == "#3 removed clip clp-a from trk-bass; set the tempo to 90. The song now ends at 2.1, before the playhead, and loop is off, "
+              "so playback stops there");
+
+    // Stopped, there's nothing to say.
+    REQUIRE (bus.undo (claude, UndoScope::callersOwn).ok);
+    REQUIRE (bus.execute (Stop {}, lee).ok);
+    CHECK (bus.execute (RemoveClip { "clp-a" }, claude).message == "#4 removed clip clp-a from trk-bass");
+
+    bus.setTransport (nullptr);
+}
+
+TEST_CASE ("the output meter restarts each time play starts, not when it's already playing")
+{
+    CommandBus bus (makeProject());
+    FakeTransport transport;
+    FakeMeter meter;
+    bus.setTransport (&transport);
+    bus.setOutputMeter (&meter);
+
+    REQUIRE (bus.execute (Play {}, lee).ok);
+    CHECK (meter.restarts == 1);
+    CHECK (bus.execute (Play {}, lee).message == "already playing");
+    CHECK (meter.restarts == 1);
+
+    REQUIRE (bus.execute (Stop {}, lee).ok);
+    REQUIRE (bus.execute (Play {}, claude).ok);
+    CHECK (meter.restarts == 2);
+
+    bus.setOutputMeter (nullptr);
+    bus.setTransport (nullptr);
+}

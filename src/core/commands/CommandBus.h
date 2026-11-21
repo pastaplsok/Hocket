@@ -110,6 +110,14 @@ namespace hocket::commands
         // Whether the transport is playing; nullopt when there's no transport.
         std::optional<bool> isPlaying() const;
 
+        Transport* currentTransport() const { return transport; }
+
+        // The output's level (SPEC §6.4), restarted each time a transport play
+        // starts. Without one, there's no level to give. It must outlive the
+        // bus, or be removed with nullptr first.
+        void setOutputMeter (OutputMeter* meter) { outputMeter = meter; }
+        const OutputMeter* meter() const { return outputMeter; }
+
         // The loop region, looping, and the last seek's position: the
         // session's, changed only by transport commands (SPEC §3.1).
         const TransportSettings& transportSettings() const { return transportState; }
@@ -204,6 +212,7 @@ namespace hocket::commands
         std::vector<std::pair<int, std::function<void (const Change&)>>> listeners;
         int nextListenerId = 1;
         Transport* transport = nullptr;
+        OutputMeter* outputMeter = nullptr;
         TransportSettings transportState;
         kits::KitCatalog* kitCatalog = nullptr;
         Storage* storage = nullptr;
@@ -211,6 +220,13 @@ namespace hocket::commands
         Revision savedRevision = 0;
 
         Result runTransportCommand (const Command&);
+
+        // Around a change to the project during playback (SPEC §6.4): before
+        // it, whether it's playing, forgetting any earlier wrap; after it, a
+        // sentence saying how the change moved the playhead or stopped
+        // playback, or nothing.
+        bool playingBeforeChange();
+        std::string playbackAfterChange (bool wasPlaying);
         edits::Plan plan (const project::Project&, const Command&) const;
         edits::Plan planRevert (const project::Project&, const Revert&) const;
 

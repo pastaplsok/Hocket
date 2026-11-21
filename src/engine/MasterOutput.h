@@ -9,6 +9,8 @@
 // part of the project: offline renders don't include it, and it isn't saved.
 // The master bus (Milestone 5) takes over from it.
 
+#include "core/commands/Transport.h"
+
 #include <tracktion_engine/tracktion_engine.h>
 
 #include <cstdint>
@@ -26,7 +28,9 @@ namespace hocket::engine
     // and clips, which the exit report warns of, suggesting a --master-volume.
     inline constexpr double defaultMasterVolume = 0.0;
 
-    class MasterOutput
+    // Also the bus's output meter (SPEC §6.4): a second peak and count, which
+    // restart each time a transport play starts.
+    class MasterOutput final : public commands::OutputMeter
     {
     public:
         // From now on, everything Tracktion plays on the device is scaled by
@@ -45,6 +49,9 @@ namespace hocket::engine
         // went over full scale, which the driver cuts off.
         float peak() const;
         std::uint64_t clippedSamples() const;
+
+        commands::OutputLevel levelSincePlay() const override;
+        void restart() override;
 
         // Shared with the processor, which the device manager owns.
         struct Meter;
