@@ -15,8 +15,9 @@ so it makes no sound. What it checks:
     back to the saved state, and none left when --play ends with nothing unsaved;
   - after --play is killed outright with a change unsaved: plain --play stops and asks,
     without opening the device; --recover plays the change as one entry, which undo takes
-    back; and, after a second change and kill, --discard-recovery files the copy as a kept
-    save (which --check reads) and plays the files as saved;
+    back, filing the copy as a kept save first; and, after a second change and kill,
+    --discard-recovery files the copy as a kept save (which --check reads) and plays the
+    files as saved;
   - --play's keys, typed into its console: S saves; S won't save over a clip file edited by
     hand, and offers O, which does, keeping the edit as a kept save first;
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
@@ -268,6 +269,13 @@ function Wait-NewLogLine ([string] $Log, [string] $Pattern, [int] $Before) {
     }
 
     return $null
+}
+
+# The project's kept saves labelled as discarded recoveries whose bass clip is -like $Clip.
+function Get-DiscardedRecoveries ([string] $Clip) {
+    Get-ChildItem -LiteralPath (Join-Path $project '.hocket\saves') -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like '* discarded recovery' } |
+        Where-Object { [IO.File]::ReadAllText((Join-Path $_.FullName 'clips\bass.notes')) -like $Clip }
 }
 
 # Seconds until this run's recovery copies are gone, within 3 s; $null if they're still there.
@@ -548,6 +556,13 @@ try {
     Add-Result "${crash}: --recover plays the change as one entry, which undo takes back" $played `
         $(if ($played) { "$($entries[0]); undone, and the copy removed" } else { "history: $($entries -join ' | '); clip recovered: $($recovered -eq $lost); undo: $(($undo.Text -split "`n")[0]); clip back: $($undone -eq $saved); copy removed: $($null -ne $gone); see $log" })
 
+    # The recovered changes, undone and never saved: the copy was filed with the kept saves before it went.
+    $undoneLine = (Select-String -Path $log -Pattern '^The recovered changes aren''t in the project any more' | Select-Object -First 1).Line
+    $filedOnUndo = @(Get-DiscardedRecoveries '*the change a crash would lose*')
+    $keptOnUndo = $undoneLine -like '*is filed as save #*, a discarded recovery copy, *' -and $filedOnUndo.Count -eq 1
+    Add-Result "${crash}: undoing the recovered entry files the copy as a kept save first" $keptOnUndo `
+        $(if ($keptOnUndo) { "$($filedOnUndo[0].Name): $undoneLine" } else { "said: '$undoneLine'; kept saves holding the change: $($filedOnUndo.Count); see $log" })
+
     # A second change and kill, for --discard-recovery.
     $write = Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: a second change a crash would lose`n@length 2bars`n" }
     if ($write.IsError) { throw "write_clip failed: $($write.Text)" }
@@ -561,7 +576,7 @@ try {
     if (-not (Wait-Looping $crashPlay $log)) { throw "--play --discard-recovery didn't start; see $log" }
 
     $filedLine = (Select-String -Path $log -Pattern '^Filed the recovery copy written .* as save #\d+, a discarded recovery copy' | Select-Object -First 1).Line
-    $keptSaves = @(Get-ChildItem -LiteralPath (Join-Path $project '.hocket\saves') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '* discarded recovery' })
+    $keptSaves = @(Get-DiscardedRecoveries '*a second change a crash would lose*')
     $keptClip = if ($keptSaves.Count -eq 1) { [IO.File]::ReadAllText((Join-Path $keptSaves[0].FullName 'clips\bass.notes')) } else { '' }
     $checkLog = Join-Path $work 'crash-4-check.log'
     $checked = $keptSaves.Count -eq 1 -and (Invoke-Logged $headless @('--check', $keptSaves[0].FullName) $checkLog) -eq 0

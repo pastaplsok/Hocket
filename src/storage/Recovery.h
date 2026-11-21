@@ -6,7 +6,11 @@
 //
 // A copy exists only while the session holds changes that aren't on disk: a
 // few seconds after changes stop, it's written; once nothing is unsaved (a
-// save, or undo back to the saved state), it's removed. So one found at the
+// save, or undo back to the saved state), it's removed. But a copy holding
+// recovered changes that were never saved, once they're gone from the project
+// (the recovered entry undone, say), is filed with the kept saves as a
+// discarded recovery before it goes, as --discard-recovery would (Lee,
+// 2026-11-21): no recovered work is lost by an undo. So one found at the
 // start holds changes a session ended without saving, by a crash or by
 // quitting, and plain --play won't play until the person says what to do
 // with it (Lee, 2026-11-21): --recover plays it, --discard-recovery files it
@@ -63,8 +67,9 @@ namespace hocket::storage
         static constexpr Clock::duration retryTime = std::chrono::seconds (10); // after a write or remove fails
 
         // `holdsSession`: the copy on disk already holds the session's
-        // project as it is now (it was just recovered). Otherwise changes
-        // already unsaved are copied once they've settled from the first poll.
+        // project as it is now: it was just recovered, as the newest history
+        // entry. Otherwise changes already unsaved are copied once they've
+        // settled from the first poll.
         RecoveryKeeper (commands::CommandBus& bus, ProjectFolder& folder, RecoveryCopy& copy, bool holdsSession);
 
         // Call often: --play does every 50 ms. Returns a sentence to tell the
@@ -72,9 +77,10 @@ namespace hocket::storage
         // changes, and that the copy is written again once it is.
         std::optional<std::string> poll (Clock::time_point now = Clock::now());
 
-        // At a clean exit. With nothing unsaved, removes the copy and returns
-        // nothing. Otherwise makes sure the copy holds the project as it is
-        // now, and says where it is and how to get it back.
+        // At a clean exit. With nothing unsaved, removes the copy (filing it
+        // first if it holds recovered changes that were never saved, and
+        // saying so). Otherwise makes sure the copy holds the project as it
+        // is now, and says where it is and how to get it back.
         std::string finish();
 
     private:
@@ -90,10 +96,19 @@ namespace hocket::storage
         // What the copy on disk holds, if this session wrote it (or recovered it).
         std::optional<std::map<std::string, std::string>> copyHolds;
 
+        // The history entry --recover made, until its changes are saved or
+        // filed with the kept saves.
+        std::optional<int> recoveredEntry;
+
         std::string lastProblem; // the last one reported
 
         std::optional<std::string> update (Clock::time_point now);
         std::optional<std::string> removeCopy (Clock::time_point now);
+
+        // Before the copy goes: if it holds recovered changes that were never
+        // saved, files it with the kept saves and returns what to say. Sets
+        // `problem` if it couldn't, and then the copy must stay.
+        std::string fileIfRecovered (std::string& problem);
         std::optional<std::string> report (std::string problem, Clock::time_point now);
         std::optional<std::string> recovered();
     };

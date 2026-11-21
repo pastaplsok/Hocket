@@ -2,6 +2,7 @@
 
 #include "core/Paths.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace hocket::storage
@@ -157,7 +158,12 @@ RecoveryKeeper::RecoveryKeeper (commands::CommandBus& commandBus, ProjectFolder&
     seen = holdsSession ? bus.revision() : std::numeric_limits<commands::CommandBus::Revision>::max();
 
     if (holdsSession)
+    {
         copyHolds = project::write (bus.project());
+
+        if (const auto history = bus.history(); ! history.empty())
+            recoveredEntry = history.front().id;
+    }
 }
 
 std::optional<std::string> RecoveryKeeper::poll (Clock::time_point now)
@@ -216,18 +222,72 @@ std::optional<std::string> RecoveryKeeper::update (Clock::time_point now)
     return recovered();
 }
 
+std::string RecoveryKeeper::fileIfRecovered (std::string& problem)
+{
+    if (! recoveredEntry)
+        return {};
+
+    // Saved with the recovered entry in it: they're on disk, so there's nothing to file.
+    const auto history = bus.history();
+    const auto stillThere = std::ranges::any_of (history, [this] (const commands::HistoryEntry& entry) { return entry.id == *recoveredEntry; });
+
+    if (stillThere && ! bus.hasUnsavedChanges())
+    {
+        recoveredEntry.reset();
+        return {};
+    }
+
+    const auto found = copy.find();
+
+    if (! found)
+    {
+        recoveredEntry.reset();
+        return {};
+    }
+
+    const auto kept = folder.keepRecoveryCopy (found->folder, found->written, problem);
+
+    if (! kept)
+        return {};
+
+    // Once is enough: the changes are in the kept saves now.
+    recoveredEntry.reset();
+    return "The recovered changes aren't in the project any more, and were never saved, so the recovery copy written " + commands::localTimeText (found->written)
+         + " is filed as " + commands::describe (*kept) + ": revert brings them back.";
+}
+
 std::optional<std::string> RecoveryKeeper::removeCopy (Clock::time_point now)
 {
     if (! copyHolds)
         return recovered();
 
-    if (const auto problem = copy.remove(); ! problem.empty())
-        return report ("Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (problem) + ". Trying again every "
-                           + std::to_string (std::chrono::duration_cast<std::chrono::seconds> (retryTime).count()) + " s.",
+    std::string problem;
+    const auto filed = fileIfRecovered (problem);
+
+    if (! problem.empty())
+        return report ("Couldn't file the recovery copy with the kept saves, so it stays as it is, holding the recovered changes: " + withoutStop (problem)
+                           + ". Trying again every " + std::to_string (std::chrono::duration_cast<std::chrono::seconds> (retryTime).count()) + " s.",
                        now);
 
+    if (const auto removed = copy.remove(); ! removed.empty())
+    {
+        const auto said = report ("Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (removed) + ". Trying again every "
+                                      + std::to_string (std::chrono::duration_cast<std::chrono::seconds> (retryTime).count()) + " s.",
+                                  now);
+
+        if (filed.empty())
+            return said;
+
+        return said ? filed + "\n" + *said : filed;
+    }
+
     copyHolds.reset();
-    return recovered();
+    const auto back = recovered();
+
+    if (filed.empty())
+        return back;
+
+    return back ? filed + "\n" + *back : filed;
 }
 
 std::optional<std::string> RecoveryKeeper::report (std::string problem, Clock::time_point now)
@@ -258,12 +318,22 @@ std::string RecoveryKeeper::finish()
 
     if (! bus.hasUnsavedChanges() || folder.matchesKnown (files))
     {
-        if (copyHolds)
-            if (const auto problem = copy.remove(); ! problem.empty())
-                return "Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (problem)
-                     + ". The next --play will ask about it; it's safe to delete it by hand.";
+        if (! copyHolds)
+            return {};
 
-        return {};
+        std::string problem;
+        const auto filed = fileIfRecovered (problem);
+
+        if (! problem.empty())
+            return "Couldn't file the recovery copy with the kept saves, so it's left as it is, holding the recovered changes, and the next --play "
+                   "will ask about it: " + withoutStop (problem) + ".";
+
+        if (const auto removed = copy.remove(); ! removed.empty())
+            return (filed.empty() ? std::string() : filed + "\n") + "Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (removed)
+                 + ". The next --play will ask about it; it's safe to delete it by hand.";
+
+        copyHolds.reset();
+        return filed;
     }
 
     if (! copyHolds || *copyHolds != files)

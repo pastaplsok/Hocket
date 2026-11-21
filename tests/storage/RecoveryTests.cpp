@@ -589,12 +589,180 @@ TEST_CASE ("a crash loses nothing: plain --play stops and asks, and --recover pl
     keeper.poll (Clock::time_point {} + 2h + 4s);
     CHECK (copy.find()->folder == copyFolder);
 
-    // Undo takes it back, to the files as saved, and then there's nothing to keep.
+    // Undo takes it back, to the files as saved. The copy goes, but its
+    // changes were never saved, so it's filed with the kept saves first.
     REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
     CHECK (bus.project() == saved);
-    keeper.poll (Clock::time_point {} + 2h + 5s);
+    const auto said = keeper.poll (Clock::time_point {} + 2h + 5s);
     CHECK_FALSE (copy.find());
-    CHECK (filesIn (scene.saved.folder) == before);
+    REQUIRE (bus.keptSaves().size() == 1);
+    CHECK (said == "The recovered changes aren't in the project any more, and were never saved, so the recovery copy written " + time + " is filed as "
+                       + describe (bus.keptSaves().front()) + ": revert brings them back.");
+
+    // The project's own files are as they were: only the kept save is new.
+    auto after = filesIn (scene.saved.folder);
+    std::erase_if (after, [] (const auto& file) { return file.first.starts_with (".hocket/saves/"); });
+    CHECK (after == before);
+}
+
+//==============================================================================
+namespace
+{
+    // A session that crashed with changes unsaved, then --play --recover: the
+    // copy's changes brought in as one entry, and a keeper for the copy.
+    struct RecoveredSession
+    {
+        RecoveryScene scene;
+        project::Project saved;
+        project::Project lost;
+        std::map<std::string, std::string> lostFiles;
+        std::optional<storage::RecoveryCopy> copy;
+        std::optional<storage::RecoveryKeeper> keeper;
+        Clock::time_point now = Clock::time_point {} + 1h;
+
+        RecoveredSession()
+        {
+            saved = scene.saved.bus->project();
+            REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+            REQUIRE (scene.saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
+            lost = scene.saved.bus->project();
+            lostFiles = scene.files();
+            REQUIRE (scene.copy().write (lostFiles).empty());
+
+            scene.saved.open();
+            copy.emplace (scene.copy());
+            auto start = storage::startRecovery (*copy, *scene.saved.projectFolder, saved, storage::RecoveryChoice::recover);
+            REQUIRE (start.recovered);
+            REQUIRE (bus().execute (ReplaceProject { std::move (*start.recovered), start.description }, lee).ok);
+            keeper.emplace (bus(), *scene.saved.projectFolder, *copy, true);
+        }
+
+        CommandBus& bus() { return *scene.saved.bus; }
+
+        std::optional<std::string> settle()
+        {
+            keeper->poll (now += 1s);
+            return keeper->poll (now += 4s);
+        }
+
+        std::vector<KeptSave> discarded()
+        {
+            auto saves = bus().keptSaves();
+            std::erase_if (saves, [] (const KeptSave& save) { return ! save.info.discardedRecovery; });
+            return saves;
+        }
+    };
+}
+
+TEST_CASE ("undoing the recovered entry files the recovery copy with the kept saves, as a discarded recovery, and revert brings it back")
+{
+    RecoveredSession session;
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+
+    const auto said = session.keeper->poll (session.now += 50ms);
+    REQUIRE (said);
+    CHECK (said->starts_with ("The recovered changes aren't in the project any more, and were never saved, so the recovery copy written "));
+    CHECK_FALSE (session.copy->find());
+
+    const auto discarded = session.discarded();
+    REQUIRE (discarded.size() == 1);
+    CHECK (discarded.front().info.time == std::chrono::floor<std::chrono::seconds> (written));
+    auto kept = filesIn (session.scene.saved.file (discarded.front().folder));
+    kept.erase (".hocket/save.json");
+    CHECK (kept == session.lostFiles);
+
+    // Filed once: redo and undo again leave it be.
+    REQUIRE (session.bus().redo (lee).ok);
+    session.settle();
+    REQUIRE (session.copy->find());
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+    CHECK_FALSE (session.keeper->poll (session.now += 50ms));
+    CHECK_FALSE (session.copy->find());
+    CHECK (session.discarded().size() == 1);
+
+    REQUIRE (session.bus().execute (Revert { discarded.front().number }, lee).ok);
+    CHECK (session.bus().project() == session.lost);
+}
+
+TEST_CASE ("the recovered entry undone after later changes: the copy is filed as it was last written")
+{
+    RecoveredSession session;
+    REQUIRE (session.bus().execute (SetTempo { 120 }, claude).ok);
+    session.settle();
+    const auto later = session.scene.files();
+    REQUIRE (projectFilesOf (session.copy->find()->folder) == later);
+
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (session.keeper->poll (session.now += 50ms));
+
+    const auto discarded = session.discarded();
+    REQUIRE (discarded.size() == 1);
+    auto kept = filesIn (session.scene.saved.file (discarded.front().folder));
+    kept.erase (".hocket/save.json");
+    CHECK (kept == later);
+}
+
+TEST_CASE ("recovered changes put back by hand, never saved, are filed too")
+{
+    RecoveredSession session;
+    REQUIRE (session.bus().execute (ReplaceProject { session.saved, "put back by hand" }, lee).ok);
+    REQUIRE (session.bus().hasUnsavedChanges());
+
+    const auto said = session.settle();
+    REQUIRE (said);
+    CHECK (said->starts_with ("The recovered changes aren't in the project any more, and were never saved"));
+    CHECK_FALSE (session.copy->find());
+    CHECK (session.discarded().size() == 1);
+}
+
+TEST_CASE ("recovered changes that are saved aren't filed: the save has them")
+{
+    RecoveredSession session;
+    REQUIRE (session.bus().save ({}, lee).ok);
+
+    CHECK_FALSE (session.keeper->poll (session.now += 50ms));
+    CHECK_FALSE (session.copy->find());
+    CHECK (session.discarded().empty());
+
+    // Nor afterwards: undoing past the save leaves changes unsaved, which the copy keeps.
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+    session.settle();
+    CHECK (session.copy->find());
+    CHECK (session.keeper->finish().starts_with ("Unsaved changes are kept in a recovery copy"));
+    CHECK (session.discarded().empty());
+}
+
+TEST_CASE ("at a clean exit with the recovered entry undone, the copy is filed and --play says so")
+{
+    RecoveredSession session;
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+
+    const auto said = session.keeper->finish();
+    CHECK (said.starts_with ("The recovered changes aren't in the project any more, and were never saved, so the recovery copy written "));
+    CHECK (contains (said, "is filed as save #1, a discarded recovery copy, "));
+    CHECK_FALSE (session.copy->find());
+    CHECK (session.discarded().size() == 1);
+}
+
+TEST_CASE ("a recovery copy that can't be filed stays, holding the recovered changes, and filing is tried again")
+{
+    RecoveredSession session;
+    writeFile (session.scene.saved.file (".hocket/saves"), "a file where the kept saves go");
+    REQUIRE (session.bus().undo (lee, UndoScope::anyAuthor).ok);
+
+    const auto said = session.keeper->poll (session.now += 50ms);
+    REQUIRE (said);
+    CHECK (said->starts_with ("Couldn't file the recovery copy with the kept saves, so it stays as it is, holding the recovered changes: "));
+    CHECK (session.copy->find());
+
+    std::filesystem::remove (session.scene.saved.file (".hocket/saves"));
+    CHECK_FALSE (session.keeper->poll (session.now += 5s)); // waiting to try again
+    const auto filed = session.keeper->poll (session.now += 6s);
+    REQUIRE (filed);
+    CHECK (filed->starts_with ("The recovered changes aren't in the project any more"));
+    CHECK_FALSE (session.copy->find());
+    CHECK (session.discarded().size() == 1);
 }
 
 TEST_CASE ("a recovery copy older than the project's files says so")
