@@ -80,6 +80,11 @@ namespace hocket::commands
         std::vector<std::string> written; // relative paths, in the order they were swapped in: clip files, then project.json
         std::vector<MovedFile> moved;      // to unused/
         std::optional<KeptSave> kept;      // the version this save replaced
+
+        // A save refused because it would overwrite changes made outside
+        // Hocket: how each file changed, "clips/bass.notes changed outside
+        // Hocket". Saving with overwrite saves over them.
+        std::vector<std::string> outsideChanges;
     };
 
     class Storage

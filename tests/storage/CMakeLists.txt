@@ -5,6 +5,7 @@ add_executable(hocket_storage_tests
     ProjectFolderTests.cpp
     ProjectWatcherTests.cpp
     RecoveryTests.cpp
+    SaveKeysTests.cpp
     StorageTesting.h)
 
 target_link_libraries(hocket_storage_tests PRIVATE hocket_storage hocket_platform doctest::doctest_with_main)

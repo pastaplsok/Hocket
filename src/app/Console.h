@@ -3,6 +3,8 @@
 // Console setup for the command-line app. Platform-specific parts live in
 // Console_<platform>.cpp.
 
+#include <string>
+
 namespace hocket
 {
     // Makes the console show UTF-8 output correctly, and on Windows turns off
@@ -18,4 +20,10 @@ namespace hocket
     // about 5 s to stop and exit before Windows ends it.
     void catchInterrupts();
     bool interruptRequested();
+
+    // The characters typed in the console since the last call, without
+    // waiting, echoing them, or needing Enter: for --play's keys. Empty when
+    // nothing was typed, or the input isn't a console (it's redirected).
+    // Ctrl+C isn't one: it still interrupts.
+    std::u32string typedKeys();
 }

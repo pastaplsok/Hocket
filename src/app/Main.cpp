@@ -22,6 +22,7 @@
 #include "platform/Platform.h"
 #include "storage/ProjectFolder.h"
 #include "storage/Recovery.h"
+#include "storage/SaveKeys.h"
 #include "storage/WatchedFolder.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -96,6 +97,13 @@ namespace
                "                            play a project that has one\n"
                "  --discard-recovery        play the files as saved, filing that recovery copy with the project's\n"
                "                            kept saves, so revert can still bring it back\n"
+               "\n"
+               "\n"
+               "Keys while --play plays:\n"
+               "  S                         save the project, as --user. A save never overwrites files changed\n"
+               "                            outside Hocket: it says which, and offers O\n"
+               "  O                         straight after S was refused for files changed outside Hocket:\n"
+               "                            save over them, keeping what's on disk as a kept save first\n"
                "\n"
                "A few seconds after changes stop, --play writes the project to a recovery copy in\n"
                "%LOCALAPPDATA%\\Hocket\\Recovery, so a crash loses nothing. It's removed once nothing is unsaved.\n";
@@ -403,8 +411,8 @@ namespace
 
     // Runs on the message thread while --play plays: stops the message loop on
     // Ctrl+C, says when playback stops by itself, closes API transactions left
-    // idle, keeps the recovery copy up to date, and, with --watch, sends each
-    // project file saved outside Hocket to the bus.
+    // idle, keeps the recovery copy up to date, saves when S is pressed, and,
+    // with --watch, sends each project file saved outside Hocket to the bus.
     class PlayLoop final : private juce::Timer
     {
     public:
@@ -412,7 +420,8 @@ namespace
                   const hocket::engine::PlaybackDevice& playbackDevice, hocket::api::Handler& apiHandler,
                   hocket::storage::ProjectFolder& projectFolder, hocket::storage::RecoveryKeeper& recoveryKeeper, bool watch,
                   hocket::commands::Author localUser)
-            : sync (editSync), device (playbackDevice), api (apiHandler), recovery (recoveryKeeper), deviceWhilePlaying (playbackDevice.description())
+            : sync (editSync), device (playbackDevice), api (apiHandler), recovery (recoveryKeeper), saveKeys (commandBus, localUser),
+              deviceWhilePlaying (playbackDevice.description())
         {
             if (watch)
                 watched.emplace (commandBus, projectFolder, std::move (localUser));
@@ -427,6 +436,7 @@ namespace
         const hocket::engine::PlaybackDevice& device;
         hocket::api::Handler& api;
         hocket::storage::RecoveryKeeper& recovery;
+        hocket::storage::SaveKeys saveKeys;
         std::optional<hocket::storage::WatchedFolder> watched;
         std::string deviceWhilePlaying; // the device's description, as of the last check
         bool stopReported = false;
@@ -446,6 +456,10 @@ namespace
                 reportStopByItself();
                 api.checkIdle();
                 pollWatcher();
+
+                for (const auto key : hocket::typedKeys())
+                    if (const auto said = saveKeys.press (key))
+                        std::cout << *said << std::endl;
 
                 if (const auto said = recovery.poll())
                     std::cerr << *said << std::endl;
@@ -743,7 +757,8 @@ namespace
             return 1;
         }
 
-        std::cout << played.message << (options.watch ? "; saving project.json or a clip file outside Hocket plays the change" : "") << ". Ctrl+C to stop." << std::endl;
+        std::cout << played.message << (options.watch ? "; saving project.json or a clip file outside Hocket plays the change" : "") << ". "
+                  << hocket::storage::SaveKeys::hint << "; Ctrl+C to stop." << std::endl;
 
         {
             PlayLoop loop (bus, sync, playbackDevice, api, *projectFolder, recoveryKeeper, options.watch, localUser);

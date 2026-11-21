@@ -622,11 +622,13 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         if (howTheyChanged.size() > 10)
             changes += "; and " + std::to_string (howTheyChanged.size() - 10) + " more";
 
-        return failed ("it would overwrite changes made since Hocket last read or wrote " + std::string (changedOutside.size() == 1 ? "this file" : "these files")
-                       + ": " + changes + ". Nothing on disk changed. Someone may have edited "
-                       + (changedOutside.size() == 1 ? "it" : "them") + " by hand: ask before saving over "
-                       + (changedOutside.size() == 1 ? "it" : "them") + ". Saving with overwrite saves anyway, "
-                       + "keeping the version on disk as a kept save first, so it can be got back");
+        auto refused = failed ("it would overwrite changes made since Hocket last read or wrote " + std::string (changedOutside.size() == 1 ? "this file" : "these files")
+                               + ": " + changes + ". Nothing on disk changed. Someone may have edited "
+                               + (changedOutside.size() == 1 ? "it" : "them") + " by hand: ask before saving over "
+                               + (changedOutside.size() == 1 ? "it" : "them") + ". Saving with overwrite saves anyway, "
+                               + "keeping the version on disk as a kept save first, so it can be got back");
+        refused.outsideChanges = std::move (howTheyChanged);
+        return refused;
     }
 
     // Who saved it, and when, swapped in last. Written with any change, and

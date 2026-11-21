@@ -17,6 +17,8 @@ so it makes no sound. What it checks:
     without opening the device; --recover plays the change as one entry, which undo takes
     back; and, after a second change and kill, --discard-recovery files the copy as a kept
     save (which --check reads) and plays the files as saved;
+  - --play's keys, typed into its console: S saves; S won't save over a clip file edited by
+    hand, and offers O, which does, keeping the edit as a kept save first;
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
   - Ctrl+C stops --play cleanly (exit code 0, its "stopped" line, the token file removed), and
     the driver's xrun count, where it reports one, is 0. JUCE's count of late audio callbacks is
@@ -236,6 +238,32 @@ function Wait-RecoveryCopy {
     while ($waited.Elapsed.TotalSeconds -lt 8) {
         $copies = @(Get-RecoveryCopies $ourCopies)
         if ($copies.Count -gt 0) { return [pscustomobject] @{ Copy = $copies[0].Copy; Seconds = [math]::Round($waited.Elapsed.TotalSeconds, 1) } }
+        Start-Sleep -Milliseconds 100
+    }
+
+    return $null
+}
+
+# Types keys into --play's console, as if pressed there. Send-Keys.ps1's exit code: 0 when typed.
+function Send-Keys ($Process, [string] $Keys) {
+    $typed = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-Keys.ps1'), $Process.Id, $Keys `
+                                       -WindowStyle Hidden -Wait -PassThru
+    return $typed.ExitCode
+}
+
+# How many lines of $Log match $Pattern.
+function Measure-LogLines ([string] $Log, [string] $Pattern) {
+    if (-not (Test-Path $Log)) { return 0 }
+    return @(Select-String -Path $Log -Pattern $Pattern).Count
+}
+
+# The first line of $Log matching $Pattern after the $Before already there, within 5 s; $null if none came.
+function Wait-NewLogLine ([string] $Log, [string] $Pattern, [int] $Before) {
+    $deadline = (Get-Date).AddSeconds(5)
+
+    while ((Get-Date) -lt $deadline) {
+        $lines = @(Select-String -Path $Log -Pattern $Pattern -ErrorAction SilentlyContinue)
+        if ($lines.Count -gt $Before) { return $lines[$Before].Line }
         Start-Sleep -Milliseconds 100
     }
 
@@ -545,6 +573,46 @@ try {
     $filed = $filedLine -and $keptSaves.Count -eq 1 -and $keptClip -like '*a second change a crash would lose*' -and $checked -and $playing -eq $saved -and $copiesLeft -eq 0
     Add-Result "${crash}: --discard-recovery files the copy as a kept save, and plays the files as saved" $filed `
         $(if ($filed) { "$($keptSaves[0].Name); --check: $((Get-Content $checkLog | Select-Object -First 1))" } else { "filed: '$filedLine'; kept saves: $($keptSaves.Count); kept clip has the change: $($keptClip -like '*a second change*'); --check OK: $checked; playing the saved clip: $($playing -eq $saved); copies left: $copiesLeft; see $log" })
+
+    #--------------------------------------------------------------------------
+    # --play's keys (SPEC §4.5): S saves as the person; a save refused for a file changed
+    # outside Hocket offers O, which saves over it, keeping it first. This --play has no
+    # --watch, so a file edited by hand isn't taken in.
+    $keys = '--play''s console'
+    Start-Bridge | Out-Null
+
+    Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: saved with S`n@length 2bars`n" } | Out-Null
+    $sText = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $before = Measure-LogLines $log '^Saved: '
+    $typed = Send-Keys $crashPlay 's'
+    $savedLine = Wait-NewLogLine $log '^Saved: ' $before
+    $onDisk = [IO.File]::ReadAllText($clipFile)
+    $sSaved = $typed -eq 0 -and $savedLine -like 'Saved: wrote clips/bass.notes; the version it replaced is kept as save #*' -and $onDisk -eq $sText
+    Add-Result "${keys}: S saves, as the person at the console" $sSaved `
+        $(if ($sSaved) { $savedLine } else { "Send-Keys exit code $typed; line: '$savedLine'; on disk: $($onDisk -eq $sText); see $log" })
+
+    $byHand = "# acceptance: Lee's edit by hand, not taken in`n@length 2bars`n"
+    [IO.File]::WriteAllText($clipFile, $byHand, $utf8)
+    Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: saved over the edit with O`n@length 2bars`n" } | Out-Null
+    $oText = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $before = Measure-LogLines $log '^Didn''t save, so as not to overwrite'
+    Send-Keys $crashPlay 's' | Out-Null
+    $refusedLine = Wait-NewLogLine $log '^Didn''t save, so as not to overwrite' $before
+    $offered = Select-String -Path $log -Pattern '^Press O to save over it anyway' -Quiet
+    $stillByHand = [IO.File]::ReadAllText($clipFile) -eq $byHand
+
+    $before = Measure-LogLines $log '^Saved: '
+    $typed = Send-Keys $crashPlay 'o'
+    $overLine = Wait-NewLogLine $log '^Saved: ' $before
+    $keptByHand = @(Get-ChildItem -LiteralPath (Join-Path $project '.hocket\saves') -Directory | Where-Object { $_.Name -like '* changed outside Hocket' } |
+                    Where-Object { [IO.File]::ReadAllText((Join-Path $_.FullName 'clips\bass.notes')) -eq $byHand })
+    $oSaved = $refusedLine -like '*clips/bass.notes changed outside Hocket*' -and $offered -and $stillByHand -and $typed -eq 0 `
+        -and $overLine -like 'Saved: wrote clips/bass.notes; the version it replaced is kept as save #*, changed outside Hocket, *' `
+        -and [IO.File]::ReadAllText($clipFile) -eq $oText -and $keptByHand.Count -eq 1
+    Add-Result "${keys}: S won't save over a file changed outside Hocket, and O then does, keeping it first" $oSaved `
+        $(if ($oSaved) { $overLine } else { "refused: '$refusedLine'; offered: $([bool] $offered); untouched until O: $stillByHand; after O: '$overLine'; kept: $($keptByHand.Count); see $log" })
+
+    Stop-Bridge (Join-Path $work 'keys-hocket-mcp.stderr.log') | Out-Null
 
     # Ctrl+C: nothing unsaved, so nothing kept.
     $howItEnded = Stop-Play $crashPlay

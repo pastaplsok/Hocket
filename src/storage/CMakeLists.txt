@@ -11,6 +11,8 @@ add_library(hocket_storage STATIC
     Recovery.h
     RecoveryCopy.cpp
     RecoveryCopy.h
+    SaveKeys.cpp
+    SaveKeys.h
     WatchedFolder.cpp
     WatchedFolder.h)
 

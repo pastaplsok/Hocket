@@ -75,4 +75,35 @@ bool interruptRequested()
 {
     return interrupted;
 }
+
+std::u32string typedKeys()
+{
+    std::u32string keys;
+    const auto input = GetStdHandle (STD_INPUT_HANDLE);
+    DWORD mode = 0;
+
+    if (input == nullptr || input == INVALID_HANDLE_VALUE || ! GetConsoleMode (input, &mode))
+        return keys; // not a console
+
+    // The console's input records, read only while there are some, so it
+    // never waits. With processed input (the default), Ctrl+C never gets here.
+    for (DWORD waiting = 0; GetNumberOfConsoleInputEvents (input, &waiting) && waiting > 0;)
+    {
+        INPUT_RECORD records[16];
+        DWORD read = 0;
+
+        if (! ReadConsoleInputW (input, records, 16, &read) || read == 0)
+            break;
+
+        for (DWORD i = 0; i < read; ++i)
+        {
+            const auto& event = records[i].Event.KeyEvent;
+
+            if (records[i].EventType == KEY_EVENT && event.bKeyDown && event.uChar.UnicodeChar != 0)
+                keys += static_cast<char32_t> (event.uChar.UnicodeChar); // letters are never surrogates
+        }
+    }
+
+    return keys;
+}
 }
