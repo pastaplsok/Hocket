@@ -120,6 +120,26 @@ namespace hocket::commands
         std::vector<project::DrumMapEntry> entries; // a list, not a map, so a name given twice is reported
     };
 
+    // Changes a drums track's drum map (SPEC §6.4): from the track's own map,
+    // the standard one or an empty one, names are removed, then names set on
+    // notes. A note has one name, so naming a note replaces the name it had,
+    // and a name set on another note leaves the one it was on. Carried out as
+    // a SetDrumMap, so it reads and undoes as one.
+    struct ChangeDrumMap
+    {
+        enum class Base
+        {
+            current,
+            standard,
+            empty
+        };
+
+        std::string trackId;
+        Base base = Base::current;
+        std::vector<std::string> remove;
+        std::vector<project::DrumMapEntry> set;
+    };
+
     //==============================================================================
     // What a new clip holds: one of these.
     struct EmptyClip
@@ -257,7 +277,7 @@ namespace hocket::commands
     };
 
     using Command = std::variant<WriteClip, SetTempo, SetTimeSignature, AddTrack, RemoveTrack, RenameTrack, MoveTrack, SetMix, SetInstrument,
-                                 SetDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, ReplaceProject, Revert, Play, Stop, Seek,
+                                 SetDrumMap, ChangeDrumMap, AddClip, MoveClip, RemoveClip, MakeClipUnique, ReplaceProject, Revert, Play, Stop, Seek,
                                  SetLoopRegion, ClearLoopRegion, SetLooping>;
 
     // Play, Stop, Seek, SetLoopRegion, ClearLoopRegion or SetLooping.

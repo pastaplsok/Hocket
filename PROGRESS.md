@@ -508,6 +508,7 @@ Still headless: `hocket-headless`, driven through the API. The GUI is Milestone 
 - **Build, in parts, committing each:**
   1. SPEC and this plan. Done.
   2. The bus: several commands as one history entry (`set_track`, `set_song`); `redo`'s author check (who did the undo); drum map changes as a command; `notes::patch` for `patch_clip`. Tests in `tests/core`.
+     Done: `CommandBus::executeAsOne` (planned in turn on a copy, all or none, descriptions joined with "; "), `redo (author, UndoScope)` (`Entry::undoneBy`; the default, any author, is the GUI's), `ChangeDrumMap` (carried out as a `SetDrumMap`), `notes::patch` (`core/notes/NotesPatch.h`). Tests: `CombinedCommandTests.cpp` (10 cases), `NotesPatchTests.cpp` (4).
   3. The transport: how much has played since play (time, and ticks for complete passes), from `EditSync`; a wrap or stop that a change causes, said in its result (the bus asks the transport after applying); the output meter's peak and clipped count restarting at each play (`MasterOutput`, through an interface the bus holds). Tests in `tests/core` and `tests/engine`.
   4. The tools in `hocket_api`: the 13 new, the 4 changed, the overview's new form. Tests in `tests/api`.
   5. The bridge's and the stress client's tests, `hocket-mcp` installed again, `docs/connecting-claude-code.md`, a silent acceptance run, PROGRESS.md.

@@ -716,4 +716,67 @@ edits::Plan plan (const project::Project& project, const SetDrumMap& command)
 
     return { { true, {} }, { edits::SetTrack { std::move (settings) } }, std::move (description), std::move (remarks) };
 }
+
+edits::Plan plan (const project::Project& project, const ChangeDrumMap& command)
+{
+    const auto* track = project::findTrack (project, command.trackId);
+
+    // An unknown track, or one with no drum map: SetDrumMap's refusals say so.
+    if (track == nullptr || track->type != project::TrackType::drums)
+        return plan (project, SetDrumMap { command.trackId, {} });
+
+    const auto fail = [track] (const std::string& why) { return refused ("change " + track->id + "'s drum map: " + why); };
+
+    std::map<int, std::string> names = command.base == ChangeDrumMap::Base::current  ? track->drumMap.byNote()
+                                     : command.base == ChangeDrumMap::Base::standard ? notes::standardDrumMap().byNote()
+                                                                                     : std::map<int, std::string> {};
+
+    const auto noteNamed = [&names] (std::string_view name) -> std::optional<int>
+    {
+        for (const auto& [note, existing] : names)
+            if (existing == name)
+                return note;
+
+        return std::nullopt;
+    };
+
+    for (const auto& name : command.remove)
+    {
+        const auto note = noteNamed (name);
+
+        if (! note)
+        {
+            notes::DrumMap map;
+
+            for (const auto& [n, existing] : names)
+                map.add (existing, n);
+
+            const auto nearest = map.nearestNames (name);
+            auto suggestion = nearest.empty() ? std::string() : "; did you mean " + nearest.front();
+
+            for (std::size_t i = 1; i < nearest.size(); ++i)
+                suggestion += (i + 1 == nearest.size() ? " or " : ", ") + nearest[i];
+
+            return fail ("there's no " + doubleQuoted (name) + " in it to remove" + (suggestion.empty() ? "" : suggestion + "?"));
+        }
+
+        names.erase (*note);
+    }
+
+    // A name is on one note, and a note has one name.
+    for (const auto& entry : command.set)
+    {
+        if (const auto old = noteNamed (entry.name))
+            names.erase (*old);
+
+        names[entry.note] = entry.name;
+    }
+
+    std::vector<project::DrumMapEntry> entries;
+
+    for (const auto& [note, name] : names)
+        entries.push_back ({ name, note });
+
+    return plan (project, SetDrumMap { command.trackId, std::move (entries) });
+}
 }

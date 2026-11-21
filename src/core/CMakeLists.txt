@@ -35,6 +35,8 @@ add_library(hocket_core STATIC
     notes/NotesParser.cpp
     notes/NotesSyntax.cpp
     notes/NotesSyntax.h
+    notes/NotesPatch.cpp
+    notes/NotesPatch.h
     notes/NotesWriter.cpp
     project/FileStamp.h
     project/JsonText.cpp

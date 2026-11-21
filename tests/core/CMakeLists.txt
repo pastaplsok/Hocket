@@ -1,6 +1,7 @@
 add_executable(hocket_core_tests
     BundledKitTests.cpp
     ClipCommandTests.cpp
+    CombinedCommandTests.cpp
     CommandBusPropertyTests.cpp
     CommandBusTests.cpp
     CommandSequenceTests.cpp
@@ -10,6 +11,7 @@ add_executable(hocket_core_tests
     KitTests.cpp
     NotesSyntaxTests.cpp
     NotesFormatTests.cpp
+    NotesPatchTests.cpp
     NotesPropertyTests.cpp
     PathsTests.cpp
     ProjectPropertyTests.cpp

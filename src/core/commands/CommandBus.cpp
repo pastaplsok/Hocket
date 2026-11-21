@@ -58,7 +58,7 @@ Result CommandBus::execute (const Command& command, const Author& author)
     if (isTransportCommand (command))
         return runTransportCommand (command);
 
-    auto planned = plan (command);
+    auto planned = plan (currentProject, command);
 
     // Invalid, or valid but changes nothing.
     if (! planned.result.ok || planned.edits.empty())
@@ -134,22 +134,102 @@ Result CommandBus::execute (const Command& command, const Author& author)
     return { true, "#" + std::to_string (id) + " " + planned.description + remarks };
 }
 
+Result CommandBus::executeAsOne (const std::vector<Command>& commands, const Author& author)
+{
+    if (author.name.empty())
+        return { false, "commands need an author, e.g. \"Lee\" or \"Claude\"" };
+
+    if (commands.size() == 1)
+        return execute (commands.front(), author);
+
+    // Each is planned against the project as the ones before leave it, on a
+    // copy, so nothing applies unless all of them can.
+    auto scratch = currentProject;
+    std::vector<Edit> all;
+    std::vector<std::string> descriptions;
+    std::vector<std::string> remarks;
+    std::vector<std::string> unchanged;
+
+    for (const auto& command : commands)
+    {
+        if (isTransportCommand (command))
+            return { false, "transport commands don't change the project, so they can't be part of a history entry with other commands" };
+
+        auto planned = plan (scratch, command);
+
+        if (! planned.result.ok)
+            return planned.result;
+
+        if (planned.edits.empty())
+        {
+            unchanged.push_back (planned.result.message);
+            continue;
+        }
+
+        std::vector<Change> ignored;
+
+        for (const auto& edit : planned.edits)
+            edits::apply (scratch, edit, ignored);
+
+        all.insert (all.end(), std::make_move_iterator (planned.edits.begin()), std::make_move_iterator (planned.edits.end()));
+        descriptions.push_back (std::move (planned.description));
+
+        if (! planned.remarks.empty())
+            remarks.push_back (std::move (planned.remarks));
+    }
+
+    const auto join = [] (const std::vector<std::string>& parts, std::string_view separator)
+    {
+        std::string text;
+
+        for (const auto& part : parts)
+            text += (text.empty() ? "" : std::string (separator)) + part;
+
+        return text;
+    };
+
+    if (all.empty())
+        return { true, join (unchanged, "; ") };
+
+    if (transaction && transaction->author != author)
+        closeTransactionPart();
+
+    auto applied = applyCommand (std::move (all));
+    undone.clear();
+
+    const auto description = join (descriptions, "; ");
+    const auto remarkText = remarks.empty() ? std::string() : ". " + join (remarks, ". ");
+
+    if (transaction && transaction->author == author)
+    {
+        transaction->edits.append (std::move (applied));
+        transaction->revision = nextRevision++;
+        gesture.reset();
+        return { true, description + " in your open transaction " + doubleQuoted (transaction->name) + "; it becomes a history entry when you commit"
+                           + remarkText };
+    }
+
+    const auto id = nextEntryId;
+    record (author, description, std::move (applied));
+    return { true, "#" + std::to_string (id) + " " + description + remarkText };
+}
+
 Result CommandBus::runTransportCommand (const Command& command)
 {
     return commands::runTransportCommand (command, currentProject, transportState, transport);
 }
 
-edits::Plan CommandBus::plan (const Command& command) const
+edits::Plan CommandBus::plan (const project::Project& project, const Command& command) const
 {
     return std::visit (Overloaded {
-                           [this] (const auto& c)
+                           [this, &project] (const auto& c)
                            {
-                               if constexpr (requires { planning::plan (currentProject, c, kitCatalog); })
-                                   return planning::plan (currentProject, c, kitCatalog);
+                               if constexpr (requires { planning::plan (project, c, kitCatalog); })
+                                   return planning::plan (project, c, kitCatalog);
                                else
-                                   return planning::plan (currentProject, c);
+                                   return planning::plan (project, c);
                            },
-                           [this] (const Revert& c) { return planRevert (c); },
+                           [this, &project] (const Revert& c) { return planRevert (project, c); },
 
                            // Transport commands never get here.
                            [] (const Play&) { return edits::Plan {}; },
@@ -162,7 +242,7 @@ edits::Plan CommandBus::plan (const Command& command) const
                        command);
 }
 
-edits::Plan CommandBus::planRevert (const Revert& command) const
+edits::Plan CommandBus::planRevert (const project::Project& project, const Revert& command) const
 {
     using planning::refused;
 
@@ -205,10 +285,10 @@ edits::Plan CommandBus::planRevert (const Revert& command) const
         return refused (message);
     }
 
-    if (project::write (*loaded.project) == project::write (currentProject))
+    if (project::write (*loaded.project) == project::write (project))
         return planning::unchanged ("the project is already as " + describe (*found) + " has it, so nothing changed and no history entry was added");
 
-    return planning::plan (currentProject, ReplaceProject { std::move (*loaded.project), "reverted to " + describe (*found) });
+    return planning::plan (project, ReplaceProject { std::move (*loaded.project), "reverted to " + describe (*found) });
 }
 
 //==============================================================================
@@ -418,17 +498,28 @@ Result CommandBus::undo (const Author& author, UndoScope scope)
     gesture.reset();
 
     const auto message = "undid #" + std::to_string (entry.info.id) + " " + doubleQuoted (entry.info.description) + " by " + displayName (entry.info.author);
+    entry.undoneBy = author;
     undone.push_back (std::move (entry));
     return { true, message };
 }
 
-Result CommandBus::redo (const Author& author)
+Result CommandBus::redo (const Author& author, UndoScope scope)
 {
     if (transaction && transaction->author == author)
         return { false, "can't redo while your transaction " + doubleQuoted (transaction->name) + " is open; commit or roll it back first" };
 
     if (undone.empty())
         return { false, "nothing to redo" };
+
+    if (const auto& top = undone.back(); scope == UndoScope::callersOwn && top.undoneBy != author)
+    {
+        const auto undoer = nameFor (top.undoneBy, author);
+        const auto caller = undoer == displayName (top.undoneBy) ? displayName (author) : "this one";
+
+        return { false, "didn't redo: the most recent undo, of #" + std::to_string (top.info.id) + " " + doubleQuoted (top.info.description)
+                            + ", was done by " + undoer + ", not " + caller + ", so redoing it would go against their undo. Leave it, or redo "
+                              "with force to redo it anyway" };
+    }
 
     auto entry = std::move (undone.back());
     undone.pop_back();

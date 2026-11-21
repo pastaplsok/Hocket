@@ -21,6 +21,7 @@ namespace hocket::commands::planning
     edits::Plan plan (const project::Project& project, const SetMix& command);
     edits::Plan plan (const project::Project& project, const SetInstrument& command, kits::KitCatalog* kits);
     edits::Plan plan (const project::Project& project, const SetDrumMap& command);
+    edits::Plan plan (const project::Project& project, const ChangeDrumMap& command);
 
     // ClipCommands.cpp
     edits::Plan plan (const project::Project& project, const WriteClip& command);

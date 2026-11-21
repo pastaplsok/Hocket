@@ -59,6 +59,15 @@ namespace hocket::commands
 
         Result execute (const Command& command, const Author& author);
 
+        // Carries out several commands as one history entry, for a client's
+        // single request that changes several things (SPEC §6.4: set_track,
+        // set_song). Each is planned against the project as the ones before
+        // it leave it, and all apply or none does. The entry's description is
+        // each changing command's, joined with "; "; commands that change
+        // nothing are left out, and if none changes anything, nothing is
+        // added. Transport commands can't be among them.
+        Result executeAsOne (const std::vector<Command>& commands, const Author& author);
+
         Result beginTransaction (const Author& author, const std::string& name);
         Result commitTransaction (const Author& author);
         Result rollbackTransaction (const Author& author);
@@ -72,7 +81,10 @@ namespace hocket::commands
         Result interruptTransaction (const Author& author);
 
         Result undo (const Author& author, UndoScope scope);
-        Result redo (const Author& author);
+
+        // With callersOwn, it refuses when someone else did the undo it would
+        // take back, as undo does for their changes (SPEC §3.1).
+        Result redo (const Author& author, UndoScope scope = UndoScope::anyAuthor);
 
         // Newest first. An open transaction's edits aren't listed until they're committed.
         std::vector<HistoryEntry> history() const;
@@ -162,6 +174,7 @@ namespace hocket::commands
             HistoryEntry info;
             Edits edits;
             Revision revision = 0; // the state after its edits; a new one each time a gesture merges into it
+            Author undoneBy;       // while it's in the undone list: who undid it
         };
 
         // The gesture whose next step can still merge into the newest entry (SPEC §3.1).
@@ -198,8 +211,8 @@ namespace hocket::commands
         Revision savedRevision = 0;
 
         Result runTransportCommand (const Command&);
-        edits::Plan plan (const Command&) const;
-        edits::Plan planRevert (const Revert&) const;
+        edits::Plan plan (const project::Project&, const Command&) const;
+        edits::Plan planRevert (const project::Project&, const Revert&) const;
 
         // Applies a command's edits, and says what they did.
         Edits applyCommand (std::vector<Edit> forward);
