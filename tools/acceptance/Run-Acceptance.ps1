@@ -13,6 +13,10 @@ so it makes no sound. What it checks:
     refuses Lee's change;
   - the recovery copy: written a few seconds after Claude's change, removed by the undo
     back to the saved state, and none left when --play ends with nothing unsaved;
+  - after --play is killed outright with a change unsaved: plain --play stops and asks,
+    without opening the device; --recover plays the change as one entry, which undo takes
+    back; and, after a second change and kill, --discard-recovery files the copy as a kept
+    save (which --check reads) and plays the files as saved;
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
   - Ctrl+C stops --play cleanly (exit code 0, its "stopped" line, the token file removed), and
     the driver's xrun count, where it reports one, is 0. JUCE's count of late audio callbacks is
@@ -125,6 +129,129 @@ function Test-HocketRunning {
         return $null -ne (Get-Process -Id $info.pid -ErrorAction SilentlyContinue)
     }
     catch { return $false }
+}
+
+# --play with these arguments, through cmd, with a console of its own and no window, so
+# Ctrl+C can reach it, and its output in $Log. Returns the cmd.exe, whose exit code is --play's.
+function Start-Play ([string] $Arguments, [string] $Log) {
+    $info = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', "/c `"`"$headless`" $Arguments > `"$Log`" 2>&1`""
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    return [Diagnostics.Process]::Start($info)
+}
+
+# Whether --play reached its loop, serving the API, within 30 s.
+function Wait-Looping ($Process, [string] $Log) {
+    $deadline = (Get-Date).AddSeconds(30)
+
+    while (-not $Process.HasExited -and (Get-Date) -lt $deadline) {
+        if ((Test-Path $Log) -and (Select-String -Path $Log -Pattern 'on a loop' -Quiet) -and (Test-Path $tokenFile)) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+
+    return $false
+}
+
+# Ends the hocket-headless that $Process (the cmd.exe running it) runs, at once, as a crash
+# would: no Ctrl+C, and nothing of its own cleaned up. Returns its process ID, or $null if
+# none was running.
+function Stop-PlayOutright ($Process) {
+    $running = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($Process.Id)" | Where-Object { $_.Name -eq 'hocket-headless.exe' } | Select-Object -First 1
+    if (-not $running) { return $null }
+
+    Stop-Process -Id $running.ProcessId -Force
+    $Process.WaitForExit(10000) | Out-Null
+    return $running.ProcessId
+}
+
+# Stops --play with Ctrl+C, as a person would, and waits for it: 'ctrl-c'; 'killed' if it
+# hadn't stopped 15 s later; or 'already-exited' if it had stopped before.
+function Stop-Play ($Process) {
+    if ($Process.HasExited) { return 'already-exited' }
+
+    $ctrlC = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-CtrlC.ps1'), $Process.Id `
+                                       -WindowStyle Hidden -Wait -PassThru
+
+    if ($Process.WaitForExit(15000)) {
+        $Process.WaitForExit()
+        return 'ctrl-c'
+    }
+
+    Write-Host "Send-CtrlC's exit code was $($ctrlC.ExitCode)"
+    Stop-PlayOutright $Process | Out-Null
+    if (-not $Process.HasExited) { $Process.Kill() }
+    $Process.WaitForExit()
+    return 'killed'
+}
+
+# hocket-mcp, started in the project folder as Claude Code starts it in its session's
+# folder, and initialized. Returns the reply to initialize.
+function Start-Bridge {
+    $info = New-Object Diagnostics.ProcessStartInfo $mcp
+    $info.UseShellExecute = $false
+    $info.WorkingDirectory = $project
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = $utf8
+    $script:bridge = [Diagnostics.Process]::Start($info)
+    $script:bridgeErrors = $script:bridge.StandardError.ReadToEndAsync()
+    $script:stdin = New-Object IO.StreamWriter($script:bridge.StandardInput.BaseStream, $utf8)
+    $script:stdin.NewLine = "`n"
+    $script:requestId = 0
+    return Send-Request 'initialize' @{ protocolVersion = '2025-11-25'; capabilities = @{}; clientInfo = @{ name = 'claude-code'; version = 'acceptance' } }
+}
+
+# Closes hocket-mcp's stdin, as Claude Code does, keeping what it wrote to stderr in
+# $ErrorLog. Whether it then exited by itself, with 0.
+function Stop-Bridge ([string] $ErrorLog) {
+    $script:stdin.Close()
+    $exited = $script:bridge.WaitForExit(10000)
+    if (-not $exited) { $script:bridge.Kill() }
+    [IO.File]::WriteAllText($ErrorLog, $script:bridgeErrors.Result, $utf8)
+    return $exited -and $script:bridge.ExitCode -eq 0
+}
+
+function Send-Request ([string] $Method, $Params) {
+    $script:requestId++
+    $stdin.WriteLine((@{ jsonrpc = '2.0'; id = $script:requestId; method = $Method; params = $Params } | ConvertTo-Json -Depth 10 -Compress))
+    $stdin.Flush()
+    return $bridge.StandardOutput.ReadLine() | ConvertFrom-Json
+}
+
+function Invoke-Tool ([string] $Tool, $Arguments = @{}) {
+    $reply = Send-Request 'tools/call' @{ name = $Tool; arguments = $Arguments }
+    return [pscustomobject] @{
+        IsError = [bool] $reply.result.isError
+        Text = (@($reply.result.content | ForEach-Object { $_.text }) -join "`n")
+        Blocks = @($reply.result.content | ForEach-Object { $_.text })
+    }
+}
+
+# This run's recovery copy, once it's there, within 8 s: its Copy folder, and Seconds
+# waited. $null if none came.
+function Wait-RecoveryCopy {
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+
+    while ($waited.Elapsed.TotalSeconds -lt 8) {
+        $copies = @(Get-RecoveryCopies $ourCopies)
+        if ($copies.Count -gt 0) { return [pscustomobject] @{ Copy = $copies[0].Copy; Seconds = [math]::Round($waited.Elapsed.TotalSeconds, 1) } }
+        Start-Sleep -Milliseconds 100
+    }
+
+    return $null
+}
+
+# Seconds until this run's recovery copies are gone, within 3 s; $null if they're still there.
+function Wait-RecoveryCopyGone {
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+
+    while ($waited.Elapsed.TotalSeconds -lt 3) {
+        if (@(Get-RecoveryCopies $ourCopies).Count -eq 0) { return [math]::Round($waited.Elapsed.TotalSeconds, 1) }
+        Start-Sleep -Milliseconds 50
+    }
+
+    return $null
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("hocket-acceptance-" + [IO.Path]::GetRandomFileName().Replace('.', ''))
@@ -241,23 +368,13 @@ if (-not $projectText.EndsWith($ending)) { throw "examples\m0-demo\project.json 
 $projectText = $projectText.Substring(0, $projectText.Length - $ending.Length) + $drumsTrack.Replace("`r`n", "`n") + "`n"
 [IO.File]::WriteAllText($projectFile, $projectText, $utf8)
 
+$deviceArguments = ''
+if ($Driver) { $deviceArguments += " --driver `"$Driver`"" }
+if ($Device) { $deviceArguments += " --device `"$Device`"" }
+
 $playLog = Join-Path $work 'play.log'
-$playArguments = "--play `"$project`" --watch --user Lee"
-if ($Driver) { $playArguments += " --driver `"$Driver`"" }
-if ($Device) { $playArguments += " --device `"$Device`"" }
-
-# Through cmd, with a console of its own and no window, so Ctrl+C can reach it.
-$info = New-Object Diagnostics.ProcessStartInfo 'cmd.exe', "/c `"`"$headless`" $playArguments > `"$playLog`" 2>&1`""
-$info.UseShellExecute = $false
-$info.CreateNoWindow = $true
-$play = [Diagnostics.Process]::Start($info)
-
-$deadline = (Get-Date).AddSeconds(30)
-$looping = $false
-while (-not $looping -and -not $play.HasExited -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 200
-    $looping = (Test-Path $playLog) -and (Select-String -Path $playLog -Pattern 'on a loop' -Quiet) -and (Test-Path $tokenFile)
-}
+$play = Start-Play "--play `"$project`" --watch --user Lee$deviceArguments" $playLog
+$looping = Wait-Looping $play $playLog
 
 $device = if (Test-Path $playLog) { (Select-String -Path $playLog -Pattern '^Playing on' | Select-Object -First 1).Line } else { '' }
 Add-Result '--play opens the device and loops' $looping $(if ($looping) { $device } else { "see $playLog" })
@@ -272,37 +389,7 @@ try {
     if (-not $looping) { throw "--play didn't start" }
 
     #--------------------------------------------------------------------------
-    # hocket-mcp, started in the project folder as Claude Code starts it in its session's folder.
-    $info = New-Object Diagnostics.ProcessStartInfo $mcp
-    $info.UseShellExecute = $false
-    $info.WorkingDirectory = $project
-    $info.RedirectStandardInput = $true
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    $info.StandardOutputEncoding = $utf8
-    $bridge = [Diagnostics.Process]::Start($info)
-    $bridgeErrors = $bridge.StandardError.ReadToEndAsync()
-    $stdin = New-Object IO.StreamWriter($bridge.StandardInput.BaseStream, $utf8)
-    $stdin.NewLine = "`n"
-    $script:requestId = 0
-
-    function Send-Request ([string] $Method, $Params) {
-        $script:requestId++
-        $stdin.WriteLine((@{ jsonrpc = '2.0'; id = $script:requestId; method = $Method; params = $Params } | ConvertTo-Json -Depth 10 -Compress))
-        $stdin.Flush()
-        return $bridge.StandardOutput.ReadLine() | ConvertFrom-Json
-    }
-
-    function Invoke-Tool ([string] $Tool, $Arguments = @{}) {
-        $reply = Send-Request 'tools/call' @{ name = $Tool; arguments = $Arguments }
-        return [pscustomobject] @{
-            IsError = [bool] $reply.result.isError
-            Text = (@($reply.result.content | ForEach-Object { $_.text }) -join "`n")
-            Blocks = @($reply.result.content | ForEach-Object { $_.text })
-        }
-    }
-
-    $init = Send-Request 'initialize' @{ protocolVersion = '2025-11-25'; capabilities = @{}; clientInfo = @{ name = 'claude-code'; version = 'acceptance' } }
+    $init = Start-Bridge
     $toolCount = @((Send-Request 'tools/list' @{}).result.tools).Count
     Add-Result 'hocket-mcp starts and lists the tools' ($init.result.serverInfo.name -eq 'hocket-mcp' -and $toolCount -eq 9) "$toolCount tools, MCP $($init.result.protocolVersion)"
 
@@ -312,24 +399,17 @@ try {
     Add-Result 'write_clip from Claude changes the clip' ((-not $write.IsError) -and $changed -like "*Claude's change*") ($write.Text -split "`n")[0]
 
     # The recovery copy (SPEC §4.5): about 3 s after changes stop.
-    $waited = [Diagnostics.Stopwatch]::StartNew()
-    $copies = @()
-    while ($copies.Count -eq 0 -and $waited.Elapsed.TotalSeconds -lt 8) {
-        Start-Sleep -Milliseconds 100
-        $copies = @(Get-RecoveryCopies $ourCopies)
-    }
-    Add-Result 'A recovery copy is written a few seconds after a change' ($copies.Count -eq 1) `
-        $(if ($copies.Count -eq 1) { "after $([math]::Round($waited.Elapsed.TotalSeconds, 1)) s: $($copies[0].Copy)" } else { "none within 8 s in $recoveryFolder" })
+    $copy = Wait-RecoveryCopy
+    Add-Result 'A recovery copy is written a few seconds after a change' ($null -ne $copy) `
+        $(if ($copy) { "after $($copy.Seconds) s: $($copy.Copy)" } else { "none within 8 s in $recoveryFolder" })
 
     $undo = Invoke-Tool 'undo'
     $restored = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
     Add-Result 'undo restores the old clip' ((-not $undo.IsError) -and $restored -eq $original) $undo.Text
 
     # Back to the saved state, so nothing is unsaved: removed at once.
-    $waited = [Diagnostics.Stopwatch]::StartNew()
-    while (@(Get-RecoveryCopies $ourCopies).Count -gt 0 -and $waited.Elapsed.TotalSeconds -lt 3) { Start-Sleep -Milliseconds 50 }
-    $left = @(Get-RecoveryCopies $ourCopies).Count
-    Add-Result 'Undo back to the saved state removes the recovery copy' ($left -eq 0) $(if ($left -eq 0) { "within $([math]::Round($waited.Elapsed.TotalSeconds, 1)) s" } else { 'still there after 3 s' })
+    $gone = Wait-RecoveryCopyGone
+    Add-Result 'Undo back to the saved state removes the recovery copy' ($null -ne $gone) $(if ($null -ne $gone) { "within $gone s" } else { 'still there after 3 s' })
 
     # Lee's change: saving the clip file, which --watch sends as Lee's write_clip.
     Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: Claude's second change`n@length 2bars`n" } | Out-Null
@@ -359,36 +439,128 @@ catch {
 }
 finally {
     if ($bridge) {
-        $stdin.Close()
-        $bridgeExited = $bridge.WaitForExit(10000)
-        if (-not $bridgeExited) { $bridge.Kill() }
-        [IO.File]::WriteAllText((Join-Path $work 'hocket-mcp.stderr.log'), $bridgeErrors.Result, $utf8)
-        Add-Result 'hocket-mcp exits when its client closes stdin' ($bridgeExited -and $bridge.ExitCode -eq 0) ''
+        $bridgeExited = Stop-Bridge (Join-Path $work 'hocket-mcp.stderr.log')
+        Add-Result 'hocket-mcp exits when its client closes stdin' $bridgeExited ''
     }
 
     #--------------------------------------------------------------------------
     # $play is the cmd.exe running --play, so its exit code is --play's.
-    $howItEnded = 'already-exited'
-
-    if (-not $play.HasExited) {
-        $ctrlC = Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Send-CtrlC.ps1'), $play.Id `
-                                           -WindowStyle Hidden -Wait -PassThru
-        $howItEnded = 'ctrl-c'
-
-        if (-not $play.WaitForExit(15000)) {
-            $play.Kill()
-            $howItEnded = 'killed'
-            Write-Host "Send-CtrlC's exit code was $($ctrlC.ExitCode)"
-        }
-    }
-
-    $play.WaitForExit()
+    $howItEnded = Stop-Play $play
     Write-Results (Get-StopResults -PlayLog $playLog -HowItEnded $howItEnded -ExitCode $play.ExitCode -TokenFileLeft (Test-Path $tokenFile))
 
     # Lee's change was taken in from its file, and hocket-stress put the clip back as it found
     # it, so the project is as its files are: --play keeps no recovery copy.
     $left = @(Get-RecoveryCopies $ourCopies)
     Add-Result '--play ends leaving no recovery copy, with nothing unsaved' ($left.Count -eq 0) $(if ($left.Count -gt 0) { $left[0].Copy } else { '' })
+}
+
+#==============================================================================
+# A crash with a change unsaved (SPEC §4.5; Lee, 2026-11-21): a change through the API,
+# its recovery copy written, then --play killed outright, with no Ctrl+C. Started again
+# on the same folder: plain --play stops and asks, without opening the device;
+# --recover plays the change as one entry, which undo takes back; and, after a second
+# change and kill, --discard-recovery files the copy as a kept save and plays the files
+# as saved. The clips stay empty of notes, so every --play here is silent too.
+$crash = 'After a forced kill'
+$crashPlay = $null
+
+try {
+    if (-not $looping) { throw "--play didn't start above, so there's nothing to crash" }
+    if (Test-HocketRunning) { throw "the --play above is still running" }
+
+    $playLee = "--play `"$project`" --user Lee$deviceArguments"
+
+    # A change through the API, its recovery copy, then the kill.
+    $log = Join-Path $work 'crash-1-killed.log'
+    $crashPlay = Start-Play $playLee $log
+    if (-not (Wait-Looping $crashPlay $log)) { throw "--play didn't start; see $log" }
+
+    Start-Bridge | Out-Null
+    $saved = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $write = Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: the change a crash would lose`n@length 2bars`n" }
+    if ($write.IsError) { throw "write_clip failed: $($write.Text)" }
+    $lost = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $copy = Wait-RecoveryCopy
+    $killed = Stop-PlayOutright $crashPlay
+    Stop-Bridge (Join-Path $work 'crash-1-hocket-mcp.stderr.log') | Out-Null
+    $kept = @(Get-RecoveryCopies $ourCopies)
+
+    Add-Result "${crash}: --play killed outright with a change unsaved leaves its recovery copy" ($null -ne $copy -and $null -ne $killed -and $kept.Count -eq 1) `
+        $(if (-not $copy) { "no copy within 8 s" } elseif ($null -eq $killed) { "no hocket-headless to kill" } else { "copy after $($copy.Seconds) s, process $killed killed: $($kept.Copy)" })
+
+    # Plain --play: it plays nothing and says what to do, before opening the device.
+    $log = Join-Path $work 'crash-2-plain.log'
+    $crashPlay = Start-Play $playLee $log
+    $exited = $crashPlay.WaitForExit(20000)
+    if (-not $exited) { Stop-Play $crashPlay | Out-Null }
+    $text = if (Test-Path $log) { [IO.File]::ReadAllText($log) } else { '' }
+    $copyAfter = @(Get-RecoveryCopies $ourCopies)
+
+    $asked = $exited -and $crashPlay.ExitCode -eq 1 -and $text -match 'This project has a recovery copy, written' `
+        -and $text -match 'Changes: rewrote the notes of 1 clip file' -and $text -match 'Nothing was played' -and $text -match '  --recover  ' `
+        -and $text -match '  --discard-recovery  ' -and $text -notmatch '(?m)^Playing on' -and $copyAfter.Count -eq 1 -and $copyAfter[0].Copy -eq $kept[0].Copy
+    Add-Result "${crash}: plain --play stops and asks, without opening the device" $asked `
+        $(if ($asked) { (($text -split "`r?`n") | Select-Object -First 1) } elseif (-not $exited) { "it was still running after 20 s; see $log" } else { "exit code $($crashPlay.ExitCode); see $log" })
+
+    # --recover: the change as one entry, Lee's, which undo (with force: it isn't Claude's) takes back.
+    $log = Join-Path $work 'crash-3-recover.log'
+    $crashPlay = Start-Play "$playLee --recover" $log
+    if (-not (Wait-Looping $crashPlay $log)) { throw "--play --recover didn't start; see $log" }
+
+    Start-Bridge | Out-Null
+    $recoveredLine = (Select-String -Path $log -Pattern '^Recovered: ' | Select-Object -First 1).Line
+    $entries = @((Invoke-Tool 'history').Text -split "`n" | Where-Object { $_ -match '^#\d+ ' })
+    $recovered = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $undo = Invoke-Tool 'undo' @{ force = $true }
+    $undone = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    $gone = Wait-RecoveryCopyGone
+
+    $played = $recoveredLine -and $entries.Count -eq 1 -and $entries[0] -match '^#\d+ Lee: recovered the unsaved changes in the recovery copy written ' `
+        -and $recovered -eq $lost -and -not $undo.IsError -and $undone -eq $saved -and $null -ne $gone
+    Add-Result "${crash}: --recover plays the change as one entry, which undo takes back" $played `
+        $(if ($played) { "$($entries[0]); undone, and the copy removed" } else { "history: $($entries -join ' | '); clip recovered: $($recovered -eq $lost); undo: $(($undo.Text -split "`n")[0]); clip back: $($undone -eq $saved); copy removed: $($null -ne $gone); see $log" })
+
+    # A second change and kill, for --discard-recovery.
+    $write = Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: a second change a crash would lose`n@length 2bars`n" }
+    if ($write.IsError) { throw "write_clip failed: $($write.Text)" }
+    if (-not (Wait-RecoveryCopy)) { throw "no recovery copy within 8 s of the second change" }
+    if ($null -eq (Stop-PlayOutright $crashPlay)) { throw "no hocket-headless to kill after the second change" }
+    Stop-Bridge (Join-Path $work 'crash-3-hocket-mcp.stderr.log') | Out-Null
+
+    # --discard-recovery: filed as a kept save, a project folder that --check reads, and the files played as saved.
+    $log = Join-Path $work 'crash-4-discard.log'
+    $crashPlay = Start-Play "$playLee --discard-recovery" $log
+    if (-not (Wait-Looping $crashPlay $log)) { throw "--play --discard-recovery didn't start; see $log" }
+
+    $filedLine = (Select-String -Path $log -Pattern '^Filed the recovery copy written .* as save #\d+, a discarded recovery copy' | Select-Object -First 1).Line
+    $keptSaves = @(Get-ChildItem -LiteralPath (Join-Path $project '.hocket\saves') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '* discarded recovery' })
+    $keptClip = if ($keptSaves.Count -eq 1) { [IO.File]::ReadAllText((Join-Path $keptSaves[0].FullName 'clips\bass.notes')) } else { '' }
+    $checkLog = Join-Path $work 'crash-4-check.log'
+    $checked = $keptSaves.Count -eq 1 -and (Invoke-Logged $headless @('--check', $keptSaves[0].FullName) $checkLog) -eq 0
+    Start-Bridge | Out-Null
+    $playing = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
+    Stop-Bridge (Join-Path $work 'crash-4-hocket-mcp.stderr.log') | Out-Null
+    $copiesLeft = @(Get-RecoveryCopies $ourCopies).Count
+
+    $filed = $filedLine -and $keptSaves.Count -eq 1 -and $keptClip -like '*a second change a crash would lose*' -and $checked -and $playing -eq $saved -and $copiesLeft -eq 0
+    Add-Result "${crash}: --discard-recovery files the copy as a kept save, and plays the files as saved" $filed `
+        $(if ($filed) { "$($keptSaves[0].Name); --check: $((Get-Content $checkLog | Select-Object -First 1))" } else { "filed: '$filedLine'; kept saves: $($keptSaves.Count); kept clip has the change: $($keptClip -like '*a second change*'); --check OK: $checked; playing the saved clip: $($playing -eq $saved); copies left: $copiesLeft; see $log" })
+
+    # Ctrl+C: nothing unsaved, so nothing kept.
+    $howItEnded = Stop-Play $crashPlay
+    $stoppedLine = (Select-String -Path $log -Pattern '^stopped' | Select-Object -Last 1).Line
+    $copiesLeft = @(Get-RecoveryCopies $ourCopies).Count
+    $clean = $howItEnded -eq 'ctrl-c' -and $crashPlay.ExitCode -eq 0 -and $stoppedLine -and $copiesLeft -eq 0
+    Add-Result "${crash}: the last --play stops cleanly on Ctrl+C, leaving no recovery copy" $clean `
+        $(if ($clean) { '' } else { "ended: $howItEnded, exit code $($crashPlay.ExitCode), stopped line: '$stoppedLine', copies left: $copiesLeft; see $log" })
+    $crashPlay = $null
+}
+catch {
+    Add-Result "${crash}: the checks ran to the end" $false $_.Exception.Message
+}
+finally {
+    if ($bridge -and -not $bridge.HasExited) { Stop-Bridge (Join-Path $work 'crash-hocket-mcp.stderr.log') | Out-Null }
+    if ($crashPlay -and -not $crashPlay.HasExited) { Stop-Play $crashPlay | Out-Null }
 }
 
 #==============================================================================
