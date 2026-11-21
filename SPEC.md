@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.25** — 2026-11-21
+> Status: **Draft v0.26** — 2026-11-21
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -68,7 +68,7 @@ The primary use case is **human + AI co-production with a full GUI**. Fully auto
 - Every applied command becomes part of undo history, **tagged with its author** (`Lee`, `Claude`, `local-model`, `script:<name>`).
 - Multi-step operations can be grouped into a **transaction** that appears as a single named undo step (e.g. "Claude: wrote bridge"). Its name is one line of text, at most 100 bytes, since the history lists one entry per line.
 - **One linear undo history**, shared by every client. Undo always takes back the newest entry. Entries have stable numbers (`#7`).
-- **AI undo checks the author.** The MCP `undo` tool refuses when the newest entry isn't the caller's, with a message naming who made that change and what it was (e.g. `the most recent change, #7 "wrote clip clp-bass (14 notes)", was made by Lee, not Claude`). Passing `force` undoes it anyway. Undo from the GUI works normally, whoever made the change.
+- **AI undo checks the author.** The MCP `undo` tool refuses when the newest entry isn't the caller's, with a message naming who made that change and what it was (e.g. `the most recent change, #7 "wrote clip clp-bass (14 notes)", was made by Lee, not Claude`). Passing `force` undoes it anyway. Undo from the GUI works normally, whoever made the change. The MCP `redo` tool checks the same way, against whoever did the undo it would take back.
 - **Authors are compared by identity: name + session ID.** The MCP bridge generates a session ID at startup and keeps it across reconnects to the DAW, so two Claude sessions are different authors, and a client that reconnects is still the author of its own entries. Display names stay friendly ("Claude"), optionally with a label the client provides when it connects (§6.3); when two authors share a name, messages say which one made the change ("Claude in another session", "Claude (drums)"). The person at the DAW has one fixed identity; `hocket-headless` takes its display name from `--user`.
 - **Transactions and other authors.** One transaction can be open at a time. A command from another author never waits for it: the transaction's edits so far become their own history entry ("wrote bridge (part 1)"), the other command follows, and the transaction carries on as part 2. History stays linear, and every entry can be undone on its own. Rolling back takes back only the current part.
 - **Interrupted transactions are kept, not lost.** If the client that opened a transaction disconnects, the bus commits what the transaction holds as an entry marked "(interrupted)" (`wrote bridge (interrupted)`, or `wrote bridge (part 2, interrupted)` after a split). The entry keeps the transaction's author, so it can be undone like any other, including by that client when it reconnects. A transaction with no edits just closes. An **idle timeout** is the backstop for a client that stays connected but stops sending: it closes the transaction the same way. It counts from the owning client's last request of any kind and is **10 minutes**, long enough to cover a model thinking between calls. Erring long costs little: an open transaction never makes anyone's single edits wait. The client's next tool result says what happened to its transaction, even after a reconnect.
@@ -391,6 +391,12 @@ Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a 
 - `read_clip` returns the stored text in canonical form, verbatim, in a content block of its own; the clip's details (ID, track, file, position, length) come in the block before it. A model can edit the text and send it straight back.
 - `write_clip`'s result names the new history entry and says whether the text was stored exactly as sent. When canonical form differs, it says briefly how (lines rewritten, with examples; lines sorted; spacing; blank lines), so the model knows its copy is out of date. On a drums track, it also lists the notes the drum map doesn't name, and on a drum sampler's track the notes its kit has no piece for, or that none sound because the kit can't play (§5.2).
 - Resizing a clip is a `write_clip` with a new `@length`. On a linked clip it resizes every clip using the file, and a longer `@length` must fit each of them. A note can't start at or after the clip's end (§5.4), so a shorter `@length` must leave out the notes past it.
+- `read_clip` can return some of a clip's bars (`"5-8"`, in the clip's own bars as its positions count them): its header comments, its `@length` line, and the lines whose notes start in those bars, with their comments. That's enough for `patch_clip`, but not for `write_clip`, which takes the whole text.
+- **`patch_clip`** changes some of a clip's notes without sending all of them. Each edit has `old` lines, `new` lines, or both, in `.notes` form.
+  - It matches **notes, not lines**. `old`'s lines are read as notes, each of which must be in the clip at that position and pitch, with that length and velocity, and they're removed; `new`'s notes are added. So spacing doesn't matter (`read_clip`'s text is column-aligned), and a note in a chord, or in a line merged from several (§5.4), matches on its own: `old: "1.1 hat-closed 1/16 v100"` takes the hat out of `1.1 [kick hat-closed] 1/16 v100`. Pitches compare by number, so `Eb2` matches `D#2`, and a drum name matches its note.
+  - **Comments:** a comment in `old` must be the stored line's; a line in `old` without one matches whatever comment the stored line has. A comment stays with its line while any of that line's notes remain, and goes with the last of them. Comments in `new` go with their lines.
+  - Edits apply in order, each to the clip the previous one left, **all or none**; the clip is then checked and stored as `write_clip`'s is, and the result is `write_clip`'s, with what each edit did. `patch_clip` changes notes only: `@length` changes through `write_clip`.
+  - **When a note isn't found**, the error shows the clip's lines in that bar now. **When it's found but its length, velocity or comment differs**, the error says which, and shows the stored line. A note in `new` that's already in the clip (same position and pitch) is an error that says to put it in `old` too.
 
 ### 6.3 Transport
 - The DAW exposes a **localhost WebSocket API**, on 127.0.0.1 only. (Chosen over Windows named pipes: easier to debug and not platform-specific.)
@@ -413,23 +419,40 @@ Reading a clip returns `.notes` text; writing a clip accepts `.notes` text or a 
   - One DAW serves the API at a time. If the file names a running Hocket (same process ID and program name, so a reused ID doesn't count), a second one refuses to start. A file left behind by a crash is replaced. So that two starting together can't both find none, each first takes a lock file next to the token file (`api.lock`), held until it exits; the OS lets go of it if it crashes.
 - **No web pages.** Any web page can open a WebSocket to 127.0.0.1, and browsers always send the page's origin. The token keeps pages out anyway; on top of that, a connection whose `Origin` isn't a `ws://` or `wss://` URL is closed before it can send anything. Native clients send no `Origin`, or their own `ws://` URL (IXWebSocket's client does).
 
-### 6.4 Tool set (initial sketch)
-Prefer a small set of expressive tools over many tiny ones.
+### 6.4 Tool set
+Prefer a small set of expressive tools over many tiny ones. Arguments are flat: each tool does one kind of thing, except `transport`. Values are written as `project.json` writes them (`"9.1"`, `"-6dB"`, `"L20"`, `"6/8"`), objects are named by ID, never by index, and results are the command bus's own messages (`#12 set trk-bass's volume to -6dB`). Tool descriptions, results and errors are written for an LLM reader.
 
-| Tool | Purpose |
-|---|---|
-| `get_project_overview` | Tempo, structure, tracks, devices, clip placements (in song order), whether it's playing — a compact summary. |
-| `read_clip` / `write_clip` / `patch_clip` | Note and audio clip contents in text form. |
-| `read_automation` / `write_automation` | Automation lanes. |
-| `add_track` / `remove_track` / `set_routing` | Track and mixer structure. |
-| `add_device` / `set_params` | Device chains and parameter changes (native + VST). |
-| `begin_transaction` / `commit` / `rollback` | Group changes into one named undo step. |
-| `transport` | Play, stop, loop region, position. |
-| `render_section` | Render a time range to audio for analysis. |
-| `analyze` | Run analysis tools on a render (see §7). |
-| `undo` / `history` | Inspect and revert history, filterable by author. `undo` refuses when the newest entry isn't the caller's, unless `force` is passed (§3.1). |
+Milestone 1's set (agreed with Lee on 2026-11-21), 22 tools:
 
-Milestone 0 has `get_project_overview`, `read_clip`, `write_clip`, `undo`, `history` (no author filter yet), `begin_transaction` / `commit` / `rollback`, and `transport` (play, stop). Tool descriptions, results and errors are written for an LLM reader; `write_clip`'s description includes a short reference to the `.notes` format.
+| Tool | Arguments | What it does |
+|---|---|---|
+| `get_project_overview` | none | The tempo, time signature and song length; the transport and output lines, as `transport` gives them; every track with its mix, devices, drum map and clips (IDs, positions, lengths, note counts, links); the drum kits in use, with the names each plays, and those installed; the latest history entry; any open transaction; whether anything is unsaved. |
+| `read_clip` | `clip_id`, `bars`? | A clip's `.notes` text, whole or some of its bars (§6.2). |
+| `write_clip` | `clip_id`, `notes` | Replaces a clip's notes; a new `@length` resizes it (§6.2). Its description has the `.notes` reference and the standard drum map. |
+| `patch_clip` | `clip_id`, `edits`: [{`old`?, `new`?}] | Removes and adds notes (§6.2). |
+| `add_clip` | `track_id`, `start`, one of `bars` (empty), `notes`, `linked_to`, `copy_of`; `id`?, `file`? | A new clip. Hocket makes its ID and file name unless given. |
+| `move_clip` | `clip_id`, `start`, `track_id`? | To a new start, and another track if given. |
+| `remove_clip` | `clip_id` | |
+| `make_clip_unique` | `clip_id`, `file`? | Gives a linked clip a file of its own. |
+| `add_track` | `type`, `name`, `instrument`?, `kit`?, `before`?, `after`?, `id`? | A drums track gets the standard drum map. |
+| `set_track` | `track_id`, any of `name`, `before`, `after`, `volume`, `pan`, `mute`, `solo`, `instrument` (`"none"` too), `kit`, `drum_map` | What one call changes is one history entry. |
+| `remove_track` | `track_id` | With its clips. |
+| `set_song` | `tempo`?, `time_signature`? | Both at once are one history entry. |
+| `transport` | `loop_region`?, `loop`?, `seek`?, `action`? | Applied in that order; with no arguments, the transport's state (below). |
+| `undo` / `redo` | `force`? | `undo` refuses when the newest entry isn't the caller's, and `redo` when someone else did the undo it would take back, unless `force` is passed (§3.1). |
+| `history` | `limit`?, `author`? | The latest entries, newest first. `author` is `"you"`, `"others"`, or a name as history shows it. |
+| `begin_transaction` / `commit` / `rollback` | `name` (begin) | One named undo step (§3.1). |
+| `save` | `name`?, `overwrite`? | Saves the project (§4.5). Its description says to save when the user asks, and to pass `overwrite` only when they say to save over files changed outside Hocket. |
+| `list_saves` | `limit`? | The kept saves, newest first, and whether anything is unsaved. |
+| `revert` | `save` | Brings back a kept save, as one history entry. Its description says to revert only when the user asks. |
+
+- **The overview's drum maps** are shown as their differences from the standard map (§5.2), which `write_clip`'s description lists once: `drum map: standard`, or `standard, rim=37, -cabasa`; a map whose whole list is shorter is shown whole, as `empty, kick=36, snare=38`. That form is also what `set_track`'s `drum_map` takes: `"rim=37"` names note 37 rim (its old name goes, since a note has one name, and rim leaves any other note), `"-cabasa"` removes a name, and a first item `standard` or `empty` starts from that map rather than the track's. Notes never change, only the names clips use for them.
+- **The overview shows a clip's file** only when it isn't the one the clip's ID implies (`clp-verse` → `clips/verse.notes`), or the clip is linked; a tool description says so.
+- **The transport's state:** what play plays (the loop region or the whole song), on a loop or once, where play starts, whether it's playing and where the playhead is; and the **output line**: the peak level and the count of samples over full scale, which restart at each transport play, with how much has played since: the time, and the complete passes of what plays when looping ("Output since play started: 42 s, 2 complete passes; peak +0.4 dBFS, 312 samples over full scale, so the mix clips"). It needs `--play`'s master meter (§9), whose exit report still covers the whole run.
+- **A change that moves the playhead or stops playback says so** in its result: one that ends the song before the playhead wraps it while looping (§3.3), or stops playback with loop off.
+- **Annotations:** the four reading tools carry MCP's `readOnlyHint`. The others carry none until Lee decides on the rest (`destructiveHint` especially, whose effect on Claude Code's approval prompts was looked into on 2026-11-21).
+
+Later milestones add `read_automation` / `write_automation` (Milestone 6), routing and device tools with `set_params` (Milestone 5), and `render_section` / `analyze` (Milestone 8, §7).
 
 ### 6.5 Proposal mode
 Optional toggle: AI edits arrive as **pending** — shown as ghost notes / highlighted changes — and the user accepts or rejects them, individually or as a batch.
