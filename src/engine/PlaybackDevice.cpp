@@ -95,16 +95,65 @@ namespace
         return "no driver has an output device called '" + device + "'; " + didYouMean (outputs, device) + "--list-devices lists them";
     }
 
-    // A driver's own error says what failed ("Device didn't start correctly",
-    // as FL Studio ASIO does), not what to try.
-    std::string whatToTry (const juce::AudioIODeviceType& type, const juce::String& error)
+    // A name as a command-line argument: as it is if it's one plain word, otherwise in double quotes.
+    std::string argument (const juce::String& name)
     {
-        const auto name = type.getTypeName().toStdString();
-        const auto driver = type.getTypeName().containsChar (' ') ? "\"" + name + "\"" : name;
+        const auto plain = name.isNotEmpty() && name.containsOnly ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-");
+        return plain ? name.toStdString() : "\"" + name.toStdString() + "\"";
+    }
 
-        return error.trim().trimCharactersAtEnd (".").toStdString()
-             + ". Its driver may be set to an output that's missing or in use by another program: check the driver's own settings, "
-               "or choose another device (--list-devices --driver " + driver + " lists them)";
+    // One line for each output, with the options that pick it, ready to paste.
+    std::string pickLines (const juce::AudioIODeviceType& type, const juce::StringArray& outputs)
+    {
+        std::string lines;
+
+        for (const auto& name : outputs)
+            lines += "\n  --driver " + argument (type.getTypeName()) + " --device " + argument (name);
+
+        return lines;
+    }
+
+    // "To play on another of Windows Audio's outputs, add one of these to --play:"
+    // and a line for each, or that it has none. `except` is the one that
+    // wouldn't open, if it's known.
+    std::string choices (const juce::AudioIODeviceType& type, const juce::String& except = {})
+    {
+        const auto driver = type.getTypeName().toStdString();
+        const auto other = except.isEmpty() ? "" : "other ";
+        auto outputs = type.getDeviceNames (false);
+        outputs.removeString (except);
+
+        if (outputs.isEmpty())
+            return driver + " has no " + other + "outputs; --list-devices lists the other drivers' outputs";
+
+        return "To play on " + std::string (except.isEmpty() ? "one" : "another") + " of " + driver + "'s outputs, add one of these to --play:"
+             + pickLines (type, outputs) + "\n--list-devices lists the other drivers' outputs.";
+    }
+
+    // A driver's error as one sentence, without its closing punctuation, so
+    // "Couldn't open the output device!" (WASAPI's) can be followed by more.
+    std::string sentence (const juce::String& error)
+    {
+        auto text = error.replaceCharacters ("\r\n\t", "   ").trim();
+
+        while (text.contains ("  "))
+            text = text.replace ("  ", " ");
+
+        return text.trimCharactersAtEnd (".!").toStdString();
+    }
+
+    // A driver's own error says what failed ("Device didn't start correctly",
+    // as FL Studio ASIO does), not what to try: so its other outputs, each with
+    // the options that pick it.
+    std::string couldNotOpen (const juce::AudioIODeviceType& type, const juce::String& device, const juce::String& error)
+    {
+        // An ASIO driver is often set to play through another device, which may be missing.
+        const auto why = type.getTypeName() == "ASIO"
+                             ? std::string ("Its driver may be set to an output that's missing or in use by another program: check the driver's own settings.")
+                             : std::string ("Another program may be holding it.");
+
+        return "couldn't open " + type.getTypeName().toStdString() + " device '" + device.toStdString() + "': " + sentence (error) + ". " + why + "\n"
+             + choices (type, device);
     }
 
     // Opens the output device asked for, keeping the sample rate and buffer size if it can.
@@ -154,7 +203,7 @@ namespace
             setup.useDefaultOutputChannels = true;
 
             if (const auto error = devices.setAudioDeviceSetup (setup, true); error.isNotEmpty())
-                return "couldn't open " + type->getTypeName().toStdString() + " device '" + deviceName.toStdString() + "': " + whatToTry (*type, error);
+                return couldNotOpen (*type, deviceName, error);
         }
 
         return {};
@@ -194,7 +243,7 @@ namespace
         auto* device = devices.getCurrentAudioDevice();
 
         if (device == nullptr)
-            return "no audio device is open to set the sample rate or buffer size of; choose one with --driver and --device (--list-devices lists them)";
+            return noDeviceOpened (devices);
 
         const auto label = device->getTypeName().toStdString() + " device '" + device->getName().toStdString() + "'";
         const auto rates = wholeNumbers (device->getAvailableSampleRates());
@@ -290,6 +339,17 @@ std::string openDevice (juce::AudioDeviceManager& devices, const DeviceChoice& c
         return setRateAndSize (devices, choice.sampleRate, choice.bufferSize);
 
     return {};
+}
+
+std::string noDeviceOpened (juce::AudioDeviceManager& devices)
+{
+    const std::string start = "no audio device would open (--play tries the one used last time, then its driver's default)";
+    const auto* type = devices.getCurrentDeviceTypeObject();
+
+    if (type == nullptr)
+        return start + "; pick one with --driver and --device (--list-devices lists them)";
+
+    return start + ".\n" + choices (*type);
 }
 
 DeviceList listDevices (juce::AudioDeviceManager& devices, const std::string& driver, const std::string& device)

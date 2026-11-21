@@ -362,28 +362,61 @@ TEST_CASE ("a driver that carries on as it was, though it offers what was asked 
     CHECK (pick (devices, "", "", 0, 512) == "Test device 'Interface' is using a buffer of 256 samples: its driver didn't switch to the 512 asked for");
 }
 
-TEST_CASE ("a device whose driver won't start says what to try")
+TEST_CASE ("a device whose driver won't start lists the driver's other outputs, and the options that pick each")
+{
+    juce::AudioDeviceManager devices;
+    Offered broken { "Speakers (Realtek(R) Audio)" };
+    broken.failsToOpen = "Couldn't open the output device!"; // as WASAPI says it
+    addTestDevices (devices, { broken, { "AI Noise-cancelling Output (ASUS Utility)" }, { "Interface" } });
+
+    CHECK (pick (devices, "Test", "Speakers (Realtek(R) Audio)")
+           == "couldn't open Test device 'Speakers (Realtek(R) Audio)': Couldn't open the output device. Another program may be holding it.\n"
+              "To play on another of Test's outputs, add one of these to --play:\n"
+              "  --driver Test --device \"AI Noise-cancelling Output (ASUS Utility)\"\n"
+              "  --driver Test --device Interface\n"
+              "--list-devices lists the other drivers' outputs.");
+
+    // A driver alone tries its default, the broken one, and says the same.
+    CHECK (pick (devices, "Test", "").starts_with ("couldn't open Test device 'Speakers (Realtek(R) Audio)'"));
+    CHECK (devices.getCurrentAudioDevice() == nullptr);
+
+    // Another of its devices still opens.
+    CHECK (pick (devices, "Test", "Interface").empty());
+}
+
+TEST_CASE ("a device that won't start, on a driver with no other outputs, says so")
 {
     juce::AudioDeviceManager devices;
     Offered broken { "Interface" };
-    broken.failsToOpen = "Device didn't start correctly";
-    addTestDevices (devices, { { "Speakers" }, broken });
+    broken.failsToOpen = "Can't open the audio device!\n\nThis may be because another application is using it"; // JUCE's, on two lines
+    addTestDevices (devices, { broken });
 
     CHECK (pick (devices, "Test", "Interface")
-           == "couldn't open Test device 'Interface': Device didn't start correctly. Its driver may be set to an output that's missing or in use "
-              "by another program: check the driver's own settings, or choose another device (--list-devices --driver Test lists them)");
-
-    // Another of its devices still opens.
-    CHECK (pick (devices, "Test", "Speakers").empty());
+           == "couldn't open Test device 'Interface': Can't open the audio device! This may be because another application is using it. "
+              "Another program may be holding it.\n"
+              "Test has no other outputs; --list-devices lists the other drivers' outputs");
 }
 
-TEST_CASE ("with no device open, there's nothing to set the sample rate of")
+TEST_CASE ("when no device opens by itself, the driver's outputs are listed with the options that pick each")
 {
     juce::AudioDeviceManager devices;
-    addTestDevices (devices, { { "Interface" } });
+    Offered broken { "Speakers" };
+    broken.failsToOpen = "Couldn't open the output device!";
+    addTestDevices (devices, { broken, { "Headphones (USB)" } });
 
-    CHECK (pick (devices, "", "", 48000)
-           == "no audio device is open to set the sample rate or buffer size of; choose one with --driver and --device (--list-devices lists them)");
+    // As Tracktion starts the device manager when it has no saved device: the default, which won't open.
+    devices.initialise (0, 2, nullptr, true);
+    REQUIRE (devices.getCurrentAudioDevice() == nullptr);
+
+    const auto expected = "no audio device would open (--play tries the one used last time, then its driver's default).\n"
+                          "To play on one of Test's outputs, add one of these to --play:\n"
+                          "  --driver Test --device Speakers\n"
+                          "  --driver Test --device \"Headphones (USB)\"\n"
+                          "--list-devices lists the other drivers' outputs.";
+    CHECK (engine::noDeviceOpened (devices) == expected);
+
+    // Nor is there one to set the sample rate of.
+    CHECK (pick (devices, "", "", 48000) == expected);
 }
 
 TEST_CASE ("lists of numbers are written with evenly spaced runs as ranges")

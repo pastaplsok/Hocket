@@ -30,8 +30,14 @@ namespace hocket::engine
     // a device, the first driver that lists it; with neither, it keeps what's
     // open. Then sets the sample rate and buffer size asked for, if the device
     // offers them; one it doesn't offer changes nothing. Tracktion saves what's
-    // open for the next run. Returns an error, or an empty string.
+    // open for the next run. Returns an error, or an empty string. A device that
+    // won't open gets the driver's other outputs, a line of options for each.
     std::string openDevice (juce::AudioDeviceManager& devices, const DeviceChoice& choice);
+
+    // For --play when no device opened by itself (the one used last time, then
+    // its driver's default): what to try, the driver's outputs with a line of
+    // options for each.
+    std::string noDeviceOpened (juce::AudioDeviceManager& devices);
 
     struct DeviceList
     {

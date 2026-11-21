@@ -628,7 +628,7 @@ namespace
 
         if (devices.getCurrentAudioDevice() == nullptr)
         {
-            std::cerr << "no audio device could be opened; pick one with --driver and --device (--list-devices lists them)\n";
+            std::cerr << hocket::engine::noDeviceOpened (devices) << "\n";
             return 1;
         }
 
