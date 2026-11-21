@@ -30,6 +30,12 @@ namespace hocket::commands
         // latest change. Otherwise it's from before Hocket.
         bool changedOutside = false;
 
+        // With no author: the version is a recovery copy, unsaved changes that
+        // `--play --discard-recovery` filed with the kept saves rather than
+        // play, so revert can still bring them back; timed by when it was
+        // written (SPEC §4.5).
+        bool discardedRecovery = false;
+
         bool operator== (const SaveInfo&) const = default;
     };
 
@@ -49,11 +55,12 @@ namespace hocket::commands
 
     // "save #4, by Lee, 2026-11-20 14:02, \"before the bridge experiment\"";
     // "save #1, from before Hocket, 2026-11-18 09:15"; "save #5, changed
-    // outside Hocket, 2026-11-20 14:05".
+    // outside Hocket, 2026-11-20 14:05"; "save #6, a discarded recovery
+    // copy, 2026-11-21 10:30".
     std::string describe (const KeptSave& save);
 
-    // "Lee", "before Hocket" or "changed outside Hocket": who a version is by,
-    // as a kept save's folder name has it.
+    // "Lee", "before Hocket", "changed outside Hocket" or "discarded
+    // recovery": who a version is by, as a kept save's folder name has it.
     std::string savedBy (const SaveInfo& info);
 
     // A clip file no clip uses any more, moved out of the way on save.

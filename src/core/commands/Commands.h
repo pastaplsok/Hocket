@@ -186,6 +186,11 @@ namespace hocket::commands
         std::string description; // the history entry's; "replaced the project" if empty
     };
 
+    // What replacing `from` with `to` changes, as ReplaceProject's result says
+    // it: "Changes: the tempo (120 BPM to 130 BPM); added trk-keys; removed
+    // trk-lead; changed trk-bass; rewrote the notes of 2 clip files".
+    std::string replacementChanges (const project::Project& from, const project::Project& to);
+
     // Brings back a kept save (SPEC §4.5), by its number ("#4"), as one
     // history entry: the session's project becomes the save's, read and
     // checked like a project folder. Nothing on disk changes until the next save.

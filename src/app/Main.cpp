@@ -21,6 +21,7 @@
 #include "engine/kits/KitLibrary.h"
 #include "platform/Platform.h"
 #include "storage/ProjectFolder.h"
+#include "storage/Recovery.h"
 #include "storage/WatchedFolder.h"
 
 #include <tracktion_engine/tracktion_engine.h>
@@ -60,7 +61,7 @@ namespace
                "                                                  in a new or empty folder\n"
                "       hocket-headless --play <project-folder> [--driver <type>] [--device <name>]\n"
                "                       [--sample-rate <Hz>] [--buffer-size <samples>] [--master-volume <dB>]\n"
-               "                       [--watch] [--user <name>]\n"
+               "                       [--watch] [--user <name>] [--recover | --discard-recovery]\n"
                "                                                  play the project on a loop until Ctrl+C\n"
                "       hocket-headless --list-devices [--driver <type>] [--device <name>]\n"
                "                                                  list audio devices by driver type; for a driver\n"
@@ -88,7 +89,16 @@ namespace
                "                            play the change: it's sent as your command (a write_clip, or one\n"
                "                            replacing the project), so it can be undone like any other edit\n"
                "  --user <name>             your name in the history and in messages to AI clients, e.g. \"was\n"
-               "                            made by Lee, not Claude\". Default: user\n";
+               "                            made by Lee, not Claude\". Default: user\n"
+               "  --recover                 play the recovery copy an earlier session left, with changes it\n"
+               "                            never saved: they come in as one history entry, unsaved, which\n"
+               "                            undo takes back. Without this or --discard-recovery, --play won't\n"
+               "                            play a project that has one\n"
+               "  --discard-recovery        play the files as saved, filing that recovery copy with the project's\n"
+               "                            kept saves, so revert can still bring it back\n"
+               "\n"
+               "A few seconds after changes stop, --play writes the project to a recovery copy in\n"
+               "%LOCALAPPDATA%\\Hocket\\Recovery, so a crash loses nothing. It's removed once nothing is unsaved.\n";
     }
 
     // A whole number above zero, or nullopt.
@@ -301,6 +311,7 @@ namespace
         double masterVolume = hocket::engine::defaultMasterVolume; // dB (SPEC §9)
         bool watch = false;
         std::string user = "user"; // the display name of the person at the DAW (SPEC §3.1)
+        hocket::storage::RecoveryChoice recovery = hocket::storage::RecoveryChoice::none;
         std::string error;         // an option's value that's wrong, and why
     };
 
@@ -318,6 +329,16 @@ namespace
 
             if (arguments[i] == "--watch")
                 options.watch = true;
+            else if (arguments[i] == "--recover" || arguments[i] == "--discard-recovery")
+            {
+                const auto choice = arguments[i] == "--recover" ? hocket::storage::RecoveryChoice::recover : hocket::storage::RecoveryChoice::discard;
+
+                if (options.recovery != hocket::storage::RecoveryChoice::none && options.recovery != choice && options.error.empty())
+                    options.error = "--recover and --discard-recovery don't go together: --recover plays the recovery copy, --discard-recovery "
+                                    "files it with the kept saves and plays the files as saved. Pick one";
+
+                options.recovery = choice;
+            }
             else if (arguments[i] == "--driver" && hasValue)
                 options.device.driver = arguments[++i];
             else if (arguments[i] == "--device" && hasValue)
@@ -350,6 +371,27 @@ namespace
         return options;
     }
 
+    // When --play ends, however it ends once the bus has a project: removes the
+    // recovery copy if nothing is unsaved, or makes sure it's up to date and
+    // says where it is (SPEC §4.5).
+    struct RecoveryFinish
+    {
+        hocket::storage::RecoveryKeeper& keeper;
+
+        ~RecoveryFinish()
+        {
+            try
+            {
+                if (const auto said = keeper.finish(); ! said.empty())
+                    std::cout << said << std::endl;
+            }
+            catch (const std::exception& error)
+            {
+                std::cerr << "internal error while finishing the recovery copy: " << error.what() << std::endl;
+            }
+        }
+    };
+
     // Deletes the token file when --play ends, unless another instance has replaced it since.
     struct TokenFileGuard
     {
@@ -361,15 +403,16 @@ namespace
 
     // Runs on the message thread while --play plays: stops the message loop on
     // Ctrl+C, says when playback stops by itself, closes API transactions left
-    // idle, and, with --watch, sends each project file saved outside Hocket to
-    // the bus.
+    // idle, keeps the recovery copy up to date, and, with --watch, sends each
+    // project file saved outside Hocket to the bus.
     class PlayLoop final : private juce::Timer
     {
     public:
         PlayLoop (hocket::commands::CommandBus& commandBus, const hocket::engine::EditSync& editSync,
                   const hocket::engine::PlaybackDevice& playbackDevice, hocket::api::Handler& apiHandler,
-                  hocket::storage::ProjectFolder& projectFolder, bool watch, hocket::commands::Author localUser)
-            : sync (editSync), device (playbackDevice), api (apiHandler), deviceWhilePlaying (playbackDevice.description())
+                  hocket::storage::ProjectFolder& projectFolder, hocket::storage::RecoveryKeeper& recoveryKeeper, bool watch,
+                  hocket::commands::Author localUser)
+            : sync (editSync), device (playbackDevice), api (apiHandler), recovery (recoveryKeeper), deviceWhilePlaying (playbackDevice.description())
         {
             if (watch)
                 watched.emplace (commandBus, projectFolder, std::move (localUser));
@@ -383,6 +426,7 @@ namespace
         const hocket::engine::EditSync& sync;
         const hocket::engine::PlaybackDevice& device;
         hocket::api::Handler& api;
+        hocket::storage::RecoveryKeeper& recovery;
         std::optional<hocket::storage::WatchedFolder> watched;
         std::string deviceWhilePlaying; // the device's description, as of the last check
         bool stopReported = false;
@@ -402,6 +446,9 @@ namespace
                 reportStopByItself();
                 api.checkIdle();
                 pollWatcher();
+
+                if (const auto said = recovery.poll())
+                    std::cerr << *said << std::endl;
             }
             catch (const std::exception& error)
             {
@@ -533,6 +580,26 @@ namespace
         if (reportRunning())
             return 1;
 
+        // A recovery copy an earlier session left (SPEC §4.5): looked for once
+        // no other Hocket can be writing it. Plain --play stops if it holds
+        // unsaved changes, before opening the device.
+        const auto recoveryFolder = hocket::storage::defaultRecoveryFolder();
+
+        if (! recoveryFolder)
+        {
+            std::cerr << "can't find the folder for recovery copies (%LOCALAPPDATA% on Windows)\n";
+            return 1;
+        }
+
+        hocket::storage::RecoveryCopy recoveryCopy (*recoveryFolder, folder);
+        auto recoveryStart = hocket::storage::startRecovery (recoveryCopy, *projectFolder, *loaded.project, options.recovery);
+
+        if (! recoveryStart.message.empty())
+            (recoveryStart.proceed ? std::cout : std::cerr) << recoveryStart.message << std::endl;
+
+        if (! recoveryStart.proceed)
+            return 1;
+
         // Opens the device used last time, or the system default. Tracktion
         // keeps its settings in %APPDATA%\Hocket\Settings.xml.
         tracktion::Engine engine { "Hocket", nullptr, std::make_unique<PlayBehaviour>() };
@@ -583,6 +650,24 @@ namespace
         hocket::commands::CommandBus bus (std::move (*loaded.project));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
         bus.setStorage (&*projectFolder);
+
+        // --recover: the copy's changes, as one entry the person can undo,
+        // unsaved, before the Edit is built, so it's built with them.
+        if (recoveryStart.recovered)
+        {
+            const auto recovered = bus.execute (hocket::commands::ReplaceProject { std::move (*recoveryStart.recovered), recoveryStart.description }, localUser);
+
+            if (! recovered.ok)
+            {
+                std::cerr << "--recover: " << recovered.message << "\n";
+                return 1;
+            }
+
+            std::cout << "Recovered: " << recovered.message << std::endl;
+        }
+
+        hocket::storage::RecoveryKeeper recoveryKeeper (bus, *projectFolder, recoveryCopy, recoveryStart.recovered.has_value());
+        const RecoveryFinish recoveryFinish { recoveryKeeper };
 
         // The drum samplers' kits load on the library's thread, and play waits
         // for them. Made before the EditSync, whose samplers ask it for kits.
@@ -661,7 +746,7 @@ namespace
         std::cout << played.message << (options.watch ? "; saving project.json or a clip file outside Hocket plays the change" : "") << ". Ctrl+C to stop." << std::endl;
 
         {
-            PlayLoop loop (bus, sync, playbackDevice, api, *projectFolder, options.watch, localUser);
+            PlayLoop loop (bus, sync, playbackDevice, api, *projectFolder, recoveryKeeper, options.watch, localUser);
             juce::MessageManager::getInstance()->runDispatchLoop();
         }
 

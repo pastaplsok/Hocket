@@ -100,6 +100,18 @@ namespace hocket::storage
         // what was on disk at this stamp, which the session's text now matches.
         void noteRead (const std::string& file, const project::FileStamp& stamp, std::string text);
 
+        // Whether each of these files (project::write's) has the text Hocket
+        // last read or wrote for it: then the session holds nothing that isn't
+        // on disk, as far as Hocket knows, so a recovery copy has nothing to keep.
+        bool matchesKnown (const std::map<std::string, std::string>& files) const;
+
+        // Files a recovery copy away with the kept saves, labelled as a
+        // discarded recovery copy and timed by when it was written, so revert
+        // can still bring it back (--play --discard-recovery, SPEC §4.5). Its
+        // files are copied as they are, whether or not they read as a project.
+        // nullopt, with the problem, if it couldn't be kept.
+        std::optional<commands::KeptSave> keepRecoveryCopy (const std::filesystem::path& copy, commands::SaveTime written, std::string& problem);
+
     private:
         struct Known
         {
@@ -119,6 +131,11 @@ namespace hocket::storage
         // problem when there's no project on disk to keep. With files changed
         // outside Hocket, it's labelled so, at the latest change's time.
         std::optional<commands::KeptSave> keepVersionOnDisk (const std::vector<std::string>& changedOutside, std::string& problem);
+
+        // Writes these files, relative paths to their text (.hocket/save.json
+        // included), as the next kept save: whole, or not at all.
+        std::optional<commands::KeptSave> keepFiles (const std::map<std::string, std::string>& texts, const commands::SaveInfo& info,
+                                                     std::string& problem);
     };
 
     // Saves an empty project (120 BPM, 4/4, no tracks) in `folder`, which

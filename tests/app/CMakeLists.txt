@@ -56,6 +56,15 @@ set_tests_properties(hocket_headless_master_volume_needs_a_unit PROPERTIES
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "--master-volume: '-12' isn't a valid volume: it has no unit; volume is written in dB")
 
+# --recover and --discard-recovery (SPEC §4.5) are refused together, before
+# anything else: before looking for a recovery copy, or opening a device.
+add_test(NAME hocket_headless_recover_or_discard
+    COMMAND hocket_headless --play "${unicode_folder}/nope" --recover --discard-recovery)
+set_tests_properties(hocket_headless_recover_or_discard PROPERTIES
+    FIXTURES_REQUIRED unicode_project
+    TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "--recover and --discard-recovery don't go together")
+
 # --new makes an empty project in a new folder (SPEC §4.5), which --check
 # finds valid, and refuses a folder with anything in it. The folder is
 # removed first, so each run makes it afresh.

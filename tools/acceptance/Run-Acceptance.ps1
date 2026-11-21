@@ -11,12 +11,18 @@ so it makes no sound. What it checks:
   - hocket-mcp, started as Claude Code starts it: the tools are listed, write_clip and undo
     work, history names each author (Claude, and Lee through --watch), and Claude's undo
     refuses Lee's change;
+  - the recovery copy: written a few seconds after Claude's change, removed by the undo
+    back to the saved state, and none left when --play ends with nothing unsaved;
   - hocket-stress: 200 rewrites at 20 a second during playback, all applied, the clip put back;
   - Ctrl+C stops --play cleanly (exit code 0, its "stopped" line, the token file removed), and
     the driver's xrun count, where it reports one, is 0. JUCE's count of late audio callbacks is
     a note, and so is the peak output level, which should be silence. AcceptanceChecks.ps1 makes
     these results, and tests/acceptance tests it.
 Hearing the changes, and hearing no clicks or gaps, is the part left for a person.
+
+Each run plays a project in a new folder, so a recovery copy an earlier run left (one that
+crashed with changes unsaved) can never stop its --play: --play only asks about a copy of
+the folder it plays. Copies of earlier runs' projects are cleared away before it starts.
 
 Run it from a PowerShell window, after building Release:
   powershell -ExecutionPolicy Bypass -File tools\acceptance\Run-Acceptance.ps1 [-Driver ASIO -Device "ASIO4ALL v2"]
@@ -53,6 +59,7 @@ $mcp = Join-Path $build 'src\mcp\Release\hocket-mcp.exe'
 $stress = Join-Path $build 'tools\stress\Release\hocket-stress.exe'
 $engineTests = Join-Path $build 'tests\engine\Release\hocket_engine_tests.exe'
 $tokenFile = Join-Path $env:LOCALAPPDATA 'Hocket\api.json'
+$recoveryFolder = Join-Path $env:LOCALAPPDATA 'Hocket\Recovery'
 $results = New-Object System.Collections.Generic.List[object]
 
 . (Join-Path $PSScriptRoot 'AcceptanceChecks.ps1')
@@ -93,6 +100,22 @@ function Invoke-Logged ([string] $Program, [string[]] $Arguments, [string] $Log,
     $process = [Diagnostics.Process]::Start($info)
     $process.WaitForExit()
     return $process.ExitCode
+}
+
+# The recovery copies (SPEC §4.5) of projects whose folder is -like $Like, by the project
+# each copy's .hocket\recovery.json names: Place (its project's place in the recovery
+# folder), Copy (the copy's folder) and Project.
+function Get-RecoveryCopies ([string] $Like) {
+    if (-not (Test-Path $recoveryFolder)) { return }
+
+    foreach ($place in Get-ChildItem -LiteralPath $recoveryFolder -Directory) {
+        foreach ($copy in Get-ChildItem -LiteralPath $place.FullName -Directory | Where-Object { $_.Name -match '^\d+$' }) {
+            $info = Join-Path $copy.FullName '.hocket\recovery.json'
+            if (-not (Test-Path -LiteralPath $info)) { continue }
+            try { $project = ([IO.File]::ReadAllText($info) | ConvertFrom-Json).project } catch { continue }
+            if ($project -like $Like) { [pscustomobject] @{ Place = $place.FullName; Copy = $copy.FullName; Project = $project } }
+        }
+    }
 }
 
 function Test-HocketRunning {
@@ -165,6 +188,13 @@ if (-not $SkipTests) {
 
 #==============================================================================
 if (Test-HocketRunning) { throw "a Hocket is already running (see $tokenFile); stop it first" }
+
+# Recovery copies of this script's projects from earlier runs, which crashed with changes
+# unsaved: no Hocket is running, and this run's project is new, so none is in use.
+$stale = @(Get-RecoveryCopies '*\hocket-acceptance-*\m0-acceptance' | Select-Object -ExpandProperty Place -Unique)
+foreach ($place in $stale) { Remove-Item -Recurse -Force -LiteralPath $place }
+if ($stale.Count -gt 0) { Add-Note 'Recovery copies' "removed $($stale.Count) left by earlier runs that crashed" }
+$ourCopies = "*\$(Split-Path $work -Leaf)\m0-acceptance"
 
 # The demo with an empty clip, plus a drums track playing the bundled electronic
 # kit with an empty clip too: it plays silence, and every run loads a kit.
@@ -281,9 +311,25 @@ try {
     $changed = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
     Add-Result 'write_clip from Claude changes the clip' ((-not $write.IsError) -and $changed -like "*Claude's change*") ($write.Text -split "`n")[0]
 
+    # The recovery copy (SPEC §4.5): about 3 s after changes stop.
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+    $copies = @()
+    while ($copies.Count -eq 0 -and $waited.Elapsed.TotalSeconds -lt 8) {
+        Start-Sleep -Milliseconds 100
+        $copies = @(Get-RecoveryCopies $ourCopies)
+    }
+    Add-Result 'A recovery copy is written a few seconds after a change' ($copies.Count -eq 1) `
+        $(if ($copies.Count -eq 1) { "after $([math]::Round($waited.Elapsed.TotalSeconds, 1)) s: $($copies[0].Copy)" } else { "none within 8 s in $recoveryFolder" })
+
     $undo = Invoke-Tool 'undo'
     $restored = (Invoke-Tool 'read_clip' @{ clip_id = 'clp-bass' }).Blocks[1]
     Add-Result 'undo restores the old clip' ((-not $undo.IsError) -and $restored -eq $original) $undo.Text
+
+    # Back to the saved state, so nothing is unsaved: removed at once.
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+    while (@(Get-RecoveryCopies $ourCopies).Count -gt 0 -and $waited.Elapsed.TotalSeconds -lt 3) { Start-Sleep -Milliseconds 50 }
+    $left = @(Get-RecoveryCopies $ourCopies).Count
+    Add-Result 'Undo back to the saved state removes the recovery copy' ($left -eq 0) $(if ($left -eq 0) { "within $([math]::Round($waited.Elapsed.TotalSeconds, 1)) s" } else { 'still there after 3 s' })
 
     # Lee's change: saving the clip file, which --watch sends as Lee's write_clip.
     Invoke-Tool 'write_clip' @{ clip_id = 'clp-bass'; notes = "# acceptance: Claude's second change`n@length 2bars`n" } | Out-Null
@@ -338,6 +384,11 @@ finally {
 
     $play.WaitForExit()
     Write-Results (Get-StopResults -PlayLog $playLog -HowItEnded $howItEnded -ExitCode $play.ExitCode -TokenFileLeft (Test-Path $tokenFile))
+
+    # Lee's change was taken in from its file, and hocket-stress put the clip back as it found
+    # it, so the project is as its files are: --play keeps no recovery copy.
+    $left = @(Get-RecoveryCopies $ourCopies)
+    Add-Result '--play ends leaving no recovery copy, with nothing unsaved' ($left.Count -eq 0) $(if ($left.Count -gt 0) { $left[0].Copy } else { '' })
 }
 
 #==============================================================================

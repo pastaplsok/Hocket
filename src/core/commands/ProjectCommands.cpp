@@ -72,62 +72,6 @@ namespace
 
         return problem;
     }
-
-    // What the replacement changes, for its result: "Changes: the tempo (120
-    // BPM to 130 BPM); added trk-keys; removed trk-lead; changed trk-bass;
-    // rewrote the notes of 2 clip files".
-    std::string changesText (const project::Project& from, const project::Project& to)
-    {
-        std::vector<std::string> parts;
-
-        if (from.tempo != to.tempo)
-            parts.push_back ("the tempo (" + project::formatTempo (from.tempo) + " BPM to " + project::formatTempo (to.tempo) + " BPM)");
-
-        if (from.meter != to.meter)
-            parts.push_back ("the time signature (" + from.meter.text() + " to " + to.meter.text() + ")");
-
-        std::vector<std::string> added, removed, changed;
-
-        for (const auto& track : to.tracks)
-        {
-            const auto* was = project::findTrack (from, track.id);
-
-            if (was == nullptr)
-                added.push_back (track.id);
-            else if (! (*was == track))
-                changed.push_back (track.id);
-        }
-
-        for (const auto& track : from.tracks)
-            if (project::findTrack (to, track.id) == nullptr)
-                removed.push_back (track.id);
-
-        if (! added.empty())
-            parts.push_back ("added " + listText (added));
-
-        if (! removed.empty())
-            parts.push_back ("removed " + listText (removed));
-
-        if (! changed.empty())
-            parts.push_back ("changed " + listText (changed));
-
-        std::size_t rewritten = 0;
-
-        for (const auto& [file, content] : to.notesFiles)
-            if (const auto found = from.notesFiles.find (file); found != from.notesFiles.end() && ! (found->second == content))
-                ++rewritten;
-
-        if (rewritten > 0)
-            parts.push_back ("rewrote the notes of " + countText (rewritten, "clip file"));
-
-        std::string text = "Changes: ";
-
-        for (std::size_t i = 0; i < parts.size(); ++i)
-            text += (i == 0 ? "" : "; ") + parts[i];
-
-        // Only the display order changed.
-        return parts.empty() ? std::string ("Changes: the order of the tracks") : text;
-    }
 }
 
 std::vector<edits::Edit> replacementEdits (const project::Project& from, const project::Project& to)
@@ -252,7 +196,66 @@ edits::Plan plan (const project::Project& project, const ReplaceProject& command
     return { { true, {} },
              replacementEdits (project, command.project),
              command.description.empty() ? std::string ("replaced the project") : command.description,
-             changesText (project, command.project),
+             replacementChanges (project, command.project),
              {} };
+}
+}
+
+namespace hocket::commands
+{
+std::string replacementChanges (const project::Project& from, const project::Project& to)
+{
+    using planning::countText;
+    using planning::listText;
+
+    std::vector<std::string> parts;
+
+    if (from.tempo != to.tempo)
+        parts.push_back ("the tempo (" + project::formatTempo (from.tempo) + " BPM to " + project::formatTempo (to.tempo) + " BPM)");
+
+    if (from.meter != to.meter)
+        parts.push_back ("the time signature (" + from.meter.text() + " to " + to.meter.text() + ")");
+
+    std::vector<std::string> added, removed, changed;
+
+    for (const auto& track : to.tracks)
+    {
+        const auto* was = project::findTrack (from, track.id);
+
+        if (was == nullptr)
+            added.push_back (track.id);
+        else if (! (*was == track))
+            changed.push_back (track.id);
+    }
+
+    for (const auto& track : from.tracks)
+        if (project::findTrack (to, track.id) == nullptr)
+            removed.push_back (track.id);
+
+    if (! added.empty())
+        parts.push_back ("added " + listText (added));
+
+    if (! removed.empty())
+        parts.push_back ("removed " + listText (removed));
+
+    if (! changed.empty())
+        parts.push_back ("changed " + listText (changed));
+
+    std::size_t rewritten = 0;
+
+    for (const auto& [file, content] : to.notesFiles)
+        if (const auto found = from.notesFiles.find (file); found != from.notesFiles.end() && ! (found->second == content))
+            ++rewritten;
+
+    if (rewritten > 0)
+        parts.push_back ("rewrote the notes of " + countText (rewritten, "clip file"));
+
+    std::string text = "Changes: ";
+
+    for (std::size_t i = 0; i < parts.size(); ++i)
+        text += (i == 0 ? "" : "; ") + parts[i];
+
+    // Only the display order changed.
+    return parts.empty() ? std::string ("Changes: the order of the tracks") : text;
 }
 }

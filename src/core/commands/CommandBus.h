@@ -133,6 +133,16 @@ namespace hocket::commands
         // undo, still counts as unsaved.
         bool hasUnsavedChanges() const { return revision() != savedRevision; }
 
+        // Each state of the project the history can reach has a revision
+        // number, never reused: the newest entry's (0 when there's none), or
+        // an open transaction's while it holds edits. Entries below the
+        // newest can't change while it's there, so its number stands for the
+        // whole state, and undo and redo go back to earlier numbers. So a
+        // new number means the project changed, and the recovery copy may
+        // need writing again (SPEC §4.5).
+        using Revision = std::uint64_t;
+        Revision revision() const;
+
     private:
         using Edit = edits::Edit;
 
@@ -146,13 +156,6 @@ namespace hocket::commands
             bool empty() const { return forward.empty(); }
             void append (Edits&& more);
         };
-
-        // Each state of the project the history can reach has a revision
-        // number, never reused: the newest entry's (0 when there's none), or
-        // an open transaction's while it holds edits. Entries below the
-        // newest can't change while it's there, so its number stands for the
-        // whole state, and undo and redo go back to earlier numbers.
-        using Revision = std::uint64_t;
 
         struct Entry
         {
@@ -202,8 +205,6 @@ namespace hocket::commands
         Edits applyCommand (std::vector<Edit> forward);
         void applyForward (const Edits&);
         void applyInverse (const Edits&);
-
-        Revision revision() const;
 
         // A new entry, whose state is `revision`, or a new revision if 0.
         void record (const Author& author, std::string description, Edits edits, Revision revision = 0);

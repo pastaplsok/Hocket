@@ -1,0 +1,282 @@
+#include "storage/Recovery.h"
+
+#include "core/Paths.h"
+
+#include <limits>
+
+namespace hocket::storage
+{
+namespace
+{
+    std::string quoted (const std::filesystem::path& path)
+    {
+        return "'" + utf8FromPath (path) + "'";
+    }
+
+    std::string withoutStop (std::string text)
+    {
+        while (! text.empty() && text.back() == '.')
+            text.pop_back();
+
+        return text;
+    }
+
+    // When the project's files last changed on disk: the latest of their dates.
+    std::optional<commands::SaveTime> filesChanged (const std::filesystem::path& folder, const project::Project& loaded)
+    {
+        std::optional<commands::SaveTime> latest;
+
+        for (const auto& entry : project::write (loaded))
+        {
+            std::error_code error;
+            const auto modified = std::filesystem::last_write_time (folder / pathFromUtf8 (entry.first), error);
+
+            if (error)
+                continue;
+
+            const auto time = std::chrono::floor<std::chrono::seconds> (std::chrono::clock_cast<std::chrono::system_clock> (modified));
+
+            if (! latest || time > *latest)
+                latest = time;
+        }
+
+        return latest;
+    }
+
+    // "project.json:3:5: ... (and 2 more problems)"
+    std::string firstProblem (const project::LoadResult& read)
+    {
+        auto problem = project::formatDiagnostic (read.errors.front());
+
+        if (const auto more = read.errors.size() - 1; more > 0)
+            problem += " (and " + std::to_string (more) + (more == 1 ? " more problem)" : " more problems)");
+
+        return problem;
+    }
+
+    // What plain --play says, and plays nothing, when an earlier session left
+    // unsaved changes in a recovery copy.
+    std::string askWhatToDo (const RecoveryCopy::Found& found, const project::LoadResult& read, const ProjectFolder& folder, const project::Project& loaded)
+    {
+        const auto written = commands::localTimeText (found.written);
+        std::string text = "This project has a recovery copy, written " + written
+                         + ", holding changes that were never saved: the session that made them ended without saving them, by a crash or by quitting.\n";
+
+        if (const auto changed = filesChanged (folder.path(), loaded); changed && *changed > found.written)
+            text += "It's older than the project's files, which changed at " + commands::localTimeText (*changed)
+                  + ", after it was written: they were saved or edited since. Recovering it would put its version in place of theirs.\n";
+        else
+            text += "It's newer than the project's files.\n";
+
+        if (read.project)
+            text += commands::replacementChanges (loaded, *read.project) + ".\n";
+        else
+            text += "It doesn't read as a project, so it can't be played: " + firstProblem (read) + "\n";
+
+        text += "Nothing was played. To go on, run --play again with one of these:\n";
+
+        if (read.project)
+            text += "  --recover            play the recovery copy: its changes come in as one history entry, unsaved, which undo takes back\n";
+
+        text += "  --discard-recovery   play the files as saved, filing the recovery copy with the project's kept saves, so revert can still bring it back\n";
+        text += "The copy is in " + quoted (found.folder) + ".";
+        return text;
+    }
+}
+
+RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
+{
+    const auto found = copy.find();
+
+    if (! found)
+    {
+        if (choice == RecoveryChoice::recover)
+            return { false, "--recover: there's no recovery copy of this project, so there's nothing to recover: no session left changes unsaved. "
+                            "--play without --recover plays its files." };
+
+        if (choice == RecoveryChoice::discard)
+            return { true, "--discard-recovery: there's no recovery copy of this project to discard." };
+
+        return {};
+    }
+
+    const auto written = commands::localTimeText (found->written);
+    const auto read = project::load (found->folder);
+
+    // One a crash left between a save and the copy's removal, say.
+    if (read.project && project::write (*read.project) == project::write (loaded))
+    {
+        RecoveryStart start { true, "Found a recovery copy written " + written + " that holds nothing the project's files don't, so it's removed." };
+
+        if (const auto problem = copy.remove(); ! problem.empty())
+            start.message = "Found a recovery copy written " + written + " that holds nothing the project's files don't, but couldn't remove it: "
+                          + withoutStop (problem) + ".";
+
+        return start;
+    }
+
+    switch (choice)
+    {
+        case RecoveryChoice::none:
+            return { false, askWhatToDo (*found, read, folder, loaded) };
+
+        case RecoveryChoice::recover:
+            if (! read.project)
+                return { false, "--recover: the recovery copy written " + written + " doesn't read as a project, so it can't be played: " + firstProblem (read)
+                                    + "\nIt's in " + quoted (found->folder) + ". --discard-recovery files it with the project's kept saves, "
+                                    + "where its files can be looked at and mended, and plays the project's files as saved." };
+
+            return { true, {}, read.project, "recovered the unsaved changes in the recovery copy written " + written };
+
+        case RecoveryChoice::discard:
+            break;
+    }
+
+    std::string problem;
+    const auto kept = folder.keepRecoveryCopy (found->folder, found->written, problem);
+
+    if (! kept)
+        return { false, "--discard-recovery: couldn't file the recovery copy written " + written + " with the project's kept saves, so it's left as it is, in "
+                            + quoted (found->folder) + ": " + withoutStop (problem) + ". Nothing was played." };
+
+    RecoveryStart start { true, "Filed the recovery copy written " + written + " as " + commands::describe (*kept)
+                                    + ", so revert can still bring it back. Playing the project's files as saved." };
+
+    if (const auto removed = copy.remove(); ! removed.empty())
+        start.message += "\nCouldn't remove it from the recovery folder, though: " + withoutStop (removed)
+                       + ". The next --play will ask about it again; it's safe to delete it by hand.";
+
+    return start;
+}
+
+//==============================================================================
+RecoveryKeeper::RecoveryKeeper (commands::CommandBus& commandBus, ProjectFolder& projectFolder, RecoveryCopy& recoveryCopy, bool holdsSession)
+    : bus (commandBus), folder (projectFolder), copy (recoveryCopy)
+{
+    // Changes already unsaved count from the first poll, as if just made.
+    seen = holdsSession ? bus.revision() : std::numeric_limits<commands::CommandBus::Revision>::max();
+
+    if (holdsSession)
+        copyHolds = project::write (bus.project());
+}
+
+std::optional<std::string> RecoveryKeeper::poll (Clock::time_point now)
+{
+    if (const auto revision = bus.revision(); revision != seen)
+    {
+        seen = revision;
+        lastChange = now;
+
+        if (! waitingSince)
+            waitingSince = now;
+    }
+
+    if (retryAt && now < *retryAt)
+        return {};
+
+    // Saved, or undone back to the save: nothing to keep. At once, so a
+    // crash now doesn't leave a copy to ask about.
+    if (! bus.hasUnsavedChanges())
+    {
+        waitingSince.reset();
+        return removeCopy (now);
+    }
+
+    const auto due = retryAt || (waitingSince && (now - lastChange >= settleTime || now - *waitingSince >= longestWait));
+
+    if (! due)
+        return {};
+
+    waitingSince.reset();
+    return update (now);
+}
+
+std::optional<std::string> RecoveryKeeper::update (Clock::time_point now)
+{
+    auto files = project::write (bus.project());
+
+    // Changes that are on disk after all (put back by hand, or taken in from
+    // files saved outside Hocket): nothing to keep.
+    if (folder.matchesKnown (files))
+        return removeCopy (now);
+
+    if (copyHolds && *copyHolds == files)
+    {
+        retryAt.reset();
+        return {};
+    }
+
+    if (auto problem = copy.write (files); ! problem.empty())
+        return report ("Couldn't write the recovery copy, so a crash now would lose the changes made since " + std::string (copyHolds ? "it was last written" : "the last save")
+                           + ": " + withoutStop (problem) + ". Trying again every " + std::to_string (std::chrono::duration_cast<std::chrono::seconds> (retryTime).count())
+                           + " s.",
+                       now);
+
+    copyHolds = std::move (files);
+    return recovered();
+}
+
+std::optional<std::string> RecoveryKeeper::removeCopy (Clock::time_point now)
+{
+    if (! copyHolds)
+        return recovered();
+
+    if (const auto problem = copy.remove(); ! problem.empty())
+        return report ("Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (problem) + ". Trying again every "
+                           + std::to_string (std::chrono::duration_cast<std::chrono::seconds> (retryTime).count()) + " s.",
+                       now);
+
+    copyHolds.reset();
+    return recovered();
+}
+
+std::optional<std::string> RecoveryKeeper::report (std::string problem, Clock::time_point now)
+{
+    retryAt = now + retryTime;
+
+    if (problem == lastProblem)
+        return {};
+
+    lastProblem = problem;
+    return problem;
+}
+
+std::optional<std::string> RecoveryKeeper::recovered()
+{
+    retryAt.reset();
+
+    if (lastProblem.empty())
+        return {};
+
+    lastProblem.clear();
+    return std::string (copyHolds ? "The recovery copy is written again." : "The recovery copy is removed.");
+}
+
+std::string RecoveryKeeper::finish()
+{
+    auto files = project::write (bus.project());
+
+    if (! bus.hasUnsavedChanges() || folder.matchesKnown (files))
+    {
+        if (copyHolds)
+            if (const auto problem = copy.remove(); ! problem.empty())
+                return "Couldn't remove the recovery copy, though nothing is unsaved: " + withoutStop (problem)
+                     + ". The next --play will ask about it; it's safe to delete it by hand.";
+
+        return {};
+    }
+
+    if (! copyHolds || *copyHolds != files)
+    {
+        if (const auto problem = copy.write (files); ! problem.empty())
+            return "Couldn't keep the unsaved changes in a recovery copy, so they're lost: " + withoutStop (problem) + "."
+                 + (copyHolds ? " The recovery copy written before holds them as they were then." : "");
+
+        copyHolds = std::move (files);
+    }
+
+    const auto found = copy.find();
+    return "Unsaved changes are kept in a recovery copy" + (found ? ", " + quoted (found->folder) : std::string())
+         + ". --play --recover plays them next time; --play --discard-recovery files them with the project's kept saves.";
+}
+}

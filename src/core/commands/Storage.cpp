@@ -24,13 +24,15 @@ std::string savedBy (const SaveInfo& info)
     if (! info.author.empty())
         return info.author;
 
-    return info.changedOutside ? "changed outside Hocket" : "before Hocket";
+    return info.discardedRecovery ? "discarded recovery" : info.changedOutside ? "changed outside Hocket" : "before Hocket";
 }
 
 std::string describe (const KeptSave& save)
 {
-    const auto by = save.info.author.empty() ? (save.info.changedOutside ? std::string ("changed outside Hocket") : std::string ("from before Hocket"))
-                                             : "by " + save.info.author;
+    const auto by = ! save.info.author.empty()    ? "by " + save.info.author
+                  : save.info.discardedRecovery ? std::string ("a discarded recovery copy")
+                  : save.info.changedOutside    ? std::string ("changed outside Hocket")
+                                                : std::string ("from before Hocket");
     auto text = "save #" + std::to_string (save.number) + ", " + by + ", " + localTimeText (save.info.time);
 
     if (! save.info.name.empty())

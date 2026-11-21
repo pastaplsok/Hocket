@@ -1,6 +1,7 @@
 #include "storage/ProjectFolder.h"
 
 #include "core/Paths.h"
+#include "storage/Formats.h"
 #include "core/project/Rules.h"
 #include "platform/Platform.h"
 
@@ -8,7 +9,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <format>
 #include <span>
 #include <vector>
 
@@ -61,51 +61,25 @@ namespace
     //     "time": "2026-11-20T13:02:37Z",
     //     "author": "Lee",
     //     "name": "before the bridge experiment",
-    //     "changedOutside": false
+    //     "changedOutside": false,
+    //     "discardedRecovery": false
     //   }
     //
     // The time is UTC. An empty author is a version Hocket didn't save: from
-    // before Hocket, or, with changedOutside, one of its saves with files
-    // changed outside it since.
+    // before Hocket; or, with changedOutside, one of its saves with files
+    // changed outside it since; or, with discardedRecovery, a recovery copy
+    // that --play --discard-recovery filed here, timed by when it was written.
 
     std::string saveInfoText (const commands::SaveInfo& info)
     {
         nlohmann::ordered_json json = nlohmann::ordered_json::object();
         json["format"] = "hocket-save";
-        json["time"] = std::format ("{:%Y-%m-%dT%H:%M:%SZ}", info.time);
+        json["time"] = utcTimeText (info.time);
         json["author"] = info.author;
         json["name"] = info.name;
         json["changedOutside"] = info.changedOutside;
+        json["discardedRecovery"] = info.discardedRecovery;
         return json.dump (2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
-    }
-
-    // "2026-11-20T13:02:37Z", exactly as saveInfoText writes it.
-    std::optional<commands::SaveTime> parseTime (std::string_view text)
-    {
-        if (text.size() != 20 || text[4] != '-' || text[7] != '-' || text[10] != 'T' || text[13] != ':' || text[16] != ':' || text[19] != 'Z')
-            return {};
-
-        const auto number = [text] (std::size_t at, std::size_t length) -> std::optional<int>
-        {
-            int value = 0;
-            const auto* end = text.data() + at + length;
-            const auto [next, error] = std::from_chars (text.data() + at, end, value);
-            return error == std::errc() && next == end ? std::optional<int> (value) : std::nullopt;
-        };
-
-        const auto year = number (0, 4), month = number (5, 2), day = number (8, 2);
-        const auto hour = number (11, 2), minute = number (14, 2), second = number (17, 2);
-
-        if (! year || ! month || ! day || ! hour || ! minute || ! second || *hour > 23 || *minute > 59 || *second > 59)
-            return {};
-
-        const std::chrono::year_month_day date { std::chrono::year (*year), std::chrono::month (static_cast<unsigned> (*month)),
-                                                 std::chrono::day (static_cast<unsigned> (*day)) };
-
-        if (! date.ok())
-            return {};
-
-        return std::chrono::sys_days (date) + std::chrono::hours (*hour) + std::chrono::minutes (*minute) + std::chrono::seconds (*second);
     }
 
     std::optional<commands::SaveInfo> parseSaveInfo (std::string_view text)
@@ -115,7 +89,7 @@ namespace
         if (json.is_discarded() || ! json.is_object() || ! json.contains ("time") || ! json.at ("time").is_string())
             return {};
 
-        const auto time = parseTime (json.at ("time").get<std::string>());
+        const auto time = parseUtcTime (json.at ("time").get<std::string>());
 
         if (! time)
             return {};
@@ -130,6 +104,9 @@ namespace
 
         if (json.contains ("changedOutside") && json.at ("changedOutside").is_boolean())
             info.changedOutside = json.at ("changedOutside").get<bool>();
+
+        if (json.contains ("discardedRecovery") && json.at ("discardedRecovery").is_boolean())
+            info.discardedRecovery = json.at ("discardedRecovery").get<bool>();
 
         return info;
     }
@@ -157,103 +134,6 @@ namespace
         }
 
         return files;
-    }
-
-    //==============================================================================
-    // The code point starting at text[i], moving i past it; nullopt for an
-    // invalid sequence, moving i one byte on.
-    std::optional<char32_t> nextCodePoint (std::string_view text, std::size_t& i)
-    {
-        const auto lead = static_cast<unsigned char> (text[i++]);
-
-        if (lead < 0x80)
-            return lead;
-
-        const auto extra = lead >= 0xC2 && lead <= 0xDF ? 1 : lead >= 0xE0 && lead <= 0xEF ? 2 : lead >= 0xF0 && lead <= 0xF4 ? 3 : 0;
-
-        if (extra == 0 || i + static_cast<std::size_t> (extra) > text.size())
-            return {};
-
-        char32_t c = lead & (extra == 1 ? 0x1Fu : extra == 2 ? 0x0Fu : 0x07u);
-
-        for (int k = 0; k < extra; ++k)
-        {
-            const auto next = static_cast<unsigned char> (text[i + static_cast<std::size_t> (k)]);
-
-            if ((next & 0xC0) != 0x80)
-                return {};
-
-            c = (c << 6) | (next & 0x3Fu);
-        }
-
-        const char32_t smallest = extra == 1 ? 0x80 : extra == 2 ? 0x800 : 0x10000;
-
-        if (c < smallest || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF))
-            return {};
-
-        i += static_cast<std::size_t> (extra);
-        return c;
-    }
-
-    void appendUtf8 (std::string& out, char32_t c)
-    {
-        if (c < 0x80)
-        {
-            out += static_cast<char> (c);
-        }
-        else if (c < 0x800)
-        {
-            out += static_cast<char> (0xC0 | (c >> 6));
-            out += static_cast<char> (0x80 | (c & 0x3F));
-        }
-        else if (c < 0x10000)
-        {
-            out += static_cast<char> (0xE0 | (c >> 12));
-            out += static_cast<char> (0x80 | ((c >> 6) & 0x3F));
-            out += static_cast<char> (0x80 | (c & 0x3F));
-        }
-        else
-        {
-            out += static_cast<char> (0xF0 | (c >> 18));
-            out += static_cast<char> (0x80 | ((c >> 12) & 0x3F));
-            out += static_cast<char> (0x80 | ((c >> 6) & 0x3F));
-            out += static_cast<char> (0x80 | (c & 0x3F));
-        }
-    }
-
-    // A name Windows takes as it is (keptSaveFolderName says how).
-    std::string windowsSafeName (std::string_view text, std::size_t maxUnits)
-    {
-        constexpr std::string_view refused = "<>:\"/\\|?*";
-        std::string name;
-        std::size_t units = 0;
-
-        for (std::size_t i = 0; i < text.size();)
-        {
-            auto c = nextCodePoint (text, i);
-
-            if (! c)
-                continue;
-
-            if (*c < 0x20 || (*c >= 0x7F && *c < 0xA0) || (*c < 0x80 && refused.find (static_cast<char> (*c)) != std::string_view::npos))
-                c = U' ';
-
-            if (*c == U' ' && (name.empty() || name.back() == ' '))
-                continue;
-
-            const std::size_t size = *c >= 0x10000 ? 2 : 1;
-
-            if (units + size > maxUnits)
-                break;
-
-            units += size;
-            appendUtf8 (name, *c);
-        }
-
-        while (! name.empty() && (name.back() == ' ' || name.back() == '.'))
-            name.pop_back();
-
-        return name;
     }
 
     //==============================================================================
@@ -467,6 +347,7 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
     if (! std::filesystem::exists (projectPath, error))
         return {}; // a new folder: there's no version to keep
 
+    std::map<std::string, std::string> texts;
     const auto projectText = readTextFile (projectPath);
 
     if (! projectText)
@@ -474,6 +355,8 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
         problem = "couldn't read project.json";
         return {};
     }
+
+    texts[std::string (projectFileName)] = *projectText;
 
     // Its clip files: the ones its project.json names, and the ones Hocket
     // knows, should that project.json not read.
@@ -491,8 +374,26 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
         if (file != projectFileName)
             files.insert (file);
 
+    for (const auto& file : files)
+    {
+        const auto path = folder / pathFromUtf8 (file);
+
+        if (! std::filesystem::exists (path, error))
+            continue;
+
+        auto text = readTextFile (path);
+
+        if (! text)
+        {
+            problem = "couldn't read " + file;
+            return {};
+        }
+
+        texts[file] = std::move (*text);
+    }
+
     // When a file last changed, by its date.
-    const auto modifiedTime = [this] (const std::filesystem::path& path) -> std::optional<commands::SaveTime>
+    const auto modifiedTime = [] (const std::filesystem::path& path) -> std::optional<commands::SaveTime>
     {
         std::error_code timeError;
         const auto modified = std::filesystem::last_write_time (path, timeError);
@@ -503,97 +404,147 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
         return std::chrono::floor<std::chrono::seconds> (std::chrono::clock_cast<std::chrono::system_clock> (modified));
     };
 
-    // Who saved it, and when. A version Hocket didn't save is from before
-    // Hocket, at project.json's date; one with files changed outside Hocket
-    // since its save is labelled so, at the latest change.
+    // Who saved it, and when: its save.json as it is. A version Hocket didn't
+    // save is from before Hocket, at project.json's date; one with files
+    // changed outside Hocket since its save is labelled so, at the latest change.
     const auto infoText = readTextFile (folder / pathFromUtf8 (saveInfoFile));
     auto info = infoText && changedOutside.empty() ? parseSaveInfo (*infoText) : std::nullopt;
-    const auto infoTextKept = info ? *infoText : std::string();
 
-    if (! changedOutside.empty())
+    if (info)
     {
-        info = commands::SaveInfo { std::chrono::floor<std::chrono::seconds> (clock()), {}, {}, true };
-        std::optional<commands::SaveTime> latest;
-
-        for (const auto& file : changedOutside)
-            if (const auto time = modifiedTime (folder / pathFromUtf8 (file)); time && (! latest || *time > *latest))
-                latest = time;
-
-        if (latest)
-            info->time = *latest;
+        texts[std::string (saveInfoFile)] = *infoText;
     }
-    else if (! info)
+    else
     {
-        const auto time = modifiedTime (projectPath);
-        info = commands::SaveInfo { time ? *time : std::chrono::floor<std::chrono::seconds> (clock()) };
+        if (! changedOutside.empty())
+        {
+            info = commands::SaveInfo { std::chrono::floor<std::chrono::seconds> (clock()), {}, {}, true };
+            std::optional<commands::SaveTime> latest;
+
+            for (const auto& file : changedOutside)
+                if (const auto time = modifiedTime (folder / pathFromUtf8 (file)); time && (! latest || *time > *latest))
+                    latest = time;
+
+            if (latest)
+                info->time = *latest;
+        }
+        else
+        {
+            const auto time = modifiedTime (projectPath);
+            info = commands::SaveInfo { time ? *time : std::chrono::floor<std::chrono::seconds> (clock()) };
+        }
+
+        texts[std::string (saveInfoFile)] = saveInfoText (*info);
     }
 
+    return keepFiles (texts, *info, problem);
+}
+
+std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::string, std::string>& texts, const commands::SaveInfo& info,
+                                                             std::string& problem)
+{
     const auto saves = keptSaves();
     const auto number = saves.empty() ? 1 : saves.back().number + 1;
-    const auto name = keptSaveFolderName (number, *info);
+    const auto name = keptSaveFolderName (number, info);
     const auto savesPath = folder / pathFromUtf8 (keptSavesFolder);
 
     // Copied under a name no kept save has, then named, so a save that stops
     // part-way never leaves half a kept save.
     const auto copying = savesPath / pathFromUtf8 ("saving " + std::to_string (number));
+    std::error_code error;
     std::filesystem::remove_all (copying, error);
 
-    const auto copy = [&copying, &problem] (std::string_view relative, std::string_view bytes)
+    // project.json first and save.json last, so a problem writing them is
+    // named as it always was.
+    std::vector<const std::pair<const std::string, std::string>*> order;
+
+    for (const auto& entry : texts)
+        if (entry.first != saveInfoFile)
+            order.insert (entry.first == projectFileName ? order.begin() : order.end(), &entry);
+
+    if (const auto found = texts.find (std::string (saveInfoFile)); found != texts.end())
+        order.push_back (&*found);
+
+    std::string failure;
+
+    for (const auto* entry : order)
     {
-        const auto to = copying / pathFromUtf8 (relative);
-        std::error_code folderError;
-        std::filesystem::create_directories (to.parent_path(), folderError);
-        const auto written = folderError ? folderError.message() : platform::writeFileToDisk (to, bytes);
+        const auto to = copying / pathFromUtf8 (entry->first);
+        std::filesystem::create_directories (to.parent_path(), error);
+        const auto written = error ? error.message() : platform::writeFileToDisk (to, entry->second);
 
         if (! written.empty())
-            problem = "couldn't write its copy of " + std::string (relative) + ": " + withoutStop (written);
-
-        return written.empty();
-    };
-
-    auto copied = copy (projectFileName, *projectText);
-
-    for (const auto& file : files)
-    {
-        if (! copied)
-            break;
-
-        const auto path = folder / pathFromUtf8 (file);
-
-        if (! std::filesystem::exists (path, error))
-            continue;
-
-        const auto text = readTextFile (path);
-
-        if (! text)
         {
-            problem = "couldn't read " + file;
-            copied = false;
+            failure = "couldn't write its copy of " + entry->first + ": " + withoutStop (written);
             break;
         }
-
-        copied = copy (file, *text);
     }
 
-    if (copied)
-        copied = copy (saveInfoFile, info && ! infoTextKept.empty() ? infoTextKept : saveInfoText (*info));
-
-    if (copied)
-    {
+    if (failure.empty())
         if (const auto moved = platform::moveFile (copying, savesPath / pathFromUtf8 (name)); ! moved.empty())
-        {
-            problem = "couldn't name its copy " + singleQuoted (name) + ": " + withoutStop (moved);
-            copied = false;
-        }
-    }
+            failure = "couldn't name its copy " + singleQuoted (name) + ": " + withoutStop (moved);
 
-    if (! copied)
+    if (! failure.empty())
     {
         std::filesystem::remove_all (copying, error);
+        problem = std::move (failure);
         return {};
     }
 
-    return commands::KeptSave { number, std::move (*info), std::string (keptSavesFolder) + "/" + name };
+    return commands::KeptSave { number, info, std::string (keptSavesFolder) + "/" + name };
+}
+
+std::optional<commands::KeptSave> ProjectFolder::keepRecoveryCopy (const std::filesystem::path& copy, commands::SaveTime written, std::string& problem)
+{
+    // Its files as they are, whether or not they read as a project: all but
+    // its own .hocket/, since a recovery copy holds nothing else.
+    std::map<std::string, std::string> texts;
+    std::error_code error;
+
+    for (std::filesystem::recursive_directory_iterator entry (copy, error), end; ! error && entry != end; entry.increment (error))
+    {
+        auto relative = utf8FromPath (entry->path().lexically_relative (copy));
+        std::ranges::replace (relative, '\\', '/');
+
+        if (relative == ".hocket")
+        {
+            entry.disable_recursion_pending();
+            continue;
+        }
+
+        if (std::error_code typeError; ! entry->is_regular_file (typeError))
+            continue;
+
+        auto text = readTextFile (entry->path());
+
+        if (! text)
+        {
+            problem = "couldn't read the recovery copy's " + relative;
+            return {};
+        }
+
+        texts[relative] = std::move (*text);
+    }
+
+    if (error)
+    {
+        problem = "couldn't look in the recovery copy, " + singleQuoted (utf8FromPath (copy)) + ": " + withoutStop (error.message());
+        return {};
+    }
+
+    commands::SaveInfo info { written };
+    info.discardedRecovery = true;
+    texts[std::string (saveInfoFile)] = saveInfoText (info);
+    return keepFiles (texts, info, problem);
+}
+
+bool ProjectFolder::matchesKnown (const std::map<std::string, std::string>& files) const
+{
+    return std::ranges::all_of (files, [this] (const auto& file)
+    {
+        const auto found = known.find (file.first);
+        return found != known.end() && found->second.text == file.second;
+    });
 }
 
 commands::SaveResult ProjectFolder::save (const project::Project& project, const commands::Save& request, const commands::Author& author)
