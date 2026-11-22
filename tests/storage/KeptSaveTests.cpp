@@ -215,6 +215,66 @@ TEST_CASE ("a version Hocket didn't save is kept as from before Hocket, at proje
     CHECK (bus.keptSaves() == std::vector<KeptSave> { *result.kept });
 }
 
+TEST_CASE ("a version changed by hand while Hocket was closed is kept as changed outside Hocket, not under the save it no longer is")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+    REQUIRE (saved.bus->save ({ "the good take" }, lee).ok);
+    CHECK (contains (*readTextFile (saved.file (".hocket/save.json")), "\"files\": {"));
+
+    // Hocket closed; the bass edited by hand; Hocket opened again.
+    const std::string byHand = "@length 4bars\n\n1.1    C2 1/4 v100\n";
+    writeFile (saved.file ("clips/bass.notes"), byHand);
+    const SaveTime editedAt = firstSaved + std::chrono::hours (5);
+    std::filesystem::last_write_time (saved.file ("clips/bass.notes"), std::chrono::clock_cast<std::chrono::file_clock> (editedAt));
+    saved.open();
+
+    REQUIRE (saved.bus->execute (SetTempo { 110 }, claude).ok);
+    const auto result = saved.bus->save ({}, claude);
+
+    REQUIRE (result.ok);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { editedAt, "", "", true });
+    CHECK (describe (*result.kept) == "save #2, changed outside Hocket, " + localTimeText (editedAt));
+    CHECK (readTextFile (saved.file (result.kept->folder + "/clips/bass.notes")) == byHand);
+
+    // "the good take" itself is still save #1's, unchanged.
+    const auto kept = saved.bus->keptSaves();
+    REQUIRE (kept.size() == 2);
+    CHECK (kept[0].info.author == "Lee");
+    CHECK (kept[0].info.name.empty());
+}
+
+TEST_CASE ("a version whose files were written again with the same text keeps its label: it's the text that counts, not the date")
+{
+    SavedProject saved;
+    const auto bass = *readTextFile (saved.file ("clips/bass.notes"));
+    writeFile (saved.file ("clips/bass.notes"), bass);
+    std::filesystem::last_write_time (saved.file ("clips/bass.notes"), std::chrono::clock_cast<std::chrono::file_clock> (firstSaved + std::chrono::hours (5)));
+    saved.open();
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, claude).ok);
+
+    const auto result = saved.bus->save ({}, claude);
+
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { firstSaved, "Lee", "" });
+}
+
+TEST_CASE ("a save.json from before it listed its files is taken at its word")
+{
+    SavedProject saved;
+    writeFile (saved.file (".hocket/save.json"),
+               "{\n  \"format\": \"hocket-save\",\n  \"time\": \"2026-11-20T09:15:00Z\",\n  \"author\": \"Lee\",\n  \"name\": \"\",\n"
+               "  \"changedOutside\": false,\n  \"discardedRecovery\": false\n}\n");
+    writeFile (saved.file ("clips/bass.notes"), "@length 4bars\n\n1.1    C2 1/4 v100\n");
+    saved.open();
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, claude).ok);
+
+    const auto result = saved.bus->save ({}, claude);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { firstSaved, "Lee", "" });
+}
+
 TEST_CASE ("kept saves' folder names are valid on Windows whatever the author or the save's name holds")
 {
     const TemporaryFolder temporary (unicodeName);

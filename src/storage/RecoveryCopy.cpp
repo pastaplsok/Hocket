@@ -31,21 +31,6 @@ namespace
         return "'" + utf8FromPath (path) + "'";
     }
 
-    // FNV-1a, 64 bits: the same on every machine and in every build, as a
-    // name on disk must be.
-    std::uint64_t hashOf (std::string_view text)
-    {
-        std::uint64_t hash = 0xcbf29ce484222325ull;
-
-        for (const auto c : text)
-        {
-            hash ^= static_cast<unsigned char> (c);
-            hash *= 0x100000001b3ull;
-        }
-
-        return hash;
-    }
-
     // "7" is a copy; "writing 8", "removing 7" and anything else aren't.
     std::optional<int> copyNumber (const std::string& name)
     {
@@ -130,7 +115,7 @@ namespace
         if (name.empty())
             name = "project"; // a drive's root, say
 
-        return name + std::format (" {:016x}", hashOf (utf8FromPath (fullPath)));
+        return name + std::format (" {:016x}", fnv1a64 (utf8FromPath (fullPath)));
     }
 }
 

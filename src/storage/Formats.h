@@ -7,6 +7,7 @@
 #include "core/commands/Storage.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -19,6 +20,11 @@ namespace hocket::storage
     // and trailing dots and spaces go. It can still be a reserved name like
     // CON, so callers start it with something that isn't.
     std::string windowsSafeName (std::string_view text, std::size_t maxUnits);
+
+    // FNV-1a, 64 bits: the same on every machine and in every build, as
+    // anything written on disk must be. For telling texts apart (a recovery
+    // copy's place, save.json's files), never for security.
+    std::uint64_t fnv1a64 (std::string_view text);
 
     // "2026-11-20T13:02:37Z": UTC, to the second.
     std::string utcTimeText (commands::SaveTime time);

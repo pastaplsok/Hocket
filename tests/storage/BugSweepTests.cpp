@@ -27,30 +27,6 @@ namespace
 }
 
 //==============================================================================
-TEST_CASE ("T2: hand edits made while Hocket was closed are kept under the last Hocket save's author and name")
-{
-    SavedProject saved;
-    REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
-    REQUIRE (saved.bus->save ({ "the good take" }, lee).ok);
-
-    // Hocket closed; the bass edited by hand; Hocket opened again.
-    writeFile (saved.file ("clips/bass.notes"), byHand);
-    saved.open();
-
-    REQUIRE (saved.bus->execute (SetTempo { 110 }, claude).ok);
-    const auto result = saved.bus->save ({}, claude);
-    REQUIRE (result.ok);
-    REQUIRE (result.kept);
-    MESSAGE ("kept as: " << describe (*result.kept));
-
-    const auto keptBass = readTextFile (saved.file (result.kept->folder + "/clips/bass.notes"));
-    CHECK (keptBass == byHand);                       // the kept version holds the hand edit...
-    CHECK (result.kept->info.author == "Lee");        // ...labelled as Lee's save
-    CHECK (result.kept->info.name == "the good take"); // ...named "the good take"
-    CHECK_FALSE (result.kept->info.changedOutside);
-}
-
-//==============================================================================
 TEST_CASE ("T4: a typed word starting \"so\" saves over a file changed outside Hocket before the refusal is read")
 {
     SavedProject saved;

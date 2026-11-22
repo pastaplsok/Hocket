@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <format>
 #include <span>
 #include <vector>
 
@@ -70,7 +71,8 @@ namespace
     }
 
     //==============================================================================
-    // .hocket/save.json: who saved the files beside it, and when.
+    // .hocket/save.json: who saved the files beside it, and when, and what
+    // those files were, so a version changed by hand since can be told apart.
     //
     //   {
     //     "format": "hocket-save",
@@ -78,15 +80,43 @@ namespace
     //     "author": "Lee",
     //     "name": "before the bridge experiment",
     //     "changedOutside": false,
-    //     "discardedRecovery": false
+    //     "discardedRecovery": false,
+    //     "files": {
+    //       "clips/bass.notes": "3f2a9c81d4e6b7a0",
+    //       "project.json": "c4e1b0a29f8d7e61"
+    //     }
     //   }
     //
     // The time is UTC. An empty author is a version Hocket didn't save: from
     // before Hocket; or, with changedOutside, one of its saves with files
     // changed outside it since; or, with discardedRecovery, a recovery copy
     // that --play --discard-recovery filed here, timed by when it was written.
+    // "files" are the version's files, project.json and the clip files it
+    // names, each with its text's fingerprint. One written before Hocket
+    // listed them has none, and is taken at its word.
 
-    std::string saveInfoText (const commands::SaveInfo& info)
+    using Fingerprints = std::map<std::string, std::string>;
+
+    // 16 hex digits of a text's FNV-1a hash: enough to tell a file changed by
+    // hand from the one saved.
+    std::string fingerprintOf (std::string_view text)
+    {
+        return std::format ("{:016x}", fnv1a64 (text));
+    }
+
+    // The fingerprints of a version's files: all of them but save.json.
+    Fingerprints fingerprintsOf (const std::map<std::string, std::string>& texts)
+    {
+        Fingerprints fingerprints;
+
+        for (const auto& [file, text] : texts)
+            if (file != saveInfoFile)
+                fingerprints[file] = fingerprintOf (text);
+
+        return fingerprints;
+    }
+
+    std::string saveInfoText (const commands::SaveInfo& info, const Fingerprints& files)
     {
         nlohmann::ordered_json json = nlohmann::ordered_json::object();
         json["format"] = "hocket-save";
@@ -95,10 +125,21 @@ namespace
         json["name"] = info.name;
         json["changedOutside"] = info.changedOutside;
         json["discardedRecovery"] = info.discardedRecovery;
+        json["files"] = nlohmann::ordered_json::object();
+
+        for (const auto& [file, fingerprint] : files)
+            json["files"][file] = fingerprint;
+
         return json.dump (2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
     }
 
-    std::optional<commands::SaveInfo> parseSaveInfo (std::string_view text)
+    struct SaveJson
+    {
+        commands::SaveInfo info;
+        std::optional<Fingerprints> files; // none in one from before they were listed
+    };
+
+    std::optional<SaveJson> parseSaveJson (std::string_view text)
     {
         const auto json = nlohmann::json::parse (text.begin(), text.end(), nullptr, false);
 
@@ -110,7 +151,18 @@ namespace
         if (! time)
             return {};
 
-        commands::SaveInfo info { *time };
+        SaveJson read { commands::SaveInfo { *time } };
+
+        if (json.contains ("files") && json.at ("files").is_object())
+        {
+            read.files.emplace();
+
+            for (const auto& [file, fingerprint] : json.at ("files").items())
+                if (fingerprint.is_string())
+                    (*read.files)[file] = fingerprint.get<std::string>();
+        }
+
+        auto& info = read.info;
 
         if (json.contains ("author") && json.at ("author").is_string())
             info.author = json.at ("author").get<std::string>();
@@ -124,7 +176,13 @@ namespace
         if (json.contains ("discardedRecovery") && json.at ("discardedRecovery").is_boolean())
             info.discardedRecovery = json.at ("discardedRecovery").get<bool>();
 
-        return info;
+        return read;
+    }
+
+    std::optional<commands::SaveInfo> parseSaveInfo (std::string_view text)
+    {
+        auto read = parseSaveJson (text);
+        return read ? std::optional<commands::SaveInfo> (std::move (read->info)) : std::nullopt;
     }
 
     // The clip files a project.json names, as far as it can be read: it may
@@ -600,11 +658,32 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
             return {};
         }
 
+    // The version's own files: project.json and the clip files it names.
+    std::map<std::string, std::string> version;
+
+    if (projectText)
+    {
+        version[std::string (projectFileName)] = *projectText;
+
+        for (const auto& file : clipFilesNamedIn (*projectText))
+            if (const auto found = texts.find (file); found != texts.end())
+                version[file] = found->second;
+    }
+
+    std::optional<std::string> saveJson;
+    const auto info = describeVersionOnDisk (version, changedOutside, saveJson);
+    texts[std::string (saveInfoFile)] = saveJson ? *saveJson : saveInfoText (info, fingerprintsOf (version));
+    return keepFiles (texts, info, problem);
+}
+
+commands::SaveInfo ProjectFolder::describeVersionOnDisk (const std::map<std::string, std::string>& version, const std::vector<std::string>& changedOutside,
+                                                         std::optional<std::string>& saveJson) const
+{
     // When a file last changed, by its date.
-    const auto modifiedTime = [] (const std::filesystem::path& path) -> std::optional<commands::SaveTime>
+    const auto modifiedTime = [this] (const std::string& file) -> std::optional<commands::SaveTime>
     {
         std::error_code timeError;
-        const auto modified = std::filesystem::last_write_time (path, timeError);
+        const auto modified = std::filesystem::last_write_time (folder / pathFromUtf8 (file), timeError);
 
         if (timeError)
             return {};
@@ -612,40 +691,51 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
         return std::chrono::floor<std::chrono::seconds> (std::chrono::clock_cast<std::chrono::system_clock> (modified));
     };
 
-    // Who saved it, and when: its save.json as it is. A version Hocket didn't
-    // save is from before Hocket, at project.json's date; one with files
-    // changed outside Hocket since its save is labelled so, at the latest change.
     const auto infoText = readTextFile (folder / pathFromUtf8 (saveInfoFile));
-    auto info = infoText && changedOutside.empty() ? parseSaveInfo (*infoText) : std::nullopt;
+    const auto read = infoText ? parseSaveJson (*infoText) : std::nullopt;
 
-    if (info)
+    // Files changed outside Hocket: those this session saw change, or, if it
+    // saw none, those that aren't as save.json lists them (changed, added or
+    // deleted by hand while Hocket was closed, or checked out).
+    auto outside = changedOutside;
+
+    if (outside.empty() && read && read->files)
     {
-        texts[std::string (saveInfoFile)] = *infoText;
-    }
-    else
-    {
-        if (! changedOutside.empty())
-        {
-            info = commands::SaveInfo { std::chrono::floor<std::chrono::seconds> (clock()), {}, {}, true };
-            std::optional<commands::SaveTime> latest;
+        for (const auto& [file, text] : version)
+            if (const auto listed = read->files->find (file); listed == read->files->end() || listed->second != fingerprintOf (text))
+                outside.push_back (file);
 
-            for (const auto& file : changedOutside)
-                if (const auto time = modifiedTime (folder / pathFromUtf8 (file)); time && (! latest || *time > *latest))
-                    latest = time;
-
-            if (latest)
-                info->time = *latest;
-        }
-        else
-        {
-            const auto time = modifiedTime (projectPath);
-            info = commands::SaveInfo { time ? *time : std::chrono::floor<std::chrono::seconds> (clock()) };
-        }
-
-        texts[std::string (saveInfoFile)] = saveInfoText (*info);
+        for (const auto& listed : *read->files)
+            if (! version.contains (listed.first))
+                outside.push_back (listed.first);
     }
 
-    return keepFiles (texts, *info, problem);
+    // As save.json says: who saved it, and when.
+    if (outside.empty() && read)
+    {
+        saveJson = infoText;
+        return read->info;
+    }
+
+    // Changed outside Hocket since a save: at the latest change.
+    if (! outside.empty())
+    {
+        commands::SaveInfo info { std::chrono::floor<std::chrono::seconds> (clock()), {}, {}, true };
+        std::optional<commands::SaveTime> latest;
+
+        for (const auto& file : outside)
+            if (const auto time = modifiedTime (file); time && (! latest || *time > *latest))
+                latest = time;
+
+        if (latest)
+            info.time = *latest;
+
+        return info;
+    }
+
+    // Never saved by Hocket: from before Hocket, at project.json's date.
+    const auto time = modifiedTime (std::string (projectFileName));
+    return commands::SaveInfo { time ? *time : std::chrono::floor<std::chrono::seconds> (clock()) };
 }
 
 std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::string, std::string>& texts, const commands::SaveInfo& info,
@@ -788,7 +878,7 @@ std::optional<commands::KeptSave> ProjectFolder::keepRecoveryCopy (const std::fi
 
     commands::SaveInfo info { written };
     info.discardedRecovery = true;
-    texts[std::string (saveInfoFile)] = saveInfoText (info);
+    texts[std::string (saveInfoFile)] = saveInfoText (info, fingerprintsOf (texts));
     return keepFiles (texts, info, problem);
 }
 
@@ -889,7 +979,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     // for a name alone: that names the version on disk.
     const auto projectChanged = ! pending.empty();
     const commands::SaveInfo info { std::chrono::floor<std::chrono::seconds> (clock()), commands::displayName (author), request.name };
-    const auto infoText = saveInfoText (info);
+    const auto infoText = saveInfoText (info, fingerprintsOf (files));
 
     if (projectChanged || ! request.name.empty())
     {

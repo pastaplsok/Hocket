@@ -174,6 +174,16 @@ namespace hocket::storage
         std::optional<commands::KeptSave> keepVersionOnDisk (const std::vector<std::string>& overwrites, const std::vector<std::string>& changedOutside,
                                                              std::string& problem);
 
+        // Who the version on disk is by, and when (SPEC §4.5), from its files'
+        // texts (project.json and the clip files it names) and the files this
+        // session saw change outside Hocket: as its save.json says, if that
+        // describes these files, and then `saveJson` is that file's text to
+        // keep as it is; "changed outside Hocket" at the latest change, if
+        // they aren't the files it describes; "before Hocket" at
+        // project.json's date, if there's no save.json.
+        commands::SaveInfo describeVersionOnDisk (const std::map<std::string, std::string>& version, const std::vector<std::string>& changedOutside,
+                                                  std::optional<std::string>& saveJson) const;
+
         // Writes these files, relative paths to their text (.hocket/save.json
         // included), as the next kept save: whole, or not at all.
         std::optional<commands::KeptSave> keepFiles (const std::map<std::string, std::string>& texts, const commands::SaveInfo& info,
