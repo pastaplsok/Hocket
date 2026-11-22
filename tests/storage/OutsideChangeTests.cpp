@@ -129,6 +129,41 @@ TEST_CASE ("every kind of outside change a save would overwrite is named")
     CHECK (loaded (saved.folder) == bus.project());
 }
 
+TEST_CASE ("with project.json gone, a save with overwrite still keeps every file it replaces first")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
+    writeFile (saved.file ("clips/bass.notes"), byHand);
+    std::filesystem::remove (saved.file ("project.json")); // moved away, say, or a checkout
+
+    CHECK_FALSE (saved.bus->save ({}, claude).ok);
+    const auto result = saved.bus->save ({ {}, true }, claude);
+
+    REQUIRE (result.ok);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info.changedOutside);
+    CHECK (readTextFile (saved.file (result.kept->folder + "/clips/bass.notes")) == byHand);
+    CHECK_FALSE (std::filesystem::exists (saved.file (result.kept->folder + "/project.json")));
+    CHECK (result.message == "saved: wrote clips/bass.notes and project.json; the version it replaced is kept as " + describe (*result.kept));
+    CHECK (loaded (saved.folder) == saved.bus->project());
+}
+
+TEST_CASE ("a save that only adds files replaces nothing, so it keeps nothing")
+{
+    SavedProject saved;
+    std::filesystem::remove (saved.file ("project.json"));
+    std::filesystem::remove (saved.file ("clips/bass.notes"));
+    std::filesystem::remove (saved.file ("clips/beat.notes"));
+    std::filesystem::remove (saved.file ("clips/fill.notes"));
+
+    const auto result = saved.bus->save ({ {}, true }, claude);
+
+    REQUIRE (result.ok);
+    CHECK_FALSE (result.kept);
+    CHECK (saved.bus->keptSaves().empty());
+    CHECK (loaded (saved.folder) == saved.bus->project());
+}
+
 TEST_CASE ("a file whose date changed, but whose text the save wouldn't change, doesn't stop it")
 {
     SavedProject saved;

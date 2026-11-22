@@ -339,40 +339,50 @@ project::LoadResult ProjectFolder::loadKeptSave (const commands::KeptSave& save)
     return project::load (folder / pathFromUtf8 (save.folder));
 }
 
-std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::vector<std::string>& changedOutside, std::string& problem)
+std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::vector<std::string>& overwrites, const std::vector<std::string>& changedOutside,
+                                                                    std::string& problem)
 {
+    // A save that only adds files (to a new folder, say) replaces nothing.
+    if (overwrites.empty())
+        return {};
+
     const auto projectPath = folder / pathFromUtf8 (projectFileName);
     std::error_code error;
-
-    if (! std::filesystem::exists (projectPath, error))
-        return {}; // a new folder: there's no version to keep
-
     std::map<std::string, std::string> texts;
-    const auto projectText = readTextFile (projectPath);
+    std::optional<std::string> projectText;
 
-    if (! projectText)
+    // project.json, if it's there: one deleted outside Hocket leaves the
+    // clip files still to keep.
+    if (std::filesystem::exists (projectPath, error))
     {
-        problem = "couldn't read project.json";
-        return {};
+        projectText = readTextFile (projectPath);
+
+        if (! projectText)
+        {
+            problem = "couldn't read project.json";
+            return {};
+        }
+
+        texts[std::string (projectFileName)] = *projectText;
     }
 
-    texts[std::string (projectFileName)] = *projectText;
-
     // Its clip files: the ones its project.json names, and the ones Hocket
-    // knows, should that project.json not read.
+    // knows, should that project.json not read or not be there.
     std::set<std::string, std::less<>> files;
 
     for (const auto& entry : known)
         if (entry.first != projectFileName)
             files.insert (entry.first);
 
-    for (auto& file : clipFilesNamedIn (*projectText))
-        files.insert (std::move (file));
+    if (projectText)
+        for (auto& file : clipFilesNamedIn (*projectText))
+            files.insert (std::move (file));
 
     // And any this save overwrites that neither names: one put there by hand.
-    for (const auto& file : changedOutside)
-        if (file != projectFileName)
-            files.insert (file);
+    for (const auto& list : { &overwrites, &changedOutside })
+        for (const auto& file : *list)
+            if (file != projectFileName)
+                files.insert (file);
 
     for (const auto& file : files)
     {
@@ -391,6 +401,14 @@ std::optional<commands::KeptSave> ProjectFolder::keepVersionOnDisk (const std::v
 
         texts[file] = std::move (*text);
     }
+
+    // Every file the save replaces is in the copy, or it writes nothing (SPEC §4.5).
+    for (const auto& file : overwrites)
+        if (! texts.contains (file))
+        {
+            problem = "couldn't copy " + file + ", which the save would replace";
+            return {};
+        }
 
     // When a file last changed, by its date.
     const auto modifiedTime = [] (const std::filesystem::path& path) -> std::optional<commands::SaveTime>
@@ -681,8 +699,15 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     // save ever loses one (SPEC §4.5).
     if (projectChanged)
     {
+        // The files on disk it replaces: those it writes that are there now.
+        std::vector<std::string> overwrites;
+
+        for (const auto& file : pending)
+            if (file.was && file.file != saveInfoFile)
+                overwrites.push_back (file.file);
+
         std::string problem;
-        result.kept = keepVersionOnDisk (changedOutside, problem);
+        result.kept = keepVersionOnDisk (overwrites, changedOutside, problem);
 
         if (! problem.empty())
         {

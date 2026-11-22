@@ -18,42 +18,12 @@ namespace
     const std::string newBass = "@length 4bars\n\n1.1 C2 1/2 v100\n";
     const std::string byHand = "@length 4bars\n\n1.1    C2 1/4 v100\n# Lee's edit by hand\n";
 
-    bool anyFileHolds (const std::filesystem::path& folder, const std::string& text)
-    {
-        for (const auto& [name, bytes] : filesIn (folder))
-            if (bytes == text)
-                return true;
-
-        return false;
-    }
-
     std::string replaced (std::string text, const std::string& from, const std::string& to)
     {
         const auto at = text.find (from);
         REQUIRE (at != std::string::npos);
         return text.replace (at, from.size(), to);
     }
-}
-
-//==============================================================================
-TEST_CASE ("T1: overwrite with project.json missing keeps nothing, so a clip file edited by hand is lost")
-{
-    SavedProject saved;
-    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
-
-    writeFile (saved.file ("clips/bass.notes"), byHand);    // Lee's edit by hand
-    std::filesystem::remove (saved.file ("project.json")); // and project.json gone (moved away, a checkout...)
-
-    const auto refused = saved.bus->save ({}, claude);
-    MESSAGE ("refused: " << refused.message);
-    CHECK_FALSE (refused.ok);
-
-    const auto result = saved.bus->save ({ {}, true }, claude);
-    MESSAGE ("overwrite: " << result.message);
-    CHECK (result.ok);
-    CHECK_FALSE (result.kept);                              // nothing kept...
-    CHECK_FALSE (anyFileHolds (saved.folder, byHand));      // ...and Lee's edit is nowhere on disk
-    CHECK (saved.bus->keptSaves().empty());
 }
 
 //==============================================================================

@@ -127,10 +127,14 @@ namespace hocket::storage
         // only ones a save may move to unused/.
         std::map<std::string, Known, std::less<>> known;
 
-        // Copies the version on disk into a new kept save. nullopt with no
-        // problem when there's no project on disk to keep. With files changed
+        // Copies the version on disk into a new kept save: project.json if
+        // it's there, its clip files, and every file in `overwrites`, the
+        // files on disk the save replaces. A problem if any of those can't be
+        // copied, so the save writes nothing. nullopt with no problem when
+        // `overwrites` is empty: the save replaces nothing. With files changed
         // outside Hocket, it's labelled so, at the latest change's time.
-        std::optional<commands::KeptSave> keepVersionOnDisk (const std::vector<std::string>& changedOutside, std::string& problem);
+        std::optional<commands::KeptSave> keepVersionOnDisk (const std::vector<std::string>& overwrites, const std::vector<std::string>& changedOutside,
+                                                             std::string& problem);
 
         // Writes these files, relative paths to their text (.hocket/save.json
         // included), as the next kept save: whole, or not at all.
