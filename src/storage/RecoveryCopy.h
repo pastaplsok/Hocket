@@ -14,9 +14,11 @@
 // it whole and usable, never part of the new one:
 //   1. the new copy is written whole into "writing 8\", each file on the disk
 //      (platform::writeFileToDisk) before the next is begun;
-//   2. then renamed "8" in one step, which is on the disk before it returns
-//      (platform::moveFile). NTFS journals its changes to folders in order,
-//      so once the rename is on the disk, so are the files it names;
+//   2. then renamed "8" in one step (platform::moveFile), and flushed at its
+//      new name, which on NTFS writes the rename to the disk. Windows doesn't
+//      promise that for a rename, so a power cut at that moment may undo it,
+//      which leaves "7", whole. NTFS journals its changes to folders in
+//      order, so once the rename is on the disk, so are the files it names;
 //   3. only then is "7" taken away: renamed "removing 7", then deleted.
 // Reading takes the highest-numbered copy, and never a "writing" or "removing"
 // folder, which the next write clears away. Removing a copy renames it first

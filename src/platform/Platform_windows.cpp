@@ -212,11 +212,34 @@ std::string writeFileToDisk (const std::filesystem::path& file, std::string_view
     return error;
 }
 
+namespace
+{
+    // After a rename within a volume, which Windows only journals:
+    // MOVEFILE_WRITE_THROUGH is documented for moves done as a copy and a
+    // delete, between volumes. Flushing the file or folder at its new name
+    // writes NTFS's journal out up to the rename, so it's on the disk when
+    // this returns. Best effort: one that can't be opened to flush (another
+    // program holding it) is left to the journal's own timing, a few seconds.
+    // It changes no file's date.
+    void flushRenamed (const std::filesystem::path& path)
+    {
+        const auto handle = CreateFileW (path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                         FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+
+        if (handle == INVALID_HANDLE_VALUE)
+            return;
+
+        FlushFileBuffers (handle);
+        CloseHandle (handle);
+    }
+}
+
 std::string replaceFile (const std::filesystem::path& from, const std::filesystem::path& to)
 {
     if (! MoveFileExW (from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         return lastErrorMessage();
 
+    flushRenamed (to);
     return {};
 }
 
@@ -226,6 +249,7 @@ std::string moveFile (const std::filesystem::path& from, const std::filesystem::
     if (! MoveFileExW (from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH))
         return lastErrorMessage();
 
+    flushRenamed (to);
     return {};
 }
 
