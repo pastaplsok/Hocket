@@ -17,13 +17,6 @@ namespace
 {
     const std::string newBass = "@length 4bars\n\n1.1 C2 1/2 v100\n";
     const std::string byHand = "@length 4bars\n\n1.1    C2 1/4 v100\n# Lee's edit by hand\n";
-
-    std::string replaced (std::string text, const std::string& from, const std::string& to)
-    {
-        const auto at = text.find (from);
-        REQUIRE (at != std::string::npos);
-        return text.replace (at, from.size(), to);
-    }
 }
 
 //==============================================================================
@@ -42,31 +35,6 @@ TEST_CASE ("T4: a typed word starting \"so\" saves over a file changed outside H
 
     CHECK (readTextFile (saved.file ("clips/bass.notes")) != byHand); // overwritten
     CHECK_FALSE (saved.bus->hasUnsavedChanges());
-}
-
-//==============================================================================
-TEST_CASE ("T5: --watch's project.json replaces an unsaved API change with no warning")
-{
-    SavedProject saved;
-    auto& bus = *saved.bus;
-    storage::WatchedFolder watched (bus, *saved.projectFolder, lee);
-    const auto start = storage::ProjectWatcher::Clock::now();
-    CHECK (watched.poll (start).empty());
-
-    // Claude adds a clip with notes, unsaved: its notes are on no disk.
-    REQUIRE (bus.execute (AddClip { "trk-bass", "5.1", ClipText { newBass }, "clp-verse" }, claude).ok);
-
-    // Lee changes the tempo in project.json by hand, in the file as it is on disk.
-    const auto onDisk = *readTextFile (saved.file ("project.json"));
-    writeFile (saved.file ("project.json"), replaced (onDisk, "\"tempo\": 174", "\"tempo\": 96"));
-
-    CHECK (watched.poll (start + 50ms).empty());
-    const auto reports = watched.poll (start + 300ms);
-    REQUIRE (reports.size() == 1);
-    MESSAGE ("report: " << reports[0].message);
-    CHECK (reports[0].ok);
-    CHECK_FALSE (reports[0].warning);                                // no warning...
-    CHECK (project::findClip (bus.project(), "clp-verse") == nullptr); // ...though Claude's clip is gone
 }
 
 //==============================================================================

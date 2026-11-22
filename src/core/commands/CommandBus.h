@@ -95,6 +95,10 @@ namespace hocket::commands
         // drum map it's written with).
         std::vector<HistoryEntry> changesTo (std::string_view file) const;
 
+        // The entries in history() that changed project.json: anything but a
+        // clip file's notes (the tempo, tracks, clips placed), newest first.
+        std::vector<HistoryEntry> structureChanges() const;
+
         std::optional<OpenTransaction> openTransaction() const;
 
         // Called with each change, after every command, undo, redo and

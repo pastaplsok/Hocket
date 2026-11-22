@@ -269,6 +269,7 @@ TEST_CASE ("--watch takes project.json saved outside Hocket in as one command re
     CHECK (reports[0].file == "project.json");
     CHECK (reports[0].ok);
     CHECK (reports[0].message == "#2 project.json saved outside Hocket. Changes: the tempo (174 BPM to 96 BPM); changed trk-bass");
+    CHECK_FALSE (reports[0].warning); // Claude's unsaved change is to the fill's notes, which stay
     CHECK (bus.project() == edited);
     CHECK (project::clipFileText (bus.project(), "clips/fill.notes") == claudesFill);
     CHECK (bus.history().front().author == lee);
@@ -282,6 +283,36 @@ TEST_CASE ("--watch takes project.json saved outside Hocket in as one command re
     // Both files were read, so the next save writes over neither as an outside change.
     CHECK (bus.save ({}, lee).ok);
     CHECK (loaded (saved.folder) == edited);
+}
+
+TEST_CASE ("--watch's project.json warns when it replaces a change to the project that wasn't saved, naming it and the entry to undo")
+{
+    SavedProject saved;
+    auto& bus = *saved.bus;
+    storage::WatchedFolder watched (bus, *saved.projectFolder, lee);
+    const auto start = Clock::now();
+    CHECK (watched.poll (start).empty());
+
+    // Claude adds a clip with notes, unsaved, so on no disk; then Lee changes
+    // the tempo in project.json as it is on disk.
+    REQUIRE (bus.execute (AddClip { "trk-bass", "5.1", ClipText { newBass }, "clp-verse" }, claude).ok);
+    const auto withClaudesClip = bus.project();
+    auto text = *readTextFile (saved.file ("project.json"));
+    text.replace (text.find ("\"tempo\": 174"), 12, "\"tempo\": 96");
+    writeFile (saved.file ("project.json"), text);
+
+    CHECK (watched.poll (start + 50ms).empty());
+    const auto reports = watched.poll (start + 300ms);
+
+    REQUIRE (reports.size() == 1);
+    CHECK (reports[0].ok);
+    CHECK (reports[0].warning.value_or ("")
+           == "warning: this save of project.json replaced changes made to the project since it was last loaded or saved (the latest: #1 \"added clip "
+              "clp-verse on trk-bass at 5.1 (1 note)\" by Claude). They weren't saved, so the file didn't have them. Undoing #2 brings them back.");
+    CHECK (project::findClip (bus.project(), "clp-verse") == nullptr);
+
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.project() == withClaudesClip);
 }
 
 TEST_CASE ("--watch reads project.json with a clip file saved outside at the same time, and takes both in at once")

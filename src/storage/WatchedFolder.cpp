@@ -70,7 +70,15 @@ WatchedFolder::Report WatchedFolder::takeProject (const ProjectWatcher::Change& 
         return { change.file, false, message };
     }
 
+    // The session's project.json, and the file as Hocket last read or wrote
+    // it: they differ when the session holds changes to the project that
+    // weren't saved, which a save made to the file on disk replaces.
+    const auto sessionJson = project::write (session).at ("project.json");
+    const auto knownJson = folder.knownText ("project.json");
+    const auto unsaved = knownJson && *knownJson != sessionJson;
+
     auto result = bus.execute (commands::ReplaceProject { *loaded.project, "project.json saved outside Hocket" }, person);
+    std::optional<std::string> warning;
 
     if (result.ok)
     {
@@ -80,9 +88,37 @@ WatchedFolder::Report WatchedFolder::takeProject (const ProjectWatcher::Change& 
         for (const auto& read : fromDisk)
             if (const auto text = files.find (read.file); text != files.end())
                 folder.noteRead (read.file, read.stamp, text->second);
+
+        if (unsaved && files.at ("project.json") != sessionJson)
+            warning = replacedWarning();
     }
 
-    return { change.file, result.ok, std::move (result.message) };
+    return { change.file, result.ok, std::move (result.message), std::move (warning) };
+}
+
+std::string WatchedFolder::replacedWarning() const
+{
+    // The save is the newest change to the project's structure; what it
+    // replaced came before it, by someone else.
+    const auto changes = bus.structureChanges();
+    const auto* saveEntry = ! changes.empty() && changes.front().author == person ? &changes.front() : nullptr;
+    const commands::HistoryEntry* replaced = nullptr;
+
+    for (std::size_t i = saveEntry != nullptr ? 1 : 0; i < changes.size() && replaced == nullptr; ++i)
+        if (changes[i].author != person)
+            replaced = &changes[i];
+
+    std::string warning = "warning: this save of project.json replaced changes made to the project since it was last loaded or saved";
+
+    if (replaced != nullptr)
+        warning += " (the latest: #" + std::to_string (replaced->id) + " \"" + replaced->description + "\" by " + commands::displayName (replaced->author) + ")";
+
+    warning += ". They weren't saved, so the file didn't have them.";
+
+    if (saveEntry != nullptr)
+        warning += " Undoing #" + std::to_string (saveEntry->id) + " brings them back.";
+
+    return warning;
 }
 
 WatchedFolder::Report WatchedFolder::takeClip (const ProjectWatcher::Change& change)

@@ -6,7 +6,8 @@
 //
 // - project.json: one command replacing the project (ReplaceProject), read
 //   with each clip file as the session has it, unsaved changes included, or
-//   as it is on disk if it changed outside Hocket too, or is new.
+//   as it is on disk if it changed outside Hocket too, or is new. With a
+//   warning when it replaces changes to the project that weren't saved.
 // - A clip file: a write_clip to the first clip using it (WatchedSaves),
 //   with a warning when it replaces changes the file didn't have.
 //
@@ -36,7 +37,7 @@ namespace hocket::storage
             std::string file;                   // "project.json", "clips/bass.notes"
             bool ok = false;                    // taken in (or it changed nothing); otherwise the session carries on as it was
             std::string message;                // the command's result, or why it couldn't be taken in
-            std::optional<std::string> warning; // a clip file's save that replaced changes the file didn't have
+            std::optional<std::string> warning; // a save that replaced changes the file didn't have
         };
 
         // The changes that have settled since the last poll, taken in.
@@ -51,5 +52,9 @@ namespace hocket::storage
 
         Report takeProject (const ProjectWatcher::Change& change);
         Report takeClip (const ProjectWatcher::Change& change);
+
+        // project.json's save replaced changes to the project that weren't
+        // saved: which, and the entry to undo to get them back.
+        std::string replacedWarning() const;
     };
 }
