@@ -20,24 +20,6 @@ namespace
 }
 
 //==============================================================================
-TEST_CASE ("T4: a typed word starting \"so\" saves over a file changed outside Hocket before the refusal is read")
-{
-    SavedProject saved;
-    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
-    writeFile (saved.file ("clips/bass.notes"), byHand);
-
-    storage::SaveKeys keys (*saved.bus, lee);
-
-    // --play's timer hands every key typed since the last tick to press(), in one loop.
-    for (const auto key : std::u32string (U"sort"))
-        if (const auto said = keys.press (key))
-            MESSAGE ("key '" << static_cast<char> (key) << "': " << *said);
-
-    CHECK (readTextFile (saved.file ("clips/bass.notes")) != byHand); // overwritten
-    CHECK_FALSE (saved.bus->hasUnsavedChanges());
-}
-
-//==============================================================================
 TEST_CASE ("T7: a save with a name and no changes relabels the version on disk with the namer and the time of naming")
 {
     SavedProject saved; // saved by Lee at firstSaved

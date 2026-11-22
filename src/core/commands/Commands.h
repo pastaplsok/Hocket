@@ -229,6 +229,11 @@ namespace hocket::commands
         // last read or wrote it: it writes nothing and names the file. With
         // overwrite, it saves anyway, once the version on disk is kept.
         bool overwrite = false;
+
+        // With overwrite: a refusal's SaveResult::outsideToken, so that it
+        // saves over only what that refusal named. If more has changed
+        // outside Hocket since, it's refused again (the console's O, SPEC §4.5).
+        std::string overwriteOnly;
     };
 
     //==============================================================================

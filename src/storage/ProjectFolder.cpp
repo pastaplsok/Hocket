@@ -943,6 +943,10 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     std::vector<std::string> changedOutside;
     std::vector<std::string> howTheyChanged;
 
+    // Those files as they are now: an overwrite asked for after a refusal
+    // saves over them only if they're still as that refusal found them.
+    std::string outsideToken;
+
     for (const auto& file : pending)
     {
         const auto found = known.find (file.file);
@@ -954,9 +958,16 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         howTheyChanged.push_back (found == known.end() ? file.file + " is there already, but Hocket never had it in the project"
                                   : ! file.stamp.exists ? file.file + " was deleted outside Hocket"
                                                         : file.file + " changed outside Hocket");
+
+        outsideToken += file.file + " "
+                      + (file.stamp.exists ? std::to_string (file.stamp.modified.time_since_epoch().count()) + ":" + std::to_string (file.stamp.size)
+                                           : std::string ("gone"))
+                      + ";";
     }
 
-    if (! changedOutside.empty() && ! request.overwrite)
+    const auto overwrite = request.overwrite && (request.overwriteOnly.empty() || request.overwriteOnly == outsideToken);
+
+    if (! changedOutside.empty() && ! overwrite)
     {
         std::string changes;
 
@@ -972,6 +983,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
                                + (changedOutside.size() == 1 ? "it" : "them") + ". Saving with overwrite saves anyway, "
                                + "keeping the version on disk as a kept save first, so it can be got back");
         refused.outsideChanges = std::move (howTheyChanged);
+        refused.outsideToken = std::move (outsideToken);
         return refused;
     }
 

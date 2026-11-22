@@ -85,6 +85,10 @@ namespace hocket::commands
         // Hocket: how each file changed, "clips/bass.notes changed outside
         // Hocket". Saving with overwrite saves over them.
         std::vector<std::string> outsideChanges;
+
+        // With outsideChanges: those files as they were on disk when it was
+        // refused, for Save::overwriteOnly.
+        std::string outsideToken;
     };
 
     class Storage
