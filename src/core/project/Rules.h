@@ -133,5 +133,11 @@ namespace hocket::project
 
     // A clip file named after a clip ID, that no clip uses: clp-verse-2 gets
     // clips/verse-2.notes, or clips/verse-2-2.notes if that's taken (SPEC §4.4).
+    // Never a Windows device name: clp-aux gets clips/aux-2.notes.
     std::string unusedClipFile (const Project& project, std::string_view clipId);
+
+    // A name Windows keeps for a device, whatever extension follows it on
+    // Windows 10 and earlier: con, prn, aux, nul, com0-com9, lpt0-lpt9. In
+    // lowercase, as Hocket's hyphenated names are.
+    bool isWindowsDeviceName (std::string_view name);
 }

@@ -99,6 +99,31 @@ TEST_CASE ("add a clip: an empty one, with an ID from its track and a file named
     CHECK (bus.project() == makeProject());
 }
 
+TEST_CASE ("a clip file Hocket names is never one of Windows' device names, which no file can have on older Windows")
+{
+    CommandBus bus { makeProject() };
+
+    // A track named "Aux" makes clip IDs that would give clips/aux.notes.
+    for (const auto* id : { "clp-aux", "clp-con", "clp-nul", "clp-prn", "clp-com1", "clp-lpt9" })
+    {
+        CAPTURE (id);
+        const auto file = project::unusedClipFile (bus.project(), id);
+        CHECK (file == "clips/" + std::string (id).substr (4) + "-2.notes");
+    }
+
+    // Names that only start like one are fine.
+    CHECK (project::unusedClipFile (bus.project(), "clp-aux-bass") == "clips/aux-bass.notes");
+    CHECK (project::unusedClipFile (bus.project(), "clp-com10") == "clips/com10.notes");
+    CHECK (project::unusedClipFile (bus.project(), "clp-console") == "clips/console.notes");
+
+    // Through the commands: a new clip, and one made unique.
+    REQUIRE (bus.execute (AddClip { "trk-bass", "9.1", EmptyClip { 1 }, "clp-aux" }, claude).ok);
+    CHECK (clipOf (bus, "clp-aux").file == "clips/aux-2.notes");
+    REQUIRE (bus.execute (AddClip { "trk-bass", "11.1", LinkedTo { "clp-a" }, "clp-nul" }, claude).ok);
+    REQUIRE (bus.execute (MakeClipUnique { "clp-nul" }, claude).ok);
+    CHECK (clipOf (bus, "clp-nul").file == "clips/nul-2.notes");
+}
+
 TEST_CASE ("add a clip: from .notes text, read with the track's drum map")
 {
     CommandBus bus (makeProject());
