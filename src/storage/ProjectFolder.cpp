@@ -240,10 +240,10 @@ namespace
     }
 
     // Puts back the files a failed save already swapped in, newest first.
-    // Returns what couldn't be put back, and why.
-    std::vector<std::string> putBack (std::span<const Pending> swapped)
+    // Returns each that couldn't be put back, and why.
+    std::vector<std::pair<std::string, std::string>> putBack (std::span<const Pending> swapped)
     {
-        std::vector<std::string> problems;
+        std::vector<std::pair<std::string, std::string>> problems;
 
         for (auto i = swapped.size(); i-- > 0;)
         {
@@ -274,7 +274,7 @@ namespace
             }
 
             if (! problem.empty())
-                problems.push_back (file.file + " (" + withoutStop (problem) + ")");
+                problems.emplace_back (file.file, withoutStop (problem));
         }
 
         return problems;
@@ -1129,8 +1129,30 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
             // Put back or not, there's nothing left to finish: the session still holds the project.
             std::filesystem::remove (marker, markerError);
 
+            // What each file swapped in holds now, as Hocket knows it. One left
+            // in place has Hocket's new text, so a later save mustn't take it
+            // for a change made outside. One put back has what it had, under a
+            // new date: one Hocket knew as it was is still known, and one
+            // changed outside still isn't.
+            std::vector<std::string> named;
+
+            for (const auto& back : std::span (pending).first (i))
+            {
+                if (const auto left = std::ranges::find (notPutBack, back.file, &std::pair<std::string, std::string>::first); left != notPutBack.end())
+                {
+                    named.push_back (back.file + " (" + left->second + ")");
+
+                    if (back.file != saveInfoFile)
+                        known[back.file] = { back.written, *back.text };
+                }
+                else if (const auto found = known.find (back.file); found != known.end() && std::ranges::find (changedOutside, back.file) == changedOutside.end())
+                {
+                    found->second.stamp = project::FileStamp::of (back.path);
+                }
+            }
+
             if (! notPutBack.empty())
-                return failed (message + " Putting back the files already replaced failed for " + listed (notPutBack)
+                return failed (message + " Putting back the files already replaced failed for " + listed (named)
                                + ", so the folder is part new, part old: save again once the problem is fixed");
 
             // The folder is as it was, so the copy of it goes too.
@@ -1139,12 +1161,6 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
                 std::error_code error;
                 std::filesystem::remove_all (folder / pathFromUtf8 (result.kept->folder), error);
             }
-
-            // Put back, a file has what it had, under a new date. One Hocket
-            // knew as it was is still known; one changed outside still isn't.
-            for (const auto& back : std::span (pending).first (i))
-                if (const auto found = known.find (back.file); found != known.end() && std::ranges::find (changedOutside, back.file) == changedOutside.end())
-                    found->second.stamp = project::FileStamp::of (back.path);
 
             return failed (message + (i == 0 ? " Nothing on disk changed" : " Nothing on disk changed: the files already replaced were put back")
                            + ". If another program has the file open, close it there, then save again");
