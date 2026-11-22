@@ -103,6 +103,23 @@ TEST_CASE ("with no history, the start counts as saved again")
     CHECK_FALSE (bus.hasUnsavedChanges());
 }
 
+TEST_CASE ("a bus whose start isn't what's on disk counts as unsaved, through undo, until a save")
+{
+    Fixture fixture;
+    auto& bus = fixture.bus;
+    bus.markUnsaved(); // started from a recovery copy, say, since the folder didn't load
+
+    CHECK (bus.hasUnsavedChanges());
+    REQUIRE (bus.execute (SetTempo { 130 }, lee).ok);
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.hasUnsavedChanges());
+
+    REQUIRE (bus.save ({}, lee).ok);
+    CHECK_FALSE (bus.hasUnsavedChanges());
+    REQUIRE (bus.redo (lee).ok);
+    CHECK (bus.hasUnsavedChanges());
+}
+
 TEST_CASE ("a command that changes nothing leaves nothing unsaved")
 {
     Fixture fixture;

@@ -16,6 +16,7 @@
 #include "core/project/Project.h"
 
 #include <cstdint>
+#include <limits>
 #include <functional>
 #include <optional>
 #include <set>
@@ -152,6 +153,11 @@ namespace hocket::commands
         // counts as saved. A change that's then put back by hand, with no
         // undo, still counts as unsaved.
         bool hasUnsavedChanges() const { return revision() != savedRevision; }
+
+        // The project the bus started with isn't what's on disk: it came from
+        // a recovery copy, since the folder's files didn't load. Then no state
+        // the history reaches counts as saved until a save.
+        void markUnsaved() { savedRevision = std::numeric_limits<Revision>::max(); }
 
         // Each state of the project the history can reach has a revision
         // number, never reused: the newest entry's (0 when there's none), or

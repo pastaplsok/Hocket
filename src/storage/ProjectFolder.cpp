@@ -248,6 +248,153 @@ namespace
     {
         return { false, "didn't save: " + std::move (message) };
     }
+
+    // What a save, or finishing one, says when the step hook stopped it, as a crash would.
+    constexpr std::string_view stoppedByHook = "stopped part-way by the step hook";
+
+    //==============================================================================
+    // .hocket/saving.json: there while a save puts its files in place, so the
+    // next open can finish it (finishInterruptedSave).
+    //
+    //   {
+    //     "format": "hocket-saving",
+    //     "author": "Lee",
+    //     "time": "2026-11-20T13:02:37Z",
+    //     "files": [
+    //       { "file": "clips/bass.notes", "before": { "exists": true, "modified": 134079..., "size": 52 } },
+    //       ...
+    //     ],
+    //     "unused": [ "clips/verse-2.notes" ]
+    //   }
+    //
+    // Each file's new text is beside it ("<file>.hocket-saving") before this
+    // is written. The files are in the order they go in place; "before" is
+    // each one's stamp as the save found it, so one changed since isn't
+    // overwritten. "unused" are the clip files no clip uses any more.
+    struct Marker
+    {
+        struct File
+        {
+            std::string file;
+            project::FileStamp before;
+        };
+
+        std::string author;
+        commands::SaveTime time {};
+        std::vector<File> files;
+        std::vector<std::string> unused;
+    };
+
+    std::string markerText (const Marker& marker)
+    {
+        nlohmann::ordered_json json = nlohmann::ordered_json::object();
+        json["format"] = "hocket-saving";
+        json["author"] = marker.author;
+        json["time"] = utcTimeText (marker.time);
+        json["files"] = nlohmann::ordered_json::array();
+
+        for (const auto& file : marker.files)
+        {
+            nlohmann::ordered_json before = nlohmann::ordered_json::object();
+            before["exists"] = file.before.exists;
+            before["modified"] = static_cast<std::int64_t> (file.before.modified.time_since_epoch().count());
+            before["size"] = static_cast<std::uint64_t> (file.before.size);
+
+            nlohmann::ordered_json entry = nlohmann::ordered_json::object();
+            entry["file"] = file.file;
+            entry["before"] = std::move (before);
+            json["files"].push_back (std::move (entry));
+        }
+
+        json["unused"] = marker.unused;
+        return json.dump (2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
+    }
+
+    // project.json, .hocket/save.json, or a clip file: the only files a
+    // marker may name, so a damaged one can't move anything else.
+    bool isSavedFile (std::string_view file)
+    {
+        return file == projectFileName || file == saveInfoFile || ! project::clipFileProblem (file);
+    }
+
+    // nullopt for a marker that doesn't read: one a crash cut short, written
+    // before the save put anything in place.
+    std::optional<Marker> parseMarker (std::string_view text)
+    {
+        const auto json = nlohmann::json::parse (text.begin(), text.end(), nullptr, false);
+
+        const auto stringAt = [&json] (const char* key) -> std::optional<std::string>
+        {
+            if (! json.contains (key) || ! json.at (key).is_string())
+                return {};
+
+            return json.at (key).get<std::string>();
+        };
+
+        if (json.is_discarded() || ! json.is_object() || stringAt ("format") != "hocket-saving" || ! json.contains ("files")
+            || ! json.at ("files").is_array() || ! json.contains ("unused") || ! json.at ("unused").is_array())
+            return {};
+
+        Marker marker;
+        marker.author = stringAt ("author").value_or ("");
+
+        if (const auto time = parseUtcTime (stringAt ("time").value_or ("")))
+            marker.time = *time;
+
+        for (const auto& entry : json.at ("files"))
+        {
+            if (! entry.is_object() || ! entry.contains ("file") || ! entry.at ("file").is_string() || ! entry.contains ("before"))
+                return {};
+
+            const auto& before = entry.at ("before");
+
+            if (! before.is_object() || ! before.contains ("exists") || ! before.at ("exists").is_boolean() || ! before.contains ("modified")
+                || ! before.at ("modified").is_number_integer() || ! before.contains ("size") || ! before.at ("size").is_number_unsigned())
+                return {};
+
+            Marker::File file { entry.at ("file").get<std::string>() };
+            file.before.exists = before.at ("exists").get<bool>();
+            file.before.modified = std::filesystem::file_time_type (std::filesystem::file_time_type::duration (before.at ("modified").get<std::int64_t>()));
+            file.before.size = before.at ("size").get<std::uint64_t>();
+
+            if (! isSavedFile (file.file))
+                return {};
+
+            marker.files.push_back (std::move (file));
+        }
+
+        for (const auto& entry : json.at ("unused"))
+        {
+            if (! entry.is_string() || project::clipFileProblem (entry.get<std::string>()))
+                return {};
+
+            marker.unused.push_back (entry.get<std::string>());
+        }
+
+        return marker;
+    }
+
+    // What a save stopped part-way may have left: its temporary files beside
+    // the project's, and copies it began for a kept save ("saving <n>").
+    std::vector<std::filesystem::path> saveLeftovers (const std::filesystem::path& folder)
+    {
+        std::vector<std::filesystem::path> leftovers;
+        std::error_code error;
+
+        for (const auto file : { projectFileName, saveInfoFile })
+            if (const auto temporary = temporaryFor (folder / pathFromUtf8 (file)); std::filesystem::exists (temporary, error))
+                leftovers.push_back (temporary);
+
+        for (std::filesystem::directory_iterator entry (folder / pathFromUtf8 ("clips"), error), end; ! error && entry != end; entry.increment (error))
+            if (utf8FromPath (entry->path().filename()).ends_with (temporarySuffix))
+                leftovers.push_back (entry->path());
+
+        for (std::filesystem::directory_iterator entry (folder / pathFromUtf8 (keptSavesFolder), error), end; ! error && entry != end; entry.increment (error))
+            if (utf8FromPath (entry->path().filename()).starts_with ("saving "))
+                leftovers.push_back (entry->path());
+
+        return leftovers;
+    }
 }
 
 //==============================================================================
@@ -292,6 +439,33 @@ std::pair<project::LoadResult, std::optional<ProjectFolder>> ProjectFolder::open
         opened.known[file] = { stamps[file], std::move (text) };
 
     return { std::move (loaded), std::move (opened) };
+}
+
+ProjectFolder ProjectFolder::asItIs (std::filesystem::path folder, Clock clock)
+{
+    ProjectFolder opened (std::move (folder), project::Project {}, std::move (clock));
+    opened.known.clear(); // the empty project's project.json, if there's one on disk
+
+    std::vector<std::string> files { std::string (projectFileName) };
+    std::error_code error;
+
+    for (std::filesystem::directory_iterator entry (opened.folder / pathFromUtf8 ("clips"), error), end; ! error && entry != end; entry.increment (error))
+        if (auto name = "clips/" + utf8FromPath (entry->path().filename()); ! project::clipFileProblem (name))
+            files.push_back (std::move (name));
+
+    for (const auto& file : files)
+    {
+        const auto path = opened.folder / pathFromUtf8 (file);
+        const auto stamp = project::FileStamp::of (path); // before reading, as open() does
+
+        if (! stamp.exists)
+            continue;
+
+        if (auto text = readTextFile (path))
+            opened.known[file] = { stamp, std::move (*text) };
+    }
+
+    return opened;
 }
 
 std::optional<project::FileStamp> ProjectFolder::knownStamp (std::string_view file) const
@@ -504,6 +678,13 @@ std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::
     for (const auto* entry : order)
     {
         const auto to = copying / pathFromUtf8 (entry->first);
+
+        if (! step (SaveStep::Kind::keepFile, to))
+        {
+            problem = stoppedByHook;
+            return {};
+        }
+
         std::filesystem::create_directories (to.parent_path(), error);
         const auto written = error ? error.message() : platform::writeFileToDisk (to, entry->second);
 
@@ -517,8 +698,16 @@ std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::
     const auto kept = savesPath / pathFromUtf8 (name);
 
     if (failure.empty())
+    {
+        if (! step (SaveStep::Kind::nameKept, kept))
+        {
+            problem = stoppedByHook;
+            return {};
+        }
+
         if (const auto moved = platform::moveFile (copying, kept); ! moved.empty())
             failure = "couldn't name its copy " + singleQuoted (name) + ": " + withoutStop (moved);
+    }
 
     // Read back at its final name, whose longer paths may be past what
     // Windows allows: a kept save that can't be read isn't one, and the save
@@ -527,7 +716,7 @@ std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::
     {
         if (! step (SaveStep::Kind::readBack, kept))
         {
-            problem = "stopped part-way by the step hook";
+            problem = stoppedByHook;
             return {};
         }
 
@@ -708,10 +897,12 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         const auto path = folder / pathFromUtf8 (file);
         std::optional<std::string> was;
 
+        const auto stamp = project::FileStamp::of (path);
+
         if (const auto problem = onDisk (path, file, was); ! problem.empty())
             return failed (problem);
 
-        pending.push_back ({ file, &infoText, path, temporaryFor (path), std::move (was) });
+        pending.push_back ({ file, &infoText, path, temporaryFor (path), std::move (was), stamp });
     }
 
     // Every new text beside its file first, so a problem writing any of them
@@ -727,6 +918,9 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
             removeTemporaries (std::span (pending).first (i));
             return failed ("couldn't make the folder for " + file.file + ": " + withStop (error.message()) + " Nothing on disk changed");
         }
+
+        if (! step (SaveStep::Kind::writeTemporary, file.temporary))
+            return failed (std::string (stoppedByHook));
 
         if (const auto problem = platform::writeFileToDisk (file.temporary, *file.text); ! problem.empty())
         {
@@ -756,6 +950,9 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         std::string problem;
         result.kept = keepVersionOnDisk (overwrites, changedOutside, problem);
 
+        if (problem == stoppedByHook)
+            return failed (problem);
+
         if (! problem.empty())
         {
             removeTemporaries (pending);
@@ -763,15 +960,61 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         }
     }
 
+    // Clip files that were in the project and are still here, but that no
+    // clip uses now: moved to unused/ once project.json no longer names them.
+    std::vector<std::string> leaving;
+
+    for (const auto& entry : known)
+        if (entry.first != projectFileName && ! files.contains (entry.first))
+            leaving.push_back (entry.first);
+
+    // From here the save is finished even if a crash stops it: every new text
+    // is on disk beside its file, and the marker says what goes where, so the
+    // next open puts the rest in place (finishInterruptedSave).
+    const auto marker = folder / pathFromUtf8 (savingMarkerFile);
+    std::error_code markerError;
+
+    {
+        Marker saving { commands::displayName (author), info.time };
+
+        for (const auto& file : pending)
+            saving.files.push_back ({ file.file, file.stamp });
+
+        saving.unused = leaving;
+
+        if (! step (SaveStep::Kind::writeMarker, marker))
+            return failed (std::string (stoppedByHook));
+
+        std::filesystem::create_directories (marker.parent_path(), markerError);
+        const auto problem = markerError ? markerError.message() : platform::writeFileToDisk (marker, markerText (saving));
+
+        if (! problem.empty())
+        {
+            removeTemporaries (pending);
+
+            if (result.kept)
+                std::filesystem::remove_all (folder / pathFromUtf8 (result.kept->folder), markerError);
+
+            return failed ("couldn't write " + std::string (savingMarkerFile) + ", which says what a save puts in place in case it's interrupted: "
+                           + withoutStop (problem) + ". Nothing on disk changed");
+        }
+    }
+
     for (std::size_t i = 0; i < pending.size(); ++i)
     {
         const auto& file = pending[i];
+
+        if (! step (SaveStep::Kind::swap, file.path))
+            return failed (std::string (stoppedByHook));
 
         if (const auto problem = platform::replaceFile (file.temporary, file.path); ! problem.empty())
         {
             removeTemporaries (std::span (pending).subspan (i));
             const auto notPutBack = putBack (std::span (pending).first (i));
             const auto message = "couldn't replace " + file.file + ": " + withStop (problem);
+
+            // Put back or not, there's nothing left to finish: the session still holds the project.
+            std::filesystem::remove (marker, markerError);
 
             if (! notPutBack.empty())
                 return failed (message + " Putting back the files already replaced failed for " + listed (notPutBack)
@@ -802,15 +1045,8 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         if (file.file != saveInfoFile)
             known[file.file] = { file.written, *file.text };
 
-    // Clip files that were in the project and are still here, but that no
-    // clip uses now. project.json no longer names them, so moving them can't
-    // break it.
+    // project.json no longer names the clip files leaving, so moving them can't break it.
     std::vector<std::string> notMoved;
-    std::vector<std::string> leaving;
-
-    for (const auto& entry : known)
-        if (entry.first != projectFileName && ! files.contains (entry.first))
-            leaving.push_back (entry.first);
 
     for (const auto& file : leaving)
     {
@@ -822,6 +1058,9 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
             known.erase (file);
             continue;
         }
+
+        if (! step (SaveStep::Kind::moveUnused, path))
+            return failed (std::string (stoppedByHook));
 
         const auto place = unusedPlace (folder, file);
         const auto destination = folder / pathFromUtf8 (place);
@@ -837,6 +1076,12 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         known.erase (file);
         result.moved.push_back ({ file, place });
     }
+
+    // Done: nothing left for the next open to finish.
+    if (! step (SaveStep::Kind::removeMarker, marker))
+        return failed (std::string (stoppedByHook));
+
+    std::filesystem::remove (marker, markerError);
 
     std::vector<std::string> said;
 
@@ -911,5 +1156,156 @@ std::string createProject (const std::filesystem::path& folder, const commands::
     ProjectFolder projectFolder (folder, empty);
     const auto saved = projectFolder.save (empty, {}, author);
     return saved.ok ? std::string() : saved.message;
+}
+
+//==============================================================================
+FinishedSave finishInterruptedSave (const std::filesystem::path& folder, const std::function<bool (const ProjectFolder::SaveStep&)>& stepHook)
+{
+    using Kind = ProjectFolder::SaveStep::Kind;
+    const auto step = [&stepHook] (Kind kind, const std::filesystem::path& path) { return ! stepHook || stepHook ({ kind, path }); };
+
+    FinishedSave finished;
+    const auto stopped = [&finished] { return FinishedSave { finished.interrupted, std::string (stoppedByHook) }; };
+    const auto markerPath = folder / pathFromUtf8 (savingMarkerFile);
+    std::error_code error;
+
+    if (std::filesystem::exists (markerPath, error))
+    {
+        const auto text = readTextFile (markerPath);
+
+        // One that doesn't read was cut short as it was written, before
+        // anything was put in place: it goes with the other leftovers.
+        if (const auto marker = text ? parseMarker (*text) : std::nullopt)
+        {
+            finished.interrupted = true;
+            std::vector<std::string> written, changedSince, problems;
+            std::vector<std::string> moved;
+
+            for (const auto& entry : marker->files)
+            {
+                const auto path = folder / pathFromUtf8 (entry.file);
+                const auto temporary = temporaryFor (path);
+
+                if (! std::filesystem::exists (temporary, error))
+                    continue; // put in place before the save stopped
+
+                // Changed since the save stopped: the person's, so it stays, and
+                // the save's text for it goes to unused/, never deleted.
+                if (project::FileStamp::of (path) != entry.before)
+                {
+                    if (entry.file == saveInfoFile)
+                        continue; // who saved it: cleared with the leftovers
+
+                    if (! step (Kind::moveUnused, temporary))
+                        return stopped();
+
+                    const auto place = unusedPlace (folder, entry.file);
+                    const auto destination = folder / pathFromUtf8 (place);
+                    std::filesystem::create_directories (destination.parent_path(), error);
+
+                    if (const auto problem = error ? error.message() : platform::moveFile (temporary, destination); ! problem.empty())
+                        problems.push_back ("moving its text for " + entry.file + " to " + place + " (" + withoutStop (problem) + ")");
+                    else
+                        changedSince.push_back ("left " + entry.file + " as it is, since it changed after the save stopped, and put the save's version of it in " + place);
+
+                    continue;
+                }
+
+                if (! step (Kind::swap, path))
+                    return stopped();
+
+                if (const auto problem = platform::replaceFile (temporary, path); ! problem.empty())
+                    problems.push_back (entry.file + " (" + withoutStop (problem) + ")");
+                else if (entry.file != saveInfoFile)
+                    written.push_back (entry.file);
+            }
+
+            for (const auto& file : marker->unused)
+            {
+                const auto path = folder / pathFromUtf8 (file);
+
+                if (! std::filesystem::exists (path, error))
+                    continue;
+
+                if (! step (Kind::moveUnused, path))
+                    return stopped();
+
+                const auto place = unusedPlace (folder, file);
+                const auto destination = folder / pathFromUtf8 (place);
+                std::filesystem::create_directories (destination.parent_path(), error);
+
+                if (const auto problem = error ? error.message() : platform::moveFile (path, destination); ! problem.empty())
+                    problems.push_back ("moving " + file + " to " + place + " (" + withoutStop (problem) + ")");
+                else
+                    moved.push_back (file + " to " + place);
+            }
+
+            const auto who = "by " + (marker->author.empty() ? std::string ("someone") : marker->author) + ", begun "
+                           + commands::localTimeText (marker->time);
+
+            // The marker stays, so the next open tries again.
+            if (! problems.empty())
+            {
+                finished.message = "A save " + who + " was interrupted part-way, and finishing it failed for " + listed (problems)
+                                 + ". The folder may hold part of it; the next --play tries again.";
+                return finished;
+            }
+
+            if (! step (Kind::removeMarker, markerPath))
+                return stopped();
+
+            std::filesystem::remove (markerPath, error);
+
+            std::vector<std::string> said;
+
+            if (! written.empty())
+                said.push_back ("wrote " + listed (written));
+
+            if (! moved.empty())
+                said.push_back ("moved " + listed (moved) + ", since no clip uses " + (moved.size() == 1 ? "it" : "them") + " any more");
+
+            said.insert (said.end(), changedSince.begin(), changedSince.end());
+
+            if (! said.empty())
+            {
+                finished.message = "Finished a save " + who + ", which was interrupted part-way: ";
+
+                for (std::size_t i = 0; i < said.size(); ++i)
+                    finished.message += (i == 0 ? "" : "; ") + said[i];
+
+                finished.message += ".";
+            }
+        }
+        else
+        {
+            if (! step (Kind::clearLeftover, markerPath))
+                return stopped();
+
+            std::filesystem::remove (markerPath, error);
+        }
+    }
+
+    // What a save stopped before its marker left: it changed nothing else.
+    auto cleared = false;
+
+    for (const auto& leftover : saveLeftovers (folder))
+    {
+        if (! step (Kind::clearLeftover, leftover))
+            return stopped();
+
+        std::filesystem::remove_all (leftover, error);
+        cleared = true;
+    }
+
+    if (cleared && ! finished.interrupted)
+        finished.message = "Cleared the temporary files a save left when it was interrupted before it changed anything.";
+
+    return finished;
+}
+
+bool hasInterruptedSave (const std::filesystem::path& folder)
+{
+    const auto text = readTextFile (folder / pathFromUtf8 (savingMarkerFile));
+    return text && parseMarker (*text).has_value();
 }
 }

@@ -94,25 +94,6 @@ TEST_CASE ("T5: --watch's project.json replaces an unsaved API change with no wa
 }
 
 //==============================================================================
-TEST_CASE ("T6: a crash between the clip files' swap and project.json's leaves a version that's neither, and may not load")
-{
-    SavedProject saved;
-    REQUIRE (saved.bus->execute (SetTimeSignature { "2/4" }, claude).ok);
-
-    // What the save swaps in first: the clip files, but not yet project.json.
-    for (const auto& [file, text] : project::write (saved.bus->project()))
-        if (file != "project.json")
-            writeFile (saved.file (file), text);
-
-    const auto read = project::load (saved.folder);
-
-    for (const auto& error : read.errors)
-        MESSAGE (project::formatDiagnostic (error));
-
-    CHECK_FALSE (read.project); // the folder doesn't load
-}
-
-//==============================================================================
 TEST_CASE ("T7: a save with a name and no changes relabels the version on disk with the namer and the time of naming")
 {
     SavedProject saved; // saved by Lee at firstSaved

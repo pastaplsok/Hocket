@@ -150,6 +150,88 @@ RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const pr
     return start;
 }
 
+UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
+{
+    auto projectFolder = ProjectFolder::asItIs (folder);
+    const auto found = copy.find();
+    const auto read = found ? project::load (found->folder) : project::LoadResult {};
+    const auto written = found ? commands::localTimeText (found->written) : std::string();
+
+    if (choice == RecoveryChoice::recover && found && read.project)
+    {
+        UnloadableStart start { true, "The project's files don't load, so the session starts as the recovery copy written " + written
+                                          + ", unsaved: the first save keeps the files on disk as they are, as a kept save, then writes this version." };
+        start.recovered = read.project;
+        start.folder.emplace (std::move (projectFolder));
+        return start;
+    }
+
+    std::string text;
+    auto haveCopy = found.has_value();
+
+    if (choice == RecoveryChoice::discard && found)
+    {
+        std::string problem;
+
+        if (const auto kept = projectFolder.keepRecoveryCopy (found->folder, found->written, problem))
+        {
+            text = "Filed the recovery copy written " + written + " as " + commands::describe (*kept) + ".\n";
+            haveCopy = false;
+
+            if (const auto removed = copy.remove(); ! removed.empty())
+                text += "Couldn't remove it from the recovery folder, though: " + withoutStop (removed) + ". It's safe to delete it by hand.\n";
+        }
+        else
+        {
+            text = "--discard-recovery: couldn't file the recovery copy written " + written + " with the kept saves, so it's left as it is: "
+                 + withoutStop (problem) + ".\n";
+        }
+    }
+
+    text += "The project's files don't load (their problems are above), so nothing was played.";
+
+    if (choice == RecoveryChoice::recover && ! found)
+        text += "\n--recover: there's no recovery copy of this project.";
+
+    if (choice == RecoveryChoice::discard && ! found)
+        text += "\n--discard-recovery: there's no recovery copy of this project to discard.";
+
+    if (haveCopy)
+    {
+        text += "\nA recovery copy written " + written + " holds changes a session never saved";
+
+        if (read.project)
+            text += ". --play --recover plays it in place of the project's files, unsaved; the first save keeps those files as they are before writing "
+                    "its version. --play --discard-recovery files it with the kept saves instead.";
+        else
+            text += ", but it doesn't read as a project either: " + firstProblem (read)
+                  + ". --play --discard-recovery files it with the kept saves, where its files can be looked at and mended.";
+
+        text += " It's in " + quoted (found->folder) + ".";
+    }
+
+    // Newest first, as the person would want them.
+    auto saves = projectFolder.keptSaves();
+    std::ranges::reverse (saves);
+    constexpr std::size_t listedSaves = 3;
+
+    if (! saves.empty())
+    {
+        text += "\nEarlier versions are kept whole in .hocket/saves; to go back to one by hand, copy its project.json and clips folder into the project's folder:";
+
+        for (std::size_t i = 0; i < saves.size() && i < listedSaves; ++i)
+            text += "\n  " + commands::describe (saves[i]) + ": " + quoted ((folder / pathFromUtf8 (saves[i].folder)).make_preferred());
+
+        if (saves.size() > listedSaves)
+            text += "\n  and " + std::to_string (saves.size() - listedSaves) + " earlier, in .hocket/saves.";
+    }
+
+    if (! found && saves.empty())
+        text += "\nThere's no recovery copy and no kept save of it: mend its files by hand. --check lists their problems.";
+
+    return { false, text };
+}
+
 //==============================================================================
 RecoveryKeeper::RecoveryKeeper (commands::CommandBus& commandBus, ProjectFolder& projectFolder, RecoveryCopy& recoveryCopy, bool holdsSession)
     : bus (commandBus), folder (projectFolder), copy (recoveryCopy)

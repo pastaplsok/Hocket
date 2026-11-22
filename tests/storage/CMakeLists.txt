@@ -1,6 +1,7 @@
 add_executable(hocket_storage_tests
     BugSweepTests.cpp
     FileTests.cpp
+    InterruptedSaveTests.cpp
     KeptSaveTests.cpp
     OutsideChangeTests.cpp
     ProjectFolderTests.cpp
