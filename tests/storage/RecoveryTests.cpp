@@ -165,6 +165,72 @@ TEST_CASE ("a project folder has one place for its recovery copy, however its pa
     CHECK (longPlace.size() == 40 + 1 + 16);
 }
 
+TEST_CASE ("a project's first recovery copy gives it an ID in .hocket/id, which each copy names")
+{
+    RecoveryScene scene;
+    CHECK_FALSE (std::filesystem::exists (scene.saved.file (std::string (storage::projectIdFile))));
+
+    auto copy = scene.copy();
+    REQUIRE (copy.write (scene.files()).empty());
+
+    const auto id = readTextFile (scene.saved.file (std::string (storage::projectIdFile)));
+    REQUIRE (id);
+    CHECK (id->size() == 33); // 32 hex digits and a newline
+    CHECK (contains (*readTextFile (copy.find()->folder / pathFromUtf8 (std::string (storage::recoveryInfoFile))), "\"id\": \"" + id->substr (0, 32) + "\""));
+
+    // Kept saves never copy it: a kept save restored by hand isn't the project's twin.
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto saved = scene.saved.bus->save ({}, lee);
+    REQUIRE (saved.kept);
+    CHECK_FALSE (std::filesystem::exists (scene.saved.file (saved.kept->folder + "/" + std::string (storage::projectIdFile))));
+}
+
+TEST_CASE ("a recovery copy is found after its project's folder is moved or renamed: by the ID in the project's .hocket")
+{
+    RecoveryScene scene;
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto lost = scene.saved.bus->project();
+    REQUIRE (scene.copy().write (scene.files()).empty());
+    const auto oldFolder = scene.saved.folder;
+
+    // After the crash, the folder renamed.
+    scene.saved.folder = oldFolder.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (oldFolder, scene.saved.folder);
+    scene.saved.open();
+    auto copy = scene.copy();
+    REQUIRE_FALSE (copy.find());
+
+    const auto start = storage::startRecovery (copy, *scene.saved.projectFolder, scene.saved.bus->project(), storage::RecoveryChoice::recover);
+
+    REQUIRE (start.proceed);
+    REQUIRE (start.recovered);
+    CHECK (*start.recovered == lost);
+    CHECK (start.message
+           == "Found the project's recovery copy where it was kept for its folder before that was moved or renamed, '"
+                  + utf8FromPath (std::filesystem::canonical (scene.saved.folder.parent_path()) / pathFromUtf8 (utf8FromPath (oldFolder.filename())))
+                  + "'.");
+
+    // Taken over: from now on it's this folder's, and a new session finds it at once.
+    CHECK (copy.find());
+    CHECK (copy.find()->folder.parent_path() == copy.place());
+    CHECK (namesIn (scene.recoveryFolder.path) == std::vector<std::string> { utf8FromPath (copy.place().filename()) });
+}
+
+TEST_CASE ("a copied project folder doesn't take its original's recovery copy, though it has the same ID")
+{
+    RecoveryScene scene;
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    REQUIRE (scene.copy().write (scene.files()).empty());
+
+    const auto twin = scene.saved.folder.parent_path() / pathFromUtf8 ("copied " + unicodeName);
+    std::filesystem::copy (scene.saved.folder, twin, std::filesystem::copy_options::recursive);
+    storage::RecoveryCopy copy (scene.recoveryFolder.path, twin);
+
+    CHECK_FALSE (copy.adoptMoved());
+    CHECK_FALSE (copy.find());
+    CHECK (scene.copy().find()); // still the original's
+}
+
 TEST_CASE ("a crash or power loss part-way through writing a recovery copy leaves the copy before it whole and usable, never a half-written one")
 {
     // A power cut can't be made in a test. What gets a copy through one is

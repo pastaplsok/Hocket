@@ -85,7 +85,36 @@ namespace
     }
 }
 
+namespace
+{
+    // The copy kept for the folder's old path, if it was moved or renamed
+    // since (RecoveryCopy::adoptMoved): taken over, and said.
+    std::string adoptMoved (RecoveryCopy& copy)
+    {
+        const auto moved = copy.adoptMoved();
+        return moved ? "Found the project's recovery copy where it was kept for its folder before that was moved or renamed, '" + *moved + "'." : std::string();
+    }
+
+    std::string withNote (const std::string& note, std::string message)
+    {
+        return note.empty() ? message : message.empty() ? note : note + "\n" + message;
+    }
+
+    RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice);
+    UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice);
+}
+
 RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
+{
+    const auto moved = adoptMoved (copy);
+    auto start = decide (copy, folder, loaded, choice);
+    start.message = withNote (moved, std::move (start.message));
+    return start;
+}
+
+namespace
+{
+RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
 {
     const auto found = copy.find();
 
@@ -149,8 +178,19 @@ RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const pr
 
     return start;
 }
+}
 
 UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
+{
+    const auto moved = adoptMoved (copy);
+    auto start = startUnloadableFound (copy, folder, choice);
+    start.message = withNote (moved, std::move (start.message));
+    return start;
+}
+
+namespace
+{
+UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
 {
     auto projectFolder = ProjectFolder::asItIs (folder);
     const auto found = copy.find();
@@ -230,6 +270,7 @@ UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path
         text += "\nThere's no recovery copy and no kept save of it: mend its files by hand. --check lists their problems.";
 
     return { false, text };
+}
 }
 
 //==============================================================================

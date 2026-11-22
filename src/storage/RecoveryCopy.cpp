@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <format>
@@ -46,15 +47,18 @@ namespace
     //   {
     //     "format": "hocket-recovery",
     //     "project": "D:\\Music\\my song",
+    //     "id": "9b1e0c4f2a7d8e3b5c6f1a2d4e8b7c90",
     //     "written": "2026-11-21T14:02:37Z"
     //   }
     //
-    // The project is its folder's full path; the time is UTC.
+    // The project is its folder's full path, and the ID its .hocket/id
+    // (none in a copy from before IDs); the time is UTC.
 
     struct RecoveryInfo
     {
         std::string project;
         commands::SaveTime written;
+        std::string id;
     };
 
     std::string recoveryInfoText (const RecoveryInfo& info)
@@ -62,6 +66,10 @@ namespace
         nlohmann::ordered_json json = nlohmann::ordered_json::object();
         json["format"] = "hocket-recovery";
         json["project"] = info.project;
+
+        if (! info.id.empty())
+            json["id"] = info.id;
+
         json["written"] = utcTimeText (info.written);
         return json.dump (2, ' ', false, nlohmann::ordered_json::error_handler_t::replace) + "\n";
     }
@@ -79,13 +87,54 @@ namespace
         if (! written)
             return {};
 
-        return RecoveryInfo { json.at ("project").get<std::string>(), *written };
+        RecoveryInfo info { json.at ("project").get<std::string>(), *written };
+
+        if (json.contains ("id") && json.at ("id").is_string())
+            info.id = json.at ("id").get<std::string>();
+
+        return info;
     }
 
     std::optional<RecoveryInfo> recoveryInfoIn (const std::filesystem::path& copy)
     {
         const auto text = readTextFile (copy / pathFromUtf8 (recoveryInfoFile));
         return text ? parseRecoveryInfo (*text) : std::nullopt;
+    }
+
+    // The copies' numbers in a place, highest first, whether or not they read.
+    std::vector<int> copyNumbersIn (const std::filesystem::path& place)
+    {
+        std::vector<int> numbers;
+        std::error_code error;
+
+        for (std::filesystem::directory_iterator entry (place, error), end; ! error && entry != end; entry.increment (error))
+            if (const auto number = copyNumber (utf8FromPath (entry->path().filename())); number && entry->is_directory (error))
+                numbers.push_back (*number);
+
+        std::ranges::sort (numbers, std::greater<>());
+        return numbers;
+    }
+
+    // The newest copy in a place that reads: whose copies they are.
+    std::optional<RecoveryInfo> newestInfoIn (const std::filesystem::path& place)
+    {
+        for (const auto number : copyNumbersIn (place))
+            if (auto info = recoveryInfoIn (place / pathFromUtf8 (std::to_string (number))))
+                return info;
+
+        return {};
+    }
+
+    // A project folder's ID: its .hocket/id, 32 hex digits; empty if it has none.
+    std::string projectIdIn (const std::filesystem::path& folder)
+    {
+        auto text = readTextFile (folder / pathFromUtf8 (projectIdFile)).value_or ("");
+
+        while (! text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
+            text.pop_back();
+
+        const auto isHex = std::ranges::all_of (text, [] (char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+        return text.size() == 32 && isHex ? text : std::string();
     }
 
     // The folder's full path, the same however it's written: canonical, which
@@ -135,6 +184,13 @@ RecoveryCopy::RecoveryCopy (std::filesystem::path recoveryFolder, const std::fil
     const auto fullPath = fullPathOf (projectFolder);
     projectPath = utf8FromPath (fullPath);
     placePath = std::move (recoveryFolder) / pathFromUtf8 (placeName (fullPath));
+    projectFolderPath = fullPath;
+    projectId = projectIdIn (fullPath);
+}
+
+bool RecoveryCopy::belongs (const std::string& project, const std::string& id) const
+{
+    return project == projectPath || (! projectId.empty() && id == projectId);
 }
 
 bool RecoveryCopy::step (Step::Kind kind, const std::filesystem::path& path) const
@@ -144,15 +200,7 @@ bool RecoveryCopy::step (Step::Kind kind, const std::filesystem::path& path) con
 
 std::vector<int> RecoveryCopy::copyNumbers() const
 {
-    std::vector<int> numbers;
-    std::error_code error;
-
-    for (std::filesystem::directory_iterator entry (placePath, error), end; ! error && entry != end; entry.increment (error))
-        if (const auto number = copyNumber (utf8FromPath (entry->path().filename())); number && entry->is_directory (error))
-            numbers.push_back (*number);
-
-    std::ranges::sort (numbers, std::greater<>());
-    return numbers;
+    return copyNumbersIn (placePath);
 }
 
 std::optional<RecoveryCopy::Found> RecoveryCopy::find() const
@@ -164,7 +212,44 @@ std::optional<RecoveryCopy::Found> RecoveryCopy::find() const
         const auto folder = placePath / pathFromUtf8 (std::to_string (number));
 
         if (const auto info = recoveryInfoIn (folder))
-            return info->project == projectPath ? std::optional<Found> (Found { folder, info->written }) : std::nullopt;
+            return belongs (info->project, info->id) ? std::optional<Found> (Found { folder, info->written }) : std::nullopt;
+    }
+
+    return {};
+}
+
+std::optional<std::string> RecoveryCopy::adoptMoved()
+{
+    // Its own copies come first; and without an ID there's nothing to find it by.
+    if (projectId.empty() || ! copyNumbers().empty())
+        return {};
+
+    const auto recoveryFolder = placePath.parent_path();
+    std::error_code error;
+
+    for (std::filesystem::directory_iterator entry (recoveryFolder, error), end; ! error && entry != end; entry.increment (error))
+    {
+        if (entry->path() == placePath || ! entry->is_directory (error))
+            continue;
+
+        const auto info = newestInfoIn (entry->path());
+
+        if (! info || info->id != projectId || info->project == projectPath)
+            continue;
+
+        // The old folder still there with this ID: a copied folder, whose copies they are.
+        if (projectIdIn (pathFromUtf8 (info->project)) == projectId)
+            continue;
+
+        // This folder's place from now on. There's no copy in its own, so
+        // what's there is only what a crash left.
+        const auto oldPlace = entry->path();
+        std::filesystem::remove_all (placePath, error);
+
+        if (! platform::moveFile (oldPlace, placePath).empty())
+            return {};
+
+        return info->project;
     }
 
     return {};
@@ -172,9 +257,8 @@ std::optional<RecoveryCopy::Found> RecoveryCopy::find() const
 
 std::optional<std::string> RecoveryCopy::otherProject() const
 {
-    for (const auto number : copyNumbers())
-        if (const auto info = recoveryInfoIn (placePath / pathFromUtf8 (std::to_string (number))))
-            return info->project != projectPath ? std::optional<std::string> (info->project) : std::nullopt;
+    if (const auto info = newestInfoIn (placePath); info && ! belongs (info->project, info->id))
+        return info->project;
 
     return {};
 }
@@ -260,8 +344,13 @@ std::string RecoveryCopy::write (const std::map<std::string, std::string>& files
         return problem.empty() ? std::string() : "couldn't write its " + relative + ": " + withoutStop (problem);
     };
 
+    // The project's ID, made with its first copy, so the copy is found again
+    // if the folder moves. A copy without one is still found by path.
+    if (projectId.empty())
+        projectId = makeProjectId();
+
     // Which project it's of and when, last: a copy is whole once it's there.
-    const RecoveryInfo info { projectPath, std::chrono::floor<std::chrono::seconds> (clock()) };
+    const RecoveryInfo info { projectPath, std::chrono::floor<std::chrono::seconds> (clock()), projectId };
     std::string problem;
 
     for (const auto& [relative, text] : files)
@@ -296,6 +385,24 @@ std::string RecoveryCopy::write (const std::map<std::string, std::string>& files
             return std::string (stopped);
 
     return {};
+}
+
+std::string RecoveryCopy::makeProjectId() const
+{
+    std::array<std::uint8_t, 16> bytes {};
+
+    if (! platform::secureRandomBytes (bytes))
+        return {};
+
+    std::string id;
+
+    for (const auto byte : bytes)
+        id += std::format ("{:02x}", byte);
+
+    const auto file = projectFolderPath / pathFromUtf8 (projectIdFile);
+    std::error_code error;
+    std::filesystem::create_directories (file.parent_path(), error);
+    return ! error && platform::writeFileToDisk (file, id + "\n").empty() ? id : std::string();
 }
 
 std::string RecoveryCopy::remove()

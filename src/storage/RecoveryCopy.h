@@ -39,6 +39,12 @@ namespace hocket::storage
     // In each copy: which project it's of, and when it was written.
     inline constexpr std::string_view recoveryInfoFile = ".hocket/recovery.json";
 
+    // In the project's own folder: an ID of its own, 32 hex digits, made when
+    // its first recovery copy is written. It moves with the folder, so a copy
+    // is found again after the folder is moved or renamed. Kept saves don't
+    // copy it.
+    inline constexpr std::string_view projectIdFile = ".hocket/id";
+
     // How long the project folder's name may be in its place's name, in
     // UTF-16 code units, so a copy's files' paths stay well inside Windows' 260.
     inline constexpr std::size_t maxRecoveryNameLength = 40;
@@ -74,6 +80,15 @@ namespace hocket::storage
         // The newest whole copy of this project, if there is one.
         std::optional<Found> find() const;
 
+        // Copies of this project kept for its folder's old path: the folder
+        // was moved or renamed since a session left them. Found by the ID in
+        // the project's .hocket/id, which they name; not when the old path
+        // still holds a project with that ID (a copied folder: the copies
+        // are the other's). Only when this folder has no copy of its own.
+        // Their place is renamed to this folder's, so from then on they're
+        // its own; returns the old folder's path, for a message.
+        std::optional<std::string> adoptMoved();
+
         // Writes these files (relative paths to their text, as project::write
         // gives them) as the new copy, then takes the one before away. Returns
         // what went wrong, or empty; when it fails, the copy before is still
@@ -108,6 +123,14 @@ namespace hocket::storage
     private:
         std::filesystem::path placePath;
         std::string projectPath;
+        std::filesystem::path projectFolderPath;
+        std::string projectId; // its .hocket/id; empty until its first copy makes one
+
+        // Whether a copy naming this project path and ID is this project's.
+        bool belongs (const std::string& project, const std::string& id) const;
+
+        // Makes the project's ID and writes it to its .hocket/id; empty if it can't.
+        std::string makeProjectId() const;
         Clock clock;
         std::function<bool (const Step&)> stepHook;
 
