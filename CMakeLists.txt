@@ -17,6 +17,7 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(HocketWarnings)
+include(HocketLongPaths)
 include(HocketDependencies)
 
 option(HOCKET_BUILD_TESTS "Build Hocket's tests" ON)

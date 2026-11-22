@@ -48,6 +48,7 @@ python tools\kits\make-electronic-kit.py          # --check: does the kit on dis
 
 - If `git submodule update` reports `Filename too long`, the clone path is too deep for a few of JUCE's files (under `extras/`, which we don't build). Run `git config --global core.longpaths true`, then `git -C external/JUCE reset --hard`; or clone to a shorter path.
 - JUCE and Tracktion compile once into the `hocket_juce` static library; Hocket targets link it. Our own targets get warnings via `hocket_enable_warnings()` (`cmake/HocketWarnings.cmake`); never apply those to third-party code.
+- Programs that read or write project folders get `hocket_long_paths()` (`cmake/HocketLongPaths.cmake`): a manifest that lifts Windows' 260-character limit where its long-path setting is on (SPEC §9).
 
 ## Non-negotiable rules
 - **Never block or allocate on the audio thread.** No locks, no file/network I/O, no heap allocation in real-time callbacks. All state changes go through the command bus and are handed to the engine safely (SPEC §3.2).

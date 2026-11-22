@@ -229,6 +229,15 @@ std::string moveFile (const std::filesystem::path& from, const std::filesystem::
     return {};
 }
 
+bool longPathsEnabled()
+{
+    // In ntdll since Windows 10 1607; true only when both the manifest and
+    // the system setting allow long paths for this process.
+    using Function = BOOLEAN (NTAPI*)();
+    static const auto function = reinterpret_cast<Function> (reinterpret_cast<void*> (GetProcAddress (GetModuleHandleW (L"ntdll.dll"), "RtlAreLongPathsEnabled")));
+    return function != nullptr && function() != FALSE;
+}
+
 namespace
 {
     // Cycles of the CPU's time-stamp counter per second, which

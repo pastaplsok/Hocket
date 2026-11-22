@@ -51,59 +51,6 @@ TEST_CASE ("T2: hand edits made while Hocket was closed are kept under the last 
 }
 
 //==============================================================================
-TEST_CASE ("T3: in a deep folder, every save with changes fails at keeping the version on disk (no long-path manifest)")
-{
-    TemporaryFolder temporary { "sweep-long" };
-    auto folder = temporary.path;
-
-    // Grow the project folder's path to 215 characters.
-    while (folder.native().size() < 205)
-        folder /= pathFromUtf8 ("deeper");
-
-    folder /= pathFromUtf8 (std::string (215 - folder.native().size() - 1, 'x'));
-    MESSAGE ("project folder path: " << folder.native().size() << " characters");
-
-    const auto fixture = loaded (pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project"));
-    storage::ProjectFolder first (folder, project::Project {});
-    const auto made = first.save (fixture, {}, lee);
-    MESSAGE ("first save (nothing to keep): " << made.message);
-    REQUIRE (made.ok);
-
-    auto [result, opened] = storage::ProjectFolder::open (folder);
-    REQUIRE (opened);
-    CommandBus bus (std::move (*result.project));
-    bus.setStorage (&*opened);
-    REQUIRE (bus.execute (SetTempo { 100 }, claude).ok);
-
-    const auto saved = bus.save ({}, claude);
-    MESSAGE ("second save: " << saved.message);
-    REQUIRE (saved.ok);
-    REQUIRE (saved.kept);
-
-    const auto keptProject = folder / pathFromUtf8 (saved.kept->folder + "/project.json");
-    MESSAGE ("kept project.json's path: " << keptProject.native().size() << " characters; readable: " << readTextFile (keptProject).has_value());
-
-    const auto reverted = bus.execute (Revert { 1 }, claude);
-    MESSAGE ("revert to #1: " << reverted.message);
-    CHECK_FALSE (reverted.ok);
-
-    // Deeper still: "saving 1" itself too long.
-    auto deeper = folder.parent_path() / pathFromUtf8 (std::string (222 - folder.parent_path().native().size() - 1, 'y'));
-    storage::ProjectFolder second (deeper, project::Project {});
-    REQUIRE (second.save (fixture, {}, lee).ok);
-    auto [result2, opened2] = storage::ProjectFolder::open (deeper);
-    REQUIRE (opened2);
-    CommandBus bus2 (std::move (*result2.project));
-    bus2.setStorage (&*opened2);
-    REQUIRE (bus2.execute (SetTempo { 100 }, claude).ok);
-    const auto saved2 = bus2.save ({}, claude);
-    MESSAGE ("at " << deeper.native().size() << " characters: " << saved2.message);
-
-    std::error_code error;
-    std::filesystem::remove_all (temporary.path, error);
-}
-
-//==============================================================================
 TEST_CASE ("T4: a typed word starting \"so\" saves over a file changed outside Hocket before the refusal is read")
 {
     SavedProject saved;

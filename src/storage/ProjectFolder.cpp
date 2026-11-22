@@ -53,6 +53,22 @@ namespace
         return text;
     }
 
+    // Said after a problem with a file whose path is longer than Windows
+    // allows without its long-path setting: what to do about it. Empty for
+    // any other file.
+    std::string tooDeepAdvice (const std::filesystem::path& file)
+    {
+        std::error_code error;
+        const auto full = std::filesystem::absolute (file, error);
+        const auto length = (error ? file : full).native().size();
+
+        if (platform::longPathsEnabled() || length < platform::shortPathLimit)
+            return {};
+
+        return ": at " + std::to_string (length) + " characters, its path is longer than Windows allows unless its long-path setting is on. "
+               "Move the project to a folder with a shorter path, or turn on Windows' long-path setting (LongPathsEnabled)";
+    }
+
     //==============================================================================
     // .hocket/save.json: who saved the files beside it, and when.
     //
@@ -493,14 +509,45 @@ std::optional<commands::KeptSave> ProjectFolder::keepFiles (const std::map<std::
 
         if (! written.empty())
         {
-            failure = "couldn't write its copy of " + entry->first + ": " + withoutStop (written);
+            failure = "couldn't write its copy of " + entry->first + ": " + withoutStop (written) + tooDeepAdvice (to);
             break;
         }
     }
 
+    const auto kept = savesPath / pathFromUtf8 (name);
+
     if (failure.empty())
-        if (const auto moved = platform::moveFile (copying, savesPath / pathFromUtf8 (name)); ! moved.empty())
+        if (const auto moved = platform::moveFile (copying, kept); ! moved.empty())
             failure = "couldn't name its copy " + singleQuoted (name) + ": " + withoutStop (moved);
+
+    // Read back at its final name, whose longer paths may be past what
+    // Windows allows: a kept save that can't be read isn't one, and the save
+    // writes nothing.
+    if (failure.empty())
+    {
+        if (! step (SaveStep::Kind::readBack, kept))
+        {
+            problem = "stopped part-way by the step hook";
+            return {};
+        }
+
+        for (const auto* entry : order)
+        {
+            const auto file = kept / pathFromUtf8 (entry->first);
+
+            if (readTextFile (file) != entry->second)
+            {
+                failure = "couldn't read its copy of " + entry->first + " back from " + singleQuoted (std::string (keptSavesFolder) + "/" + name)
+                        + tooDeepAdvice (file);
+
+                // Named back first, so it's never listed as a kept save.
+                if (! platform::moveFile (kept, copying).empty())
+                    std::filesystem::remove_all (kept, error);
+
+                break;
+            }
+        }
+    }
 
     if (! failure.empty())
     {
@@ -685,7 +732,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
         {
             removeTemporaries (std::span (pending).first (i));
             return failed ("couldn't write the new " + file.file + " beside it, as " + file.file + std::string (temporarySuffix) + ": "
-                           + withStop (problem) + " Nothing on disk changed");
+                           + withoutStop (problem) + tooDeepAdvice (file.temporary) + ". Nothing on disk changed");
         }
 
         // Swapped in by a rename, the file keeps this stamp: so a change

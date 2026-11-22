@@ -64,6 +64,15 @@ namespace hocket::platform
     // what went wrong, or empty.
     std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to);
 
+    // The longest path the OS takes without long-path support: 260 UTF-16
+    // units on Windows, the terminating null included.
+    inline constexpr std::size_t shortPathLimit = 260;
+
+    // Whether this process can use paths longer than that. On Windows, only
+    // when its manifest says it's long-path aware (cmake/LongPathAware.manifest)
+    // and Windows' long-path setting (LongPathsEnabled) is on. Always true elsewhere.
+    bool longPathsEnabled();
+
     // The CPU time the calling thread has used so far, user and kernel, in
     // seconds, precise to microseconds: next to wall-clock time, it tells a
     // thread that worked long from one the OS kept waiting. nullopt where it

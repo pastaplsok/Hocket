@@ -112,6 +112,24 @@ namespace hocket::storage
         // nullopt, with the problem, if it couldn't be kept.
         std::optional<commands::KeptSave> keepRecoveryCopy (const std::filesystem::path& copy, commands::SaveTime written, std::string& problem);
 
+        // For tests of a crash part-way through a save: each step it takes on
+        // the disk, in order.
+        struct SaveStep
+        {
+            enum class Kind
+            {
+                readBack // reading a new kept save back at its final name, `path`
+            };
+
+            Kind kind;
+            std::filesystem::path path;
+        };
+
+        // Called before each step; returning false stops the save there, as a
+        // crash would: nothing after it happens, and nothing is cleaned up.
+        // For tests only.
+        void setStepHook (std::function<bool (const SaveStep&)> hook) { stepHook = std::move (hook); }
+
     private:
         struct Known
         {
@@ -121,6 +139,9 @@ namespace hocket::storage
 
         std::filesystem::path folder;
         Clock clock;
+        std::function<bool (const SaveStep&)> stepHook;
+
+        bool step (SaveStep::Kind kind, const std::filesystem::path& path) const { return ! stepHook || stepHook (SaveStep { kind, path }); }
 
         // project.json and every clip file Hocket has had in the project here,
         // loaded or saved, that may still be on disk. The clip files are the

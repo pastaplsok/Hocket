@@ -341,6 +341,75 @@ TEST_CASE ("a save that can't keep the version on disk writes nothing")
     CHECK (saved.bus->hasUnsavedChanges());
 }
 
+TEST_CASE ("a kept save that doesn't read back at its final name isn't kept, and the save writes nothing")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto before = filesIn (saved.folder);
+
+    // Something takes one of its files away before it's read back.
+    saved.projectFolder->setStepHook ([&saved] (const storage::ProjectFolder::SaveStep& step)
+    {
+        if (step.kind == storage::ProjectFolder::SaveStep::Kind::readBack)
+            std::filesystem::remove (step.path / pathFromUtf8 ("clips/bass.notes"));
+
+        return true;
+    });
+
+    const auto result = saved.bus->save ({}, lee);
+
+    CHECK_FALSE (result.ok);
+    CHECK (contains (result.message, "didn't save: couldn't keep the version on disk before replacing it: couldn't read its copy of clips/bass.notes back"));
+    CHECK (contains (result.message, ". Nothing on disk changed"));
+    CHECK (filesIn (saved.folder) == before); // no kept save, and no part of one
+    CHECK (saved.bus->keptSaves().empty());
+    CHECK (saved.bus->hasUnsavedChanges());
+}
+
+TEST_CASE ("in a folder deep enough that a kept save's files pass 260 characters, the save works where Windows allows long paths, and otherwise writes nothing")
+{
+    TemporaryFolder temporary { "deep" };
+    auto folder = std::filesystem::absolute (temporary.path);
+
+    // 215 characters: the project's own files stay inside 260, its kept save's don't.
+    while (folder.native().size() < 205)
+        folder /= pathFromUtf8 ("deeper");
+
+    folder /= pathFromUtf8 (std::string (215 - folder.native().size() - 1, 'x'));
+
+    const auto fixture = loaded (pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project"));
+    storage::ProjectFolder first (folder, project::Project {});
+    REQUIRE (first.save (fixture, {}, lee).ok);
+
+    auto [result, opened] = storage::ProjectFolder::open (folder);
+    REQUIRE (opened);
+    CommandBus bus (std::move (*result.project));
+    bus.setStorage (&*opened);
+    REQUIRE (bus.execute (SetTempo { 100 }, claude).ok);
+
+    const auto saved = bus.save ({}, claude);
+    MESSAGE (saved.message);
+
+    if (platform::longPathsEnabled())
+    {
+        REQUIRE (saved.ok);
+        REQUIRE (saved.kept);
+        CHECK (opened->loadKeptSave (*saved.kept).project == fixture);
+        CHECK (bus.keptSaves() == std::vector<KeptSave> { *saved.kept });
+        CHECK (saved.kept->info.author == "Lee");
+        CHECK (bus.execute (Revert { 1 }, claude).ok);
+        CHECK (bus.project() == fixture);
+    }
+    else
+    {
+        MESSAGE ("Windows' long-path setting is off: checking the refusal");
+        CHECK_FALSE (saved.ok);
+        CHECK (contains (saved.message, "turn on Windows' long-path setting"));
+        CHECK (bus.keptSaves().empty());
+        CHECK (bus.hasUnsavedChanges());
+    }
+}
+
 TEST_CASE ("loading and --watch ignore .hocket/ and unused/")
 {
     SavedProject saved;
