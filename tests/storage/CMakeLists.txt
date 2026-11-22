@@ -1,4 +1,5 @@
 add_executable(hocket_storage_tests
+    BugSweepTests.cpp
     FileTests.cpp
     KeptSaveTests.cpp
     OutsideChangeTests.cpp
