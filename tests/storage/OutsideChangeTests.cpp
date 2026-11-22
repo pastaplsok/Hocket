@@ -369,6 +369,43 @@ TEST_CASE ("--watch reports a project.json that doesn't read once; the session c
     CHECK (watched.poll (start + 1500ms).empty());
 }
 
+TEST_CASE ("--watch tries a project.json again once a clip file it names is saved after it")
+{
+    SavedProject saved;
+    auto& bus = *saved.bus;
+    storage::WatchedFolder watched (bus, *saved.projectFolder, lee);
+    const auto start = Clock::now();
+    CHECK (watched.poll (start).empty());
+
+    // Lee's project.json names a new clip whose file isn't saved yet.
+    auto edited = bus.project();
+    edited.tracks[1].clips.push_back ({ "clp-bass-2", "clips/bass-2.notes", 4 * 3840 });
+    edited.notesFiles["clips/bass-2.notes"] = *notes::parse (newBass).clip;
+    const auto files = project::write (edited);
+    writeFile (saved.file ("project.json"), files.at ("project.json"));
+
+    CHECK (watched.poll (start + 50ms).empty());
+    const auto refused = watched.poll (start + 300ms);
+    REQUIRE (refused.size() == 1);
+    CHECK_FALSE (refused[0].ok);
+    CHECK (refused[0].message.ends_with ("\nIt's read again once it, or a clip file it names, is saved."));
+    CHECK (watched.poll (start + 600ms).empty());
+
+    // Then the clip file: read with it, once it has settled.
+    writeFile (saved.file ("clips/bass-2.notes"), files.at ("clips/bass-2.notes"));
+    CHECK (watched.poll (start + 650ms).empty());
+    const auto taken = watched.poll (start + 900ms);
+
+    REQUIRE (taken.size() == 1);
+    CHECK (taken[0].file == "project.json");
+    CHECK (taken[0].ok);
+    CHECK (bus.project() == edited);
+    CHECK (watched.poll (start + 1200ms).empty());
+
+    // Both read, so the next save takes neither for an outside change.
+    CHECK (bus.save ({}, lee).ok);
+}
+
 TEST_CASE ("--watch's clip save warns when it replaces a change that wasn't saved, and not when it was")
 {
     SavedProject saved;

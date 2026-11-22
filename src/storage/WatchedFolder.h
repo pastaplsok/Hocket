@@ -20,6 +20,7 @@
 #include "core/commands/WatchedSaves.h"
 #include "storage/ProjectWatcher.h"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -47,8 +48,22 @@ namespace hocket::storage
         commands::CommandBus& bus;
         ProjectFolder& folder;
         commands::Author person;
+        ProjectWatcher::Clock::duration settleTime;
         ProjectWatcher watcher;
         commands::WatchedSaves saves;
+
+        // A project.json that couldn't be taken in: read again once a clip
+        // file it names changes and settles (one saved after it, say), while
+        // project.json stays as it was. A new save of project.json is the
+        // watcher's to report.
+        struct Refused
+        {
+            project::FileStamp stamp;                         // project.json's
+            std::map<std::string, project::FileStamp> files;   // the clip files it named, as they were when it was read
+            std::optional<ProjectWatcher::Clock::time_point> changedAt;
+        };
+
+        std::optional<Refused> refused;
 
         Report takeProject (const ProjectWatcher::Change& change);
         Report takeClip (const ProjectWatcher::Change& change);
