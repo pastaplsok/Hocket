@@ -175,12 +175,37 @@ TEST_CASE ("a save that changes nothing keeps nothing; one with a name names the
     CHECK (contains (*readTextFile (saved.file (".hocket/save.json")), "\"name\": \"before the bridge\""));
     CHECK (saved.bus->keptSaves().empty());
 
-    // The next save keeps them, under that name.
+    // The next save keeps them, under that name, and still as Lee's save at
+    // its own time: naming a version doesn't make it the namer's (Lee, 2026-11-22).
     REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
     const auto next = saved.bus->save ({}, lee);
 
     REQUIRE (next.kept);
-    CHECK (next.kept->info == SaveInfo { secondsOf (saved.now), "Claude", "before the bridge" });
+    CHECK (next.kept->info == SaveInfo { firstSaved, "Lee", "before the bridge" });
+}
+
+TEST_CASE ("naming a version Hocket didn't save, or one changed outside it, keeps that label, with the name")
+{
+    // From before Hocket: a folder made by hand.
+    const TemporaryFolder temporary (unicodeName);
+    const auto folder = temporary.path / pathFromUtf8 ("by hand " + unicodeName);
+    std::filesystem::copy (pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project"), folder, std::filesystem::copy_options::recursive);
+    const SaveTime handMade = std::chrono::sys_days (std::chrono::year (2026) / 11 / 18) + std::chrono::hours (21);
+    std::filesystem::last_write_time (folder / pathFromUtf8 ("project.json"), std::chrono::clock_cast<std::chrono::file_clock> (handMade));
+
+    // Saved once in canonical form by hand's look-alike: the fixture is canonical, so nothing to write.
+    auto [result, opened] = storage::ProjectFolder::open (folder, [] { return std::chrono::system_clock::time_point (firstSaved); });
+    REQUIRE (opened);
+    CommandBus bus (std::move (*result.project));
+    bus.setStorage (&*opened);
+    REQUIRE (bus.save ({ "as found" }, claude).ok);
+
+    REQUIRE (bus.execute (SetTempo { 100 }, lee).ok);
+    const auto next = bus.save ({}, lee);
+
+    REQUIRE (next.kept);
+    CHECK (next.kept->info == SaveInfo { handMade, "", "as found" });
+    CHECK (describe (*next.kept) == "save #1, from before Hocket, " + localTimeText (handMade) + ", \"as found\"");
 }
 
 TEST_CASE ("a version Hocket didn't save is kept as from before Hocket, at project.json's date")

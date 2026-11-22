@@ -988,9 +988,20 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     }
 
     // Who saved it, and when, swapped in last. Written with any change, and
-    // for a name alone: that names the version on disk.
+    // for a name alone: that names the version on disk, which keeps who
+    // saved it and when, or its label if Hocket didn't (Lee, 2026-11-22). The
+    // files on disk are the session's then, so they're the version's.
     const auto projectChanged = ! pending.empty();
-    const commands::SaveInfo info { std::chrono::floor<std::chrono::seconds> (clock()), commands::displayName (author), request.name };
+    const auto now = std::chrono::floor<std::chrono::seconds> (clock());
+    auto info = commands::SaveInfo { now, commands::displayName (author), request.name };
+
+    if (! projectChanged && ! request.name.empty())
+    {
+        std::optional<std::string> unchanged;
+        info = describeVersionOnDisk (files, {}, unchanged);
+        info.name = request.name;
+    }
+
     const auto infoText = saveInfoText (info, fingerprintsOf (files));
 
     if (projectChanged || ! request.name.empty())
@@ -1077,7 +1088,7 @@ commands::SaveResult ProjectFolder::save (const project::Project& project, const
     std::error_code markerError;
 
     {
-        Marker saving { commands::displayName (author), info.time };
+        Marker saving { commands::displayName (author), now };
 
         for (const auto& file : pending)
             saving.files.push_back ({ file.file, file.stamp });
