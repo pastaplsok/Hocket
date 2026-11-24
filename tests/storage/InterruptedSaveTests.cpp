@@ -764,3 +764,59 @@ TEST_CASE ("a save sets aside a temporary file an earlier save left where it wri
     CHECK (readTextFile (saved.file ("unused/clips/bass.notes.hocket-saving")) == leftover);
     CHECK (loaded (saved.folder) == saved.bus->project());
 }
+
+TEST_CASE ("a save that finds an earlier save's leftovers in its way, stopped or made to fail at any step, loses none of their texts, nor the version before it")
+{
+    const WholeSave whole;
+    const std::string leftoverBass = "@length 4bars\n\n1.1 D2 1/4 v80\n";
+    const std::string partMade = "{ \"format\": \"hocket-project\", part-made";
+    const std::map<std::string, std::string> leftovers { { "bass's temporary file", leftoverBass }, { "a part-made copy's project.json", partMade } };
+
+    // A temporary file where the save writes bass's, and a part-made copy where it makes its kept save.
+    const auto plant = [&] (SavedProject& saved)
+    {
+        writeFile (saved.file (temporaryOf ("clips/bass.notes")), leftoverBass);
+        writeFile (saved.file (".hocket/saves/saving 1/project.json"), partMade);
+        makeChanges (*saved.bus);
+    };
+
+    std::vector<Step> steps;
+
+    {
+        SavedProject saved;
+        plant (saved);
+        saved.projectFolder->setStepHook ([&steps] (const Step& step) { steps.push_back (step); return StepOutcome::proceed; });
+        const auto result = saved.bus->save ({}, claude);
+        CAPTURE (result.message);
+        REQUIRE (result.ok);
+        CHECK (contains (result.message, "set aside clips/bass.notes.hocket-saving to unused/clips/bass.notes.hocket-saving"));
+        CHECK (readTextFile (saved.file ("unused/.hocket/saves/saving 1/project.json")) == partMade);
+        CHECK (lostTexts (saved.folder, leftovers).empty());
+    }
+
+    REQUIRE (std::ranges::count (steps, Step::Kind::setAside, &Step::kind) == 2);
+
+    for (const auto outcome : { StepOutcome::crash, StepOutcome::fail })
+    {
+        for (std::size_t step = 0; step < steps.size(); ++step)
+        {
+            CAPTURE (outcome == StepOutcome::crash ? "crash" : "fail");
+            CAPTURE (step);
+            CAPTURE (kindName (steps[step].kind));
+
+            SavedProject saved;
+            plant (saved);
+            saved.projectFolder->setStepHook (at (step, outcome));
+            const auto result = saved.bus->save ({}, claude);
+            saved.projectFolder->setStepHook ({});
+            CAPTURE (result.message);
+
+            CHECK (lostTexts (saved.folder, leftovers).empty());
+            CHECK (lostTexts (saved.folder, whole.oldTexts()).empty());
+
+            checkNextOpen (saved.folder, whole);
+            CHECK (lostTexts (saved.folder, leftovers).empty());
+            CHECK (lostTexts (saved.folder, whole.oldTexts()).empty());
+        }
+    }
+}
