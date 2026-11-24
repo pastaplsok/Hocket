@@ -232,6 +232,94 @@ TEST_CASE ("a marker cut short as it was written is a save that changed nothing"
     CHECK (leftoversIn (saved.folder).empty());
 }
 
+//==============================================================================
+// The PR review's findings 1 to 3 (PROGRESS.md, 2026-11-24): each fails as the
+// code is, which should_fail records, until its fix takes the mark off.
+namespace
+{
+    // A save stopped as it began putting files in place, as a crash would.
+    void interruptedAtFirstSwap (SavedProject& saved)
+    {
+        makeChanges (*saved.bus);
+        saved.projectFolder->setStepHook ([] (const Step& step) { return step.kind != Step::Kind::swap; });
+        REQUIRE_FALSE (saved.bus->save ({}, claude).ok);
+        REQUIRE (storage::hasInterruptedSave (saved.folder));
+    }
+
+    // Every file under the folder holding exactly this text.
+    std::vector<std::string> filesHolding (const std::filesystem::path& folder, const std::string& text)
+    {
+        std::vector<std::string> found;
+
+        for (const auto& [name, bytes] : filesIn (folder))
+            if (bytes == text)
+                found.push_back (name);
+
+        return found;
+    }
+
+    std::string temporaryOf (const std::string& file)
+    {
+        return file + std::string (storage::temporarySuffix);
+    }
+}
+
+TEST_CASE ("review 1: finishing that fails leaves the save to finish, and a session's save never deletes what's left of it" * doctest::should_fail())
+{
+    SavedProject saved;
+    interruptedAtFirstSwap (saved);
+    const auto savesBass = readTextFile (saved.file (temporaryOf ("clips/bass.notes")));
+    REQUIRE (savesBass);
+
+    {
+        // Another program holds clips/bass.notes as --play starts, so it can't be put in place.
+        const auto held = platform::FileLock::acquire (saved.file ("clips/bass.notes"));
+        REQUIRE (held);
+        storage::finishInterruptedSave (saved.folder);
+    }
+
+    // --play went on to open the folder, and the person saved a change.
+    saved.open();
+    REQUIRE (saved.bus->execute (SetTempo { 120 }, lee).ok);
+    saved.bus->save ({}, lee);
+
+    // The next --play.
+    storage::finishInterruptedSave (saved.folder);
+    CHECK_FALSE (filesHolding (saved.folder, *savesBass).empty());
+}
+
+TEST_CASE ("review 2: a marker that can't be read deletes nothing: the save's new texts stay, and the folder still loads" * doctest::should_fail())
+{
+    SavedProject saved;
+    interruptedAtFirstSwap (saved);
+    const auto savesBass = *readTextFile (saved.file (temporaryOf ("clips/bass.notes")));
+
+    {
+        // Something holds the marker as --play starts (a backup or sync tool, say).
+        const auto held = platform::FileLock::acquire (saved.file (std::string (storage::savingMarkerFile)));
+        REQUIRE (held);
+        storage::finishInterruptedSave (saved.folder);
+    }
+
+    storage::finishInterruptedSave (saved.folder);
+    CHECK_FALSE (filesHolding (saved.folder, savesBass).empty());
+    CHECK (project::load (saved.folder).project);
+}
+
+TEST_CASE ("review 3: finishing never moves a clip file out from under a project.json changed since the save stopped" * doctest::should_fail())
+{
+    SavedProject saved;
+    const auto oldProjectJson = *readTextFile (saved.file ("project.json"));
+    interruptedAtFirstSwap (saved);
+
+    // After the crash, before the next --play: project.json written again by
+    // hand (a checkout, say), still naming clips/fill.notes.
+    writeFile (saved.file ("project.json"), oldProjectJson + "\n");
+
+    storage::finishInterruptedSave (saved.folder);
+    CHECK (project::load (saved.folder).project);
+}
+
 TEST_CASE ("a marker never moves a file that isn't one of the project's")
 {
     SavedProject saved;
