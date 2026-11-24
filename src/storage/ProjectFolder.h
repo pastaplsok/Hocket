@@ -7,9 +7,13 @@
 // swapped in, clip files before project.json. So a crash at any point leaves
 // each file whole, old or new, and never leaves project.json naming a clip
 // file that isn't there; and the next open finishes a save a crash stopped
-// part-way, so the folder is never left part old and part new (below,
-// finishInterruptedSave). A swap that fails puts back the files already
-// swapped, so a failed save leaves the folder as it was.
+// part-way, all of it or none, so the folder is never left part old and part
+// new (below, finishInterruptedSave). A swap that fails puts back the files
+// already swapped, so a failed save leaves the folder as it was.
+//
+// Nothing here deletes a file whose text exists nowhere else: not on disk,
+// and not in the session whose save wrote it. Such a file is set aside in
+// unused/ (CLAUDE.md).
 //
 // Before a save changes anything, it keeps the version on disk whole, in
 // .hocket/saves/<number> <time> <author>[ <name>]/: project.json, its clip
@@ -121,31 +125,45 @@ namespace hocket::storage
         // nullopt, with the problem, if it couldn't be kept.
         std::optional<commands::KeptSave> keepRecoveryCopy (const std::filesystem::path& copy, commands::SaveTime written, std::string& problem);
 
-        // For tests of a crash part-way through a save, or through finishing
-        // one (finishInterruptedSave): each step it takes on the disk, in order.
+        // For tests of a crash or a failure part-way through a save, or through
+        // finishing one (finishInterruptedSave): each step it takes on the
+        // disk, in order.
         struct SaveStep
         {
             enum class Kind
             {
+                setAside,       // moving a file or folder an earlier save left, `path`, to unused/
                 writeTemporary, // writing a file's new text beside it, `path` (the temporary file)
                 keepFile,       // writing a file of the kept save's copy, `path`
                 nameKept,       // renaming the kept save's copy to its name, `path`
                 readBack,       // reading a new kept save back at its final name, `path`
-                writeMarker,    // writing .hocket/saving.json, `path`: from here the save is finished, even if it's stopped
+                writeMarker,    // writing .hocket/saving.json beside its place, `path` (the temporary file)
+                nameMarker,     // putting it in place, `path`: from here the save is finished, even if it's stopped
                 swap,           // putting a file's new text in place, `path` (the file)
+                putBack,        // a failed save putting a file it replaced back as it was, `path` (the file)
                 moveUnused,     // moving a file no clip uses to unused/, `path` (the file)
-                removeMarker,   // removing .hocket/saving.json, `path`: the save is done
-                clearLeftover   // finishing: removing what a save stopped before its marker left, `path`
+                removeMarker    // removing .hocket/saving.json, `path`: the save is done
             };
 
             Kind kind;
             std::filesystem::path path;
         };
 
-        // Called before each step; returning false stops the save there, as a
-        // crash would: nothing after it happens, and nothing is cleaned up.
-        // For tests only.
-        void setStepHook (std::function<bool (const SaveStep&)> hook) { stepHook = std::move (hook); }
+        // What a test's step hook makes of a step: it happens; or a crash
+        // stops everything there, and nothing after it happens, nothing
+        // cleaned up; or it fails as if the OS had refused it, and the save or
+        // finishing goes on as it does when one fails.
+        enum class StepOutcome
+        {
+            proceed,
+            crash,
+            fail
+        };
+
+        using StepHook = std::function<StepOutcome (const SaveStep&)>;
+
+        // Called before each step. For tests only.
+        void setStepHook (StepHook hook) { stepHook = std::move (hook); }
 
     private:
         struct Known
@@ -156,14 +174,24 @@ namespace hocket::storage
 
         std::filesystem::path folder;
         Clock clock;
-        std::function<bool (const SaveStep&)> stepHook;
+        StepHook stepHook;
 
-        bool step (SaveStep::Kind kind, const std::filesystem::path& path) const { return ! stepHook || stepHook (SaveStep { kind, path }); }
+        StepOutcome step (SaveStep::Kind kind, const std::filesystem::path& path) const
+        {
+            return stepHook ? stepHook (SaveStep { kind, path }) : StepOutcome::proceed;
+        }
 
         // project.json and every clip file Hocket has had in the project here,
         // loaded or saved, that may still be on disk. The clip files are the
         // only ones a save may move to unused/.
         std::map<std::string, Known, std::less<>> known;
+
+        // .hocket/saving.json as this session's last save left it there: it
+        // couldn't be removed once the files were in place, or it describes a
+        // failed save that couldn't put every file back. A later save may
+        // replace it; any other marker stops a save (an older save's,
+        // interrupted).
+        std::optional<project::FileStamp> ownMarker;
 
         // Copies the version on disk into a new kept save: project.json if
         // it's there, its clip files, and every file in `overwrites`, the
@@ -190,6 +218,10 @@ namespace hocket::storage
                                                      std::string& problem);
     };
 
+    // The kept saves in a project folder, oldest first: ProjectFolder::keptSaves,
+    // for a folder whose project may not load.
+    std::vector<commands::KeptSave> keptSavesIn (const std::filesystem::path& folder);
+
     // Saves an empty project (120 BPM, 4/4, no tracks) in `folder`, which
     // must be new or empty; a new folder is made, with any folders above it.
     // Returns what went wrong, or empty.
@@ -197,31 +229,53 @@ namespace hocket::storage
 
     //==============================================================================
     // A save interrupted part-way (SPEC §4.5). A save writes every file's new
-    // text beside it and keeps the version it replaces, then writes
-    // .hocket/saving.json, then puts the files in place, moves unused ones to
-    // unused/, and removes .hocket/saving.json. So a save stopped by a crash
-    // before the marker changed nothing but leftovers; one stopped after it
-    // has every new text on disk, ready to put in place.
+    // text beside it and keeps the version it replaces, then puts
+    // .hocket/saving.json in place (written beside it first, so it's whole or
+    // not there), then puts the files in place, moves unused ones to unused/,
+    // and removes .hocket/saving.json. So a save stopped by a crash before the
+    // marker changed nothing but leftovers; one stopped after it has every new
+    // text on disk, ready to put in place.
 
     // There while a save puts its files in place.
     inline constexpr std::string_view savingMarkerFile = ".hocket/saving.json";
 
     struct FinishedSave
     {
-        bool interrupted = false; // a save had begun putting files in place
-        std::string message;      // what finishing it did, or why it couldn't; empty when there was nothing to do
+        enum class Outcome
+        {
+            nothing,  // there was no interrupted save
+            setAside, // a save interrupted before its marker: what it left is set aside in unused/
+            finished, // a save interrupted after its marker: finished, as it meant
+            blocked,  // one that can't be finished: nothing on disk was changed
+            failed    // finishing, or setting aside, failed part-way: the next open tries again
+        };
+
+        Outcome outcome = Outcome::nothing;
+        std::string message; // what was done, or why not and where the versions are; empty for nothing
+
+        // Whether a session may open the folder: not after blocked or failed.
+        bool proceed() const { return outcome != Outcome::blocked && outcome != Outcome::failed; }
     };
 
-    // Before a session opens the folder: finishes a save a crash interrupted
-    // after its marker, as the save meant, and clears what one interrupted
-    // before it left (its temporary files and part-made copies), which
-    // changed nothing. A file changed since the save was interrupted is left
-    // as it is, and the save's text for it goes to unused/. Finishing that
-    // fails leaves the marker, so the next open tries again. The step hook is
-    // for tests, as ProjectFolder's.
-    FinishedSave finishInterruptedSave (const std::filesystem::path& folder, const std::function<bool (const ProjectFolder::SaveStep&)>& stepHook = {});
+    // Before a session opens the folder (SPEC §4.5): finishes a save a crash
+    // interrupted after its marker, all of it or none. Only when the marker
+    // reads and parses, every file the save still has to put in place is
+    // beside its place as the save wrote it, every file it has put in place is
+    // as it put it, and every file it replaces is as the save found it and is
+    // in the kept save. Otherwise it changes nothing (blocked), and the message
+    // says why, and where the version before the save (the kept save) and the
+    // save's (the temporary files) are. A step that fails stops it there
+    // (failed): what's done stays done, the marker stays, and the next open
+    // finishes the rest. What a save stopped before its marker left (its
+    // temporary files, a part-made copy) is set aside in unused/, never
+    // deleted. The step hook is for tests, as ProjectFolder's.
+    FinishedSave finishInterruptedSave (const std::filesystem::path& folder, const ProjectFolder::StepHook& stepHook = {});
 
-    // Whether a save was interrupted after its marker, for --check, which
-    // changes nothing: the folder may hold part of it until --play finishes it.
+    // For --check, which changes nothing: what finishInterruptedSave would
+    // find, said as a note, or empty when there's nothing.
+    std::string describeInterruptedSave (const std::filesystem::path& folder);
+
+    // Whether .hocket/saving.json is there: a save was interrupted after it
+    // began putting files in place, or something else put it there.
     bool hasInterruptedSave (const std::filesystem::path& folder);
 }

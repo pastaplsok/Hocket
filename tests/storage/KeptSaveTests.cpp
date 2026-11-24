@@ -438,7 +438,7 @@ TEST_CASE ("a kept save that doesn't read back at its final name isn't kept, and
         if (step.kind == storage::ProjectFolder::SaveStep::Kind::readBack)
             std::filesystem::remove (step.path / pathFromUtf8 ("clips/bass.notes"));
 
-        return true;
+        return storage::ProjectFolder::StepOutcome::proceed;
     });
 
     const auto result = saved.bus->save ({}, lee);

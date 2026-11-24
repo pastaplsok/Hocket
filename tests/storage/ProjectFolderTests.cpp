@@ -200,7 +200,7 @@ TEST_CASE ("after a failed save that couldn't put a file back, Hocket still know
             heldBass.emplace (saved.file ("clips/bass.notes"), std::ios::binary);
         }
 
-        return true;
+        return storage::ProjectFolder::StepOutcome::proceed;
     });
 
     const auto failed = saved.bus->save ({}, lee);

@@ -204,10 +204,10 @@ namespace
         for (const auto& error : result.errors)
             std::cerr << hocket::project::formatDiagnostic (error) << "\n";
 
-        // It changes nothing, so it only says so; --play finishes it (SPEC §4.5).
-        if (hocket::storage::hasInterruptedSave (hocket::pathFromUtf8 (folder)))
-            std::cerr << "Note: a save was interrupted part-way (" << hocket::storage::savingMarkerFile
-                      << " is there), so the folder may hold part of it. --play finishes it before playing.\n";
+        // It changes nothing, so it only says so; --play finishes it, or
+        // says why it can't (SPEC §4.5).
+        if (const auto note = hocket::storage::describeInterruptedSave (hocket::pathFromUtf8 (folder)); ! note.empty())
+            std::cerr << note << "\n";
 
         if (! result.project)
             return 1;
@@ -569,9 +569,16 @@ namespace
             return 1;
 
         // A save a crash interrupted part-way (SPEC §4.5): finished as it
-        // meant, before the folder is read.
-        if (const auto finished = hocket::storage::finishInterruptedSave (folder); ! finished.message.empty())
-            std::cout << finished.message << std::endl;
+        // meant, all of it, before the folder is read. One that can't be, or
+        // whose finishing fails part-way, stops --play: a session started on
+        // the folder would be playing, and saving over, half of it.
+        const auto finished = hocket::storage::finishInterruptedSave (folder);
+
+        if (! finished.message.empty())
+            (finished.proceed() ? std::cout : std::cerr) << finished.message << std::endl;
+
+        if (! finished.proceed())
+            return 1;
 
         // Where saves go (SPEC §4.5), noting each file's stamp as it's read,
         // so a save never overwrites a change made outside Hocket unasked.
