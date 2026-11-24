@@ -205,10 +205,12 @@ TEST_CASE ("a recovery copy is found after its project's folder is moved or rena
     REQUIRE (start.proceed);
     REQUIRE (start.recovered);
     CHECK (*start.recovered == lost);
-    CHECK (start.message
-           == "Found the project's recovery copy where it was kept for its folder before that was moved or renamed, '"
-                  + utf8FromPath (std::filesystem::canonical (scene.saved.folder.parent_path()) / pathFromUtf8 (utf8FromPath (oldFolder.filename())))
-                  + "'.");
+
+    // The history entry names the folder it was written for.
+    const auto oldPath = utf8FromPath (std::filesystem::canonical (scene.saved.folder.parent_path()) / pathFromUtf8 (utf8FromPath (oldFolder.filename())));
+    CHECK (start.description
+           == "recovered the unsaved changes in the recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '"
+                  + oldPath + "'");
 
     // Taken over: from now on it's this folder's, and a new session finds it at once.
     CHECK (copy.find());
@@ -229,6 +231,103 @@ TEST_CASE ("a copied project folder doesn't take its original's recovery copy, t
     CHECK_FALSE (copy.adoptMoved());
     CHECK_FALSE (copy.find());
     CHECK (scene.copy().find()); // still the original's
+}
+
+namespace
+{
+    // A session's unsaved change, left in a recovery copy by a crash; then the
+    // folder renamed, or copied and the original renamed.
+    struct MovedScene : RecoveryScene
+    {
+        std::filesystem::path original;
+        std::string originalPath; // as the copy names it
+        project::Project lost;
+
+        MovedScene()
+        {
+            REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+            lost = saved.bus->project();
+            REQUIRE (copy().write (files()).empty());
+            original = saved.folder;
+            originalPath = utf8FromPath (std::filesystem::canonical (original));
+        }
+
+        // Plays `folder` from now on, a new session's way.
+        void playFrom (std::filesystem::path folder)
+        {
+            saved.folder = std::move (folder);
+            saved.open();
+        }
+
+        std::string stopAndAsk (storage::RecoveryChoice choice = storage::RecoveryChoice::none)
+        {
+            auto copy = this->copy();
+            const auto start = storage::startRecovery (copy, *saved.projectFolder, saved.bus->project(), choice);
+            CHECK (start.proceed == (choice != storage::RecoveryChoice::none));
+            return start.message;
+        }
+
+        std::string elsewhere() const
+        {
+            return "It was written for the folder '" + originalPath + "', which has this project's ID (.hocket/id): this folder was moved or renamed "
+                   "from there, or copied from it. If it was copied, these are that folder's changes.";
+        }
+    };
+}
+
+TEST_CASE ("review 4: plain --play on a folder whose recovery copy was found by its ID stops and asks, naming the folder it was written for")
+{
+    MovedScene scene;
+    const auto renamed = scene.original.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (scene.original, renamed);
+    scene.playFrom (renamed);
+
+    const auto message = scene.stopAndAsk();
+    CAPTURE (message);
+    CHECK (message.starts_with ("This project has a recovery copy, written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '"
+                                + scene.originalPath + "', holding changes that were never saved"));
+    CHECK (contains (message, "\n" + scene.elsewhere() + "\n"));
+
+    // Asked again, after it was taken over: still named, since the copy is as it was written.
+    CHECK (contains (scene.stopAndAsk(), scene.elsewhere()));
+
+    // Filed: the kept save's message names it too.
+    CHECK (contains (scene.stopAndAsk (storage::RecoveryChoice::discard),
+                     "Filed the recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '" + scene.originalPath + "' as save #1"));
+}
+
+TEST_CASE ("review 4: a copy of a folder whose original was then renamed takes the original's recovery copy, and the message says whose it was")
+{
+    MovedScene scene;
+
+    // The folder copied, to make a variation, and the original renamed.
+    const auto variation = scene.original.parent_path() / pathFromUtf8 ("song v2 " + unicodeName);
+    std::filesystem::copy (scene.original, variation, std::filesystem::copy_options::recursive);
+    std::filesystem::rename (scene.original, scene.original.parent_path() / pathFromUtf8 ("song old " + unicodeName));
+    scene.playFrom (variation);
+
+    const auto message = scene.stopAndAsk();
+    CAPTURE (message);
+    CHECK (contains (message, " for '" + scene.originalPath + "'"));
+    CHECK (contains (message, scene.elsewhere()));
+}
+
+TEST_CASE ("review 4: a folder whose files don't load says whose its recovery copy was, when it was found by its ID")
+{
+    MovedScene scene;
+    const auto renamed = scene.original.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (scene.original, renamed);
+    scene.saved.folder = renamed;
+    writeFile (scene.saved.file ("project.json"), "oops");
+
+    auto copy = scene.copy();
+    const auto start = storage::startUnloadable (copy, renamed, storage::RecoveryChoice::none);
+    CAPTURE (start.message);
+
+    CHECK_FALSE (start.proceed);
+    CHECK (contains (start.message, "A recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '" + scene.originalPath
+                                        + "' holds changes a session never saved"));
+    CHECK (contains (start.message, "\n" + scene.elsewhere()));
 }
 
 TEST_CASE ("a crash or power loss part-way through writing a recovery copy leaves the copy before it whole and usable, never a half-written one")

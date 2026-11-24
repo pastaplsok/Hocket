@@ -55,13 +55,36 @@ namespace
         return problem;
     }
 
+    // " for 'D:\Music\song'": a copy written for another folder than this
+    // one, found by the project's ID (RecoveryCopy::adoptMoved). Every
+    // message about the copy names that folder.
+    std::string forFolder (const RecoveryCopy& copy, const RecoveryCopy::Found& found)
+    {
+        return found.writtenFor == copy.project() ? std::string() : " for '" + found.writtenFor + "'";
+    }
+
+    // What that means, said where --play stops and asks: the folder may have
+    // been copied, not moved, and the changes the other's.
+    std::string writtenElsewhere (const RecoveryCopy& copy, const RecoveryCopy::Found& found)
+    {
+        if (found.writtenFor == copy.project())
+            return {};
+
+        return "It was written for the folder '" + found.writtenFor + "', which has this project's ID (" + std::string (projectIdFile)
+             + "): this folder was moved or renamed from there, or copied from it. If it was copied, these are that folder's changes.";
+    }
+
     // What plain --play says, and plays nothing, when an earlier session left
     // unsaved changes in a recovery copy.
-    std::string askWhatToDo (const RecoveryCopy::Found& found, const project::LoadResult& read, const ProjectFolder& folder, const project::Project& loaded)
+    std::string askWhatToDo (const RecoveryCopy& copy, const RecoveryCopy::Found& found, const project::LoadResult& read, const ProjectFolder& folder,
+                             const project::Project& loaded)
     {
-        const auto written = commands::localTimeText (found.written);
+        const auto written = commands::localTimeText (found.written) + forFolder (copy, found);
         std::string text = "This project has a recovery copy, written " + written
                          + ", holding changes that were never saved: the session that made them ended without saving them, by a crash or by quitting.\n";
+
+        if (const auto elsewhere = writtenElsewhere (copy, found); ! elsewhere.empty())
+            text += elsewhere + "\n";
 
         if (const auto changed = filesChanged (folder.path(), loaded); changed && *changed > found.written)
             text += "It's older than the project's files, which changed at " + commands::localTimeText (*changed)
@@ -87,29 +110,16 @@ namespace
 
 namespace
 {
-    // The copy kept for the folder's old path, if it was moved or renamed
-    // since (RecoveryCopy::adoptMoved): taken over, and said.
-    std::string adoptMoved (RecoveryCopy& copy)
-    {
-        const auto moved = copy.adoptMoved();
-        return moved ? "Found the project's recovery copy where it was kept for its folder before that was moved or renamed, '" + *moved + "'." : std::string();
-    }
-
-    std::string withNote (const std::string& note, std::string message)
-    {
-        return note.empty() ? message : message.empty() ? note : note + "\n" + message;
-    }
-
     RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice);
     UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice);
 }
 
 RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
 {
-    const auto moved = adoptMoved (copy);
-    auto start = decide (copy, folder, loaded, choice);
-    start.message = withNote (moved, std::move (start.message));
-    return start;
+    // The copy kept for the folder's old path, if it was moved, renamed or
+    // copied since: taken over, and named as written for that folder.
+    copy.adoptMoved();
+    return decide (copy, folder, loaded, choice);
 }
 
 namespace
@@ -130,7 +140,7 @@ RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::
         return {};
     }
 
-    const auto written = commands::localTimeText (found->written);
+    const auto written = commands::localTimeText (found->written) + forFolder (copy, *found);
     const auto read = project::load (found->folder);
 
     // One a crash left between a save and the copy's removal, say.
@@ -148,7 +158,7 @@ RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::
     switch (choice)
     {
         case RecoveryChoice::none:
-            return { false, askWhatToDo (*found, read, folder, loaded) };
+            return { false, askWhatToDo (copy, *found, read, folder, loaded) };
 
         case RecoveryChoice::recover:
             if (! read.project)
@@ -182,10 +192,8 @@ RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::
 
 UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
 {
-    const auto moved = adoptMoved (copy);
-    auto start = startUnloadableFound (copy, folder, choice);
-    start.message = withNote (moved, std::move (start.message));
-    return start;
+    copy.adoptMoved(); // as startRecovery does
+    return startUnloadableFound (copy, folder, choice);
 }
 
 namespace
@@ -195,7 +203,7 @@ UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem:
     auto projectFolder = ProjectFolder::asItIs (folder);
     const auto found = copy.find();
     const auto read = found ? project::load (found->folder) : project::LoadResult {};
-    const auto written = found ? commands::localTimeText (found->written) : std::string();
+    const auto written = found ? commands::localTimeText (found->written) + forFolder (copy, *found) : std::string();
 
     if (choice == RecoveryChoice::recover && found && read.project)
     {
@@ -248,6 +256,9 @@ UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem:
                   + ". --play --discard-recovery files it with the kept saves, where its files can be looked at and mended.";
 
         text += " It's in " + quoted (found->folder) + ".";
+
+        if (const auto elsewhere = writtenElsewhere (copy, *found); ! elsewhere.empty())
+            text += "\n" + elsewhere;
     }
 
     // Newest first, as the person would want them.

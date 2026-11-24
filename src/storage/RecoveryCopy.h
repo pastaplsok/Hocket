@@ -77,6 +77,8 @@ namespace hocket::storage
         {
             std::filesystem::path folder; // the copy: a project folder
             commands::SaveTime written;   // when, to the second
+            std::string writtenFor;       // the project folder's full path it was written for: another than project()
+                                          // when it was found by the project's ID (the folder was moved, renamed or copied)
         };
 
         // The newest whole copy of this project, if there is one.

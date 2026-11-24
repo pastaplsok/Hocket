@@ -212,7 +212,7 @@ std::optional<RecoveryCopy::Found> RecoveryCopy::find() const
         const auto folder = placePath / pathFromUtf8 (std::to_string (number));
 
         if (const auto info = recoveryInfoIn (folder))
-            return belongs (info->project, info->id) ? std::optional<Found> (Found { folder, info->written }) : std::nullopt;
+            return belongs (info->project, info->id) ? std::optional<Found> (Found { folder, info->written, info->project }) : std::nullopt;
     }
 
     return {};
