@@ -4,6 +4,7 @@
 add_executable(hocket_engine_tests
     AllocationCounter.cpp
     AllocationCounter.h
+    BugSweepTests.cpp
     BundledKitRenderTests.cpp
     DrumSamplerTests.cpp
     DrumTesting.h
