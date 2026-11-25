@@ -55,13 +55,36 @@ namespace
         return problem;
     }
 
+    // " for 'D:\Music\song'": a copy written for another folder than this
+    // one, found by the project's ID (RecoveryCopy::adoptMoved). Every
+    // message about the copy names that folder.
+    std::string forFolder (const RecoveryCopy& copy, const RecoveryCopy::Found& found)
+    {
+        return found.writtenFor == copy.project() ? std::string() : " for '" + found.writtenFor + "'";
+    }
+
+    // What that means, said where --play stops and asks: the folder may have
+    // been copied, not moved, and the changes the other's.
+    std::string writtenElsewhere (const RecoveryCopy& copy, const RecoveryCopy::Found& found)
+    {
+        if (found.writtenFor == copy.project())
+            return {};
+
+        return "It was written for the folder '" + found.writtenFor + "', which has this project's ID (" + std::string (projectIdFile)
+             + "): this folder was moved or renamed from there, or copied from it. If it was copied, these are that folder's changes.";
+    }
+
     // What plain --play says, and plays nothing, when an earlier session left
     // unsaved changes in a recovery copy.
-    std::string askWhatToDo (const RecoveryCopy::Found& found, const project::LoadResult& read, const ProjectFolder& folder, const project::Project& loaded)
+    std::string askWhatToDo (const RecoveryCopy& copy, const RecoveryCopy::Found& found, const project::LoadResult& read, const ProjectFolder& folder,
+                             const project::Project& loaded)
     {
-        const auto written = commands::localTimeText (found.written);
+        const auto written = commands::localTimeText (found.written) + forFolder (copy, found);
         std::string text = "This project has a recovery copy, written " + written
                          + ", holding changes that were never saved: the session that made them ended without saving them, by a crash or by quitting.\n";
+
+        if (const auto elsewhere = writtenElsewhere (copy, found); ! elsewhere.empty())
+            text += elsewhere + "\n";
 
         if (const auto changed = filesChanged (folder.path(), loaded); changed && *changed > found.written)
             text += "It's older than the project's files, which changed at " + commands::localTimeText (*changed)
@@ -85,7 +108,23 @@ namespace
     }
 }
 
+namespace
+{
+    RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice);
+    UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice);
+}
+
 RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
+{
+    // The copy kept for the folder's old path, if it was moved, renamed or
+    // copied since: taken over, and named as written for that folder.
+    copy.adoptMoved();
+    return decide (copy, folder, loaded, choice);
+}
+
+namespace
+{
+RecoveryStart decide (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice)
 {
     const auto found = copy.find();
 
@@ -101,7 +140,7 @@ RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const pr
         return {};
     }
 
-    const auto written = commands::localTimeText (found->written);
+    const auto written = commands::localTimeText (found->written) + forFolder (copy, *found);
     const auto read = project::load (found->folder);
 
     // One a crash left between a save and the copy's removal, say.
@@ -119,7 +158,7 @@ RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const pr
     switch (choice)
     {
         case RecoveryChoice::none:
-            return { false, askWhatToDo (*found, read, folder, loaded) };
+            return { false, askWhatToDo (copy, *found, read, folder, loaded) };
 
         case RecoveryChoice::recover:
             if (! read.project)
@@ -148,6 +187,101 @@ RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const pr
                        + ". The next --play will ask about it again; it's safe to delete it by hand.";
 
     return start;
+}
+}
+
+UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
+{
+    copy.adoptMoved(); // as startRecovery does
+    return startUnloadableFound (copy, folder, choice);
+}
+
+namespace
+{
+UnloadableStart startUnloadableFound (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice)
+{
+    auto projectFolder = ProjectFolder::asItIs (folder);
+    const auto found = copy.find();
+    const auto read = found ? project::load (found->folder) : project::LoadResult {};
+    const auto written = found ? commands::localTimeText (found->written) + forFolder (copy, *found) : std::string();
+
+    if (choice == RecoveryChoice::recover && found && read.project)
+    {
+        UnloadableStart start { true, "The project's files don't load, so the session starts as the recovery copy written " + written
+                                          + ", unsaved: the first save keeps the files on disk as they are, as a kept save, then writes this version." };
+        start.recovered = read.project;
+        start.folder.emplace (std::move (projectFolder));
+        return start;
+    }
+
+    std::string text;
+    auto haveCopy = found.has_value();
+
+    if (choice == RecoveryChoice::discard && found)
+    {
+        std::string problem;
+
+        if (const auto kept = projectFolder.keepRecoveryCopy (found->folder, found->written, problem))
+        {
+            text = "Filed the recovery copy written " + written + " as " + commands::describe (*kept) + ".\n";
+            haveCopy = false;
+
+            if (const auto removed = copy.remove(); ! removed.empty())
+                text += "Couldn't remove it from the recovery folder, though: " + withoutStop (removed) + ". It's safe to delete it by hand.\n";
+        }
+        else
+        {
+            text = "--discard-recovery: couldn't file the recovery copy written " + written + " with the kept saves, so it's left as it is: "
+                 + withoutStop (problem) + ".\n";
+        }
+    }
+
+    text += "The project's files don't load (their problems are above), so nothing was played.";
+
+    if (choice == RecoveryChoice::recover && ! found)
+        text += "\n--recover: there's no recovery copy of this project.";
+
+    if (choice == RecoveryChoice::discard && ! found)
+        text += "\n--discard-recovery: there's no recovery copy of this project to discard.";
+
+    if (haveCopy)
+    {
+        text += "\nA recovery copy written " + written + " holds changes a session never saved";
+
+        if (read.project)
+            text += ". --play --recover plays it in place of the project's files, unsaved; the first save keeps those files as they are before writing "
+                    "its version. --play --discard-recovery files it with the kept saves instead.";
+        else
+            text += ", but it doesn't read as a project either: " + firstProblem (read)
+                  + ". --play --discard-recovery files it with the kept saves, where its files can be looked at and mended.";
+
+        text += " It's in " + quoted (found->folder) + ".";
+
+        if (const auto elsewhere = writtenElsewhere (copy, *found); ! elsewhere.empty())
+            text += "\n" + elsewhere;
+    }
+
+    // Newest first, as the person would want them.
+    auto saves = projectFolder.keptSaves();
+    std::ranges::reverse (saves);
+    constexpr std::size_t listedSaves = 3;
+
+    if (! saves.empty())
+    {
+        text += "\nEarlier versions are kept whole in .hocket/saves; to go back to one by hand, copy its project.json and clips folder into the project's folder:";
+
+        for (std::size_t i = 0; i < saves.size() && i < listedSaves; ++i)
+            text += "\n  " + commands::describe (saves[i]) + ": " + quoted ((folder / pathFromUtf8 (saves[i].folder)).make_preferred());
+
+        if (saves.size() > listedSaves)
+            text += "\n  and " + std::to_string (saves.size() - listedSaves) + " earlier, in .hocket/saves.";
+    }
+
+    if (! found && saves.empty())
+        text += "\nThere's no recovery copy and no kept save of it: mend its files by hand. --check lists their problems.";
+
+    return { false, text };
+}
 }
 
 //==============================================================================

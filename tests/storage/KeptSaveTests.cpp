@@ -175,12 +175,37 @@ TEST_CASE ("a save that changes nothing keeps nothing; one with a name names the
     CHECK (contains (*readTextFile (saved.file (".hocket/save.json")), "\"name\": \"before the bridge\""));
     CHECK (saved.bus->keptSaves().empty());
 
-    // The next save keeps them, under that name.
+    // The next save keeps them, under that name, and still as Lee's save at
+    // its own time: naming a version doesn't make it the namer's (Lee, 2026-11-22).
     REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
     const auto next = saved.bus->save ({}, lee);
 
     REQUIRE (next.kept);
-    CHECK (next.kept->info == SaveInfo { secondsOf (saved.now), "Claude", "before the bridge" });
+    CHECK (next.kept->info == SaveInfo { firstSaved, "Lee", "before the bridge" });
+}
+
+TEST_CASE ("naming a version Hocket didn't save, or one changed outside it, keeps that label, with the name")
+{
+    // From before Hocket: a folder made by hand.
+    const TemporaryFolder temporary (unicodeName);
+    const auto folder = temporary.path / pathFromUtf8 ("by hand " + unicodeName);
+    std::filesystem::copy (pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project"), folder, std::filesystem::copy_options::recursive);
+    const SaveTime handMade = std::chrono::sys_days (std::chrono::year (2026) / 11 / 18) + std::chrono::hours (21);
+    std::filesystem::last_write_time (folder / pathFromUtf8 ("project.json"), std::chrono::clock_cast<std::chrono::file_clock> (handMade));
+
+    // Saved once in canonical form by hand's look-alike: the fixture is canonical, so nothing to write.
+    auto [result, opened] = storage::ProjectFolder::open (folder, [] { return std::chrono::system_clock::time_point (firstSaved); });
+    REQUIRE (opened);
+    CommandBus bus (std::move (*result.project));
+    bus.setStorage (&*opened);
+    REQUIRE (bus.save ({ "as found" }, claude).ok);
+
+    REQUIRE (bus.execute (SetTempo { 100 }, lee).ok);
+    const auto next = bus.save ({}, lee);
+
+    REQUIRE (next.kept);
+    CHECK (next.kept->info == SaveInfo { handMade, "", "as found" });
+    CHECK (describe (*next.kept) == "save #1, from before Hocket, " + localTimeText (handMade) + ", \"as found\"");
 }
 
 TEST_CASE ("a version Hocket didn't save is kept as from before Hocket, at project.json's date")
@@ -213,6 +238,66 @@ TEST_CASE ("a version Hocket didn't save is kept as from before Hocket, at proje
     CHECK (contains (info.mapped(), "\"author\": \"\""));
     CHECK (copy == version);
     CHECK (bus.keptSaves() == std::vector<KeptSave> { *result.kept });
+}
+
+TEST_CASE ("a version changed by hand while Hocket was closed is kept as changed outside Hocket, not under the save it no longer is")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+    REQUIRE (saved.bus->save ({ "the good take" }, lee).ok);
+    CHECK (contains (*readTextFile (saved.file (".hocket/save.json")), "\"files\": {"));
+
+    // Hocket closed; the bass edited by hand; Hocket opened again.
+    const std::string byHand = "@length 4bars\n\n1.1    C2 1/4 v100\n";
+    writeFile (saved.file ("clips/bass.notes"), byHand);
+    const SaveTime editedAt = firstSaved + std::chrono::hours (5);
+    std::filesystem::last_write_time (saved.file ("clips/bass.notes"), std::chrono::clock_cast<std::chrono::file_clock> (editedAt));
+    saved.open();
+
+    REQUIRE (saved.bus->execute (SetTempo { 110 }, claude).ok);
+    const auto result = saved.bus->save ({}, claude);
+
+    REQUIRE (result.ok);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { editedAt, "", "", true });
+    CHECK (describe (*result.kept) == "save #2, changed outside Hocket, " + localTimeText (editedAt));
+    CHECK (readTextFile (saved.file (result.kept->folder + "/clips/bass.notes")) == byHand);
+
+    // "the good take" itself is still save #1's, unchanged.
+    const auto kept = saved.bus->keptSaves();
+    REQUIRE (kept.size() == 2);
+    CHECK (kept[0].info.author == "Lee");
+    CHECK (kept[0].info.name.empty());
+}
+
+TEST_CASE ("a version whose files were written again with the same text keeps its label: it's the text that counts, not the date")
+{
+    SavedProject saved;
+    const auto bass = *readTextFile (saved.file ("clips/bass.notes"));
+    writeFile (saved.file ("clips/bass.notes"), bass);
+    std::filesystem::last_write_time (saved.file ("clips/bass.notes"), std::chrono::clock_cast<std::chrono::file_clock> (firstSaved + std::chrono::hours (5)));
+    saved.open();
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, claude).ok);
+
+    const auto result = saved.bus->save ({}, claude);
+
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { firstSaved, "Lee", "" });
+}
+
+TEST_CASE ("a save.json from before it listed its files is taken at its word")
+{
+    SavedProject saved;
+    writeFile (saved.file (".hocket/save.json"),
+               "{\n  \"format\": \"hocket-save\",\n  \"time\": \"2026-11-20T09:15:00Z\",\n  \"author\": \"Lee\",\n  \"name\": \"\",\n"
+               "  \"changedOutside\": false,\n  \"discardedRecovery\": false\n}\n");
+    writeFile (saved.file ("clips/bass.notes"), "@length 4bars\n\n1.1    C2 1/4 v100\n");
+    saved.open();
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, claude).ok);
+
+    const auto result = saved.bus->save ({}, claude);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info == SaveInfo { firstSaved, "Lee", "" });
 }
 
 TEST_CASE ("kept saves' folder names are valid on Windows whatever the author or the save's name holds")
@@ -339,6 +424,75 @@ TEST_CASE ("a save that can't keep the version on disk writes nothing")
     CHECK (contains (result.message, ". Nothing on disk changed"));
     CHECK (filesIn (saved.folder) == before);
     CHECK (saved.bus->hasUnsavedChanges());
+}
+
+TEST_CASE ("a kept save that doesn't read back at its final name isn't kept, and the save writes nothing")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto before = filesIn (saved.folder);
+
+    // Something takes one of its files away before it's read back.
+    saved.projectFolder->setStepHook ([&saved] (const storage::ProjectFolder::SaveStep& step)
+    {
+        if (step.kind == storage::ProjectFolder::SaveStep::Kind::readBack)
+            std::filesystem::remove (step.path / pathFromUtf8 ("clips/bass.notes"));
+
+        return storage::ProjectFolder::StepOutcome::proceed;
+    });
+
+    const auto result = saved.bus->save ({}, lee);
+
+    CHECK_FALSE (result.ok);
+    CHECK (contains (result.message, "didn't save: couldn't keep the version on disk before replacing it: couldn't read its copy of clips/bass.notes back"));
+    CHECK (contains (result.message, ". Nothing on disk changed"));
+    CHECK (filesIn (saved.folder) == before); // no kept save, and no part of one
+    CHECK (saved.bus->keptSaves().empty());
+    CHECK (saved.bus->hasUnsavedChanges());
+}
+
+TEST_CASE ("in a folder deep enough that a kept save's files pass 260 characters, the save works where Windows allows long paths, and otherwise writes nothing")
+{
+    TemporaryFolder temporary { "deep" };
+    auto folder = std::filesystem::absolute (temporary.path);
+
+    // 215 characters: the project's own files stay inside 260, its kept save's don't.
+    while (folder.native().size() < 205)
+        folder /= pathFromUtf8 ("deeper");
+
+    folder /= pathFromUtf8 (std::string (215 - folder.native().size() - 1, 'x'));
+
+    const auto fixture = loaded (pathFromUtf8 (HOCKET_FIXTURES_DIR "/drum-project"));
+    storage::ProjectFolder first (folder, project::Project {});
+    REQUIRE (first.save (fixture, {}, lee).ok);
+
+    auto [result, opened] = storage::ProjectFolder::open (folder);
+    REQUIRE (opened);
+    CommandBus bus (std::move (*result.project));
+    bus.setStorage (&*opened);
+    REQUIRE (bus.execute (SetTempo { 100 }, claude).ok);
+
+    const auto saved = bus.save ({}, claude);
+    MESSAGE (saved.message);
+
+    if (platform::longPathsEnabled())
+    {
+        REQUIRE (saved.ok);
+        REQUIRE (saved.kept);
+        CHECK (opened->loadKeptSave (*saved.kept).project == fixture);
+        CHECK (bus.keptSaves() == std::vector<KeptSave> { *saved.kept });
+        CHECK (saved.kept->info.author == "Lee");
+        CHECK (bus.execute (Revert { 1 }, claude).ok);
+        CHECK (bus.project() == fixture);
+    }
+    else
+    {
+        MESSAGE ("Windows' long-path setting is off: checking the refusal");
+        CHECK_FALSE (saved.ok);
+        CHECK (contains (saved.message, "turn on Windows' long-path setting"));
+        CHECK (bus.keptSaves().empty());
+        CHECK (bus.hasUnsavedChanges());
+    }
 }
 
 TEST_CASE ("loading and --watch ignore .hocket/ and unused/")

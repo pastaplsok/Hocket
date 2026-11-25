@@ -183,6 +183,45 @@ TEST_CASE ("a save that can't replace a file puts back the files it already repl
     CHECK (loaded (saved.folder) == saved.bus->project());
 }
 
+TEST_CASE ("after a failed save that couldn't put a file back, Hocket still knows that file as its own")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
+    REQUIRE (saved.bus->execute (WriteClip { "clp-fill", newFill }, claude).ok);
+
+    // As fill goes in, another program holds fill, so it can't, and holds
+    // bass, already in place, so it can't be put back.
+    std::optional<std::ifstream> heldFill, heldBass;
+    saved.projectFolder->setStepHook ([&] (const storage::ProjectFolder::SaveStep& step)
+    {
+        if (step.kind == storage::ProjectFolder::SaveStep::Kind::swap && step.path == saved.file ("clips/fill.notes"))
+        {
+            heldFill.emplace (saved.file ("clips/fill.notes"), std::ios::binary);
+            heldBass.emplace (saved.file ("clips/bass.notes"), std::ios::binary);
+        }
+
+        return storage::ProjectFolder::StepOutcome::proceed;
+    });
+
+    const auto failed = saved.bus->save ({}, lee);
+    heldFill.reset();
+    heldBass.reset();
+    saved.projectFolder->setStepHook ({});
+
+    REQUIRE_FALSE (failed.ok);
+    REQUIRE (contains (failed.message, "so the folder is part new, part old"));
+    REQUIRE (*readTextFile (saved.file ("clips/bass.notes")) == project::write (saved.bus->project()).at ("clips/bass.notes"));
+
+    // Hocket wrote the bass that stayed, so changing it again and saving
+    // isn't refused as an outside change.
+    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", "@length 4bars\n\n1.1 C2 1/4 v90\n" }, claude).ok);
+    const auto result = saved.bus->save ({}, lee);
+
+    CHECK (result.ok);
+    CHECK (result.outsideChanges.empty());
+    CHECK (loaded (saved.folder) == saved.bus->project());
+}
+
 TEST_CASE ("a failed save takes away the new clip files it added")
 {
     SavedProject saved;

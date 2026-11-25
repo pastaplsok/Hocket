@@ -165,6 +165,171 @@ TEST_CASE ("a project folder has one place for its recovery copy, however its pa
     CHECK (longPlace.size() == 40 + 1 + 16);
 }
 
+TEST_CASE ("a project's first recovery copy gives it an ID in .hocket/id, which each copy names")
+{
+    RecoveryScene scene;
+    CHECK_FALSE (std::filesystem::exists (scene.saved.file (std::string (storage::projectIdFile))));
+
+    auto copy = scene.copy();
+    REQUIRE (copy.write (scene.files()).empty());
+
+    const auto id = readTextFile (scene.saved.file (std::string (storage::projectIdFile)));
+    REQUIRE (id);
+    CHECK (id->size() == 33); // 32 hex digits and a newline
+    CHECK (contains (*readTextFile (copy.find()->folder / pathFromUtf8 (std::string (storage::recoveryInfoFile))), "\"id\": \"" + id->substr (0, 32) + "\""));
+
+    // Kept saves never copy it: a kept save restored by hand isn't the project's twin.
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto saved = scene.saved.bus->save ({}, lee);
+    REQUIRE (saved.kept);
+    CHECK_FALSE (std::filesystem::exists (scene.saved.file (saved.kept->folder + "/" + std::string (storage::projectIdFile))));
+}
+
+TEST_CASE ("a recovery copy is found after its project's folder is moved or renamed: by the ID in the project's .hocket")
+{
+    RecoveryScene scene;
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    const auto lost = scene.saved.bus->project();
+    REQUIRE (scene.copy().write (scene.files()).empty());
+    const auto oldFolder = scene.saved.folder;
+
+    // After the crash, the folder renamed.
+    scene.saved.folder = oldFolder.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (oldFolder, scene.saved.folder);
+    scene.saved.open();
+    auto copy = scene.copy();
+    REQUIRE_FALSE (copy.find());
+
+    const auto start = storage::startRecovery (copy, *scene.saved.projectFolder, scene.saved.bus->project(), storage::RecoveryChoice::recover);
+
+    REQUIRE (start.proceed);
+    REQUIRE (start.recovered);
+    CHECK (*start.recovered == lost);
+
+    // The history entry names the folder it was written for.
+    const auto oldPath = utf8FromPath (std::filesystem::canonical (scene.saved.folder.parent_path()) / pathFromUtf8 (utf8FromPath (oldFolder.filename())));
+    CHECK (start.description
+           == "recovered the unsaved changes in the recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '"
+                  + oldPath + "'");
+
+    // Taken over: from now on it's this folder's, and a new session finds it at once.
+    CHECK (copy.find());
+    CHECK (copy.find()->folder.parent_path() == copy.place());
+    CHECK (namesIn (scene.recoveryFolder.path) == std::vector<std::string> { utf8FromPath (copy.place().filename()) });
+}
+
+TEST_CASE ("a copied project folder doesn't take its original's recovery copy, though it has the same ID")
+{
+    RecoveryScene scene;
+    REQUIRE (scene.saved.bus->execute (SetTempo { 100 }, lee).ok);
+    REQUIRE (scene.copy().write (scene.files()).empty());
+
+    const auto twin = scene.saved.folder.parent_path() / pathFromUtf8 ("copied " + unicodeName);
+    std::filesystem::copy (scene.saved.folder, twin, std::filesystem::copy_options::recursive);
+    storage::RecoveryCopy copy (scene.recoveryFolder.path, twin);
+
+    CHECK_FALSE (copy.adoptMoved());
+    CHECK_FALSE (copy.find());
+    CHECK (scene.copy().find()); // still the original's
+}
+
+namespace
+{
+    // A session's unsaved change, left in a recovery copy by a crash; then the
+    // folder renamed, or copied and the original renamed.
+    struct MovedScene : RecoveryScene
+    {
+        std::filesystem::path original;
+        std::string originalPath; // as the copy names it
+        project::Project lost;
+
+        MovedScene()
+        {
+            REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+            lost = saved.bus->project();
+            REQUIRE (copy().write (files()).empty());
+            original = saved.folder;
+            originalPath = utf8FromPath (std::filesystem::canonical (original));
+        }
+
+        // Plays `folder` from now on, a new session's way.
+        void playFrom (std::filesystem::path folder)
+        {
+            saved.folder = std::move (folder);
+            saved.open();
+        }
+
+        std::string stopAndAsk (storage::RecoveryChoice choice = storage::RecoveryChoice::none)
+        {
+            auto copy = this->copy();
+            const auto start = storage::startRecovery (copy, *saved.projectFolder, saved.bus->project(), choice);
+            CHECK (start.proceed == (choice != storage::RecoveryChoice::none));
+            return start.message;
+        }
+
+        std::string elsewhere() const
+        {
+            return "It was written for the folder '" + originalPath + "', which has this project's ID (.hocket/id): this folder was moved or renamed "
+                   "from there, or copied from it. If it was copied, these are that folder's changes.";
+        }
+    };
+}
+
+TEST_CASE ("review 4: plain --play on a folder whose recovery copy was found by its ID stops and asks, naming the folder it was written for")
+{
+    MovedScene scene;
+    const auto renamed = scene.original.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (scene.original, renamed);
+    scene.playFrom (renamed);
+
+    const auto message = scene.stopAndAsk();
+    CAPTURE (message);
+    CHECK (message.starts_with ("This project has a recovery copy, written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '"
+                                + scene.originalPath + "', holding changes that were never saved"));
+    CHECK (contains (message, "\n" + scene.elsewhere() + "\n"));
+
+    // Asked again, after it was taken over: still named, since the copy is as it was written.
+    CHECK (contains (scene.stopAndAsk(), scene.elsewhere()));
+
+    // Filed: the kept save's message names it too.
+    CHECK (contains (scene.stopAndAsk (storage::RecoveryChoice::discard),
+                     "Filed the recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '" + scene.originalPath + "' as save #1"));
+}
+
+TEST_CASE ("review 4: a copy of a folder whose original was then renamed takes the original's recovery copy, and the message says whose it was")
+{
+    MovedScene scene;
+
+    // The folder copied, to make a variation, and the original renamed.
+    const auto variation = scene.original.parent_path() / pathFromUtf8 ("song v2 " + unicodeName);
+    std::filesystem::copy (scene.original, variation, std::filesystem::copy_options::recursive);
+    std::filesystem::rename (scene.original, scene.original.parent_path() / pathFromUtf8 ("song old " + unicodeName));
+    scene.playFrom (variation);
+
+    const auto message = scene.stopAndAsk();
+    CAPTURE (message);
+    CHECK (contains (message, " for '" + scene.originalPath + "'"));
+    CHECK (contains (message, scene.elsewhere()));
+}
+
+TEST_CASE ("review 4: a folder whose files don't load says whose its recovery copy was, when it was found by its ID")
+{
+    MovedScene scene;
+    const auto renamed = scene.original.parent_path() / pathFromUtf8 ("renamed " + unicodeName);
+    std::filesystem::rename (scene.original, renamed);
+    scene.saved.folder = renamed;
+    writeFile (scene.saved.file ("project.json"), "oops");
+
+    auto copy = scene.copy();
+    const auto start = storage::startUnloadable (copy, renamed, storage::RecoveryChoice::none);
+    CAPTURE (start.message);
+
+    CHECK_FALSE (start.proceed);
+    CHECK (contains (start.message, "A recovery copy written " + localTimeText (std::chrono::floor<std::chrono::seconds> (written)) + " for '" + scene.originalPath
+                                        + "' holds changes a session never saved"));
+    CHECK (contains (start.message, "\n" + scene.elsewhere()));
+}
+
 TEST_CASE ("a crash or power loss part-way through writing a recovery copy leaves the copy before it whole and usable, never a half-written one")
 {
     // A power cut can't be made in a test. What gets a copy through one is
@@ -862,4 +1027,153 @@ TEST_CASE ("a recovery copy that doesn't read can't be recovered, but can be fil
     keptFiles.erase (".hocket/save.json");
     CHECK (keptFiles == files);
     CHECK_FALSE (copy.find());
+}
+
+//==============================================================================
+namespace
+{
+    // A project whose files don't load: saved twice, so there's a kept save;
+    // then changes a session never saved, in its recovery copy; then
+    // project.json broken by hand.
+    struct BrokenScene : RecoveryScene
+    {
+        const std::string brokenJson = "{ \"format\": \"hocket-project\", oops";
+        project::Project lost; // the recovery copy's
+        std::map<std::string, std::string> lostFiles;
+
+        BrokenScene()
+        {
+            REQUIRE (saved.bus->execute (SetTempo { 100 }, lee).ok);
+            REQUIRE (saved.bus->save ({}, lee).ok);
+            REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
+            lost = saved.bus->project();
+            lostFiles = files();
+            REQUIRE (copy().write (lostFiles).empty());
+            writeFile (saved.file ("project.json"), brokenJson);
+            REQUIRE_FALSE (project::load (saved.folder).project);
+        }
+
+        // Where a kept save is, as the person would look for it.
+        std::string placeOf (const KeptSave& save) const
+        {
+            return utf8FromPath ((saved.folder / pathFromUtf8 (save.folder)).make_preferred());
+        }
+    };
+
+    const auto writtenText = localTimeText (std::chrono::floor<std::chrono::seconds> (written));
+}
+
+TEST_CASE ("when the project's files don't load, plain --play says where the recovery copy and the kept saves are, and plays nothing")
+{
+    BrokenScene scene;
+    auto copy = scene.copy();
+    const auto copyFolder = copy.find()->folder;
+    const auto before = filesIn (scene.saved.folder);
+
+    const auto start = storage::startUnloadable (copy, scene.saved.folder, storage::RecoveryChoice::none);
+
+    CHECK_FALSE (start.proceed);
+    CHECK_FALSE (start.recovered);
+    const auto kept = storage::ProjectFolder::asItIs (scene.saved.folder).keptSaves();
+    REQUIRE (kept.size() == 1);
+    CHECK (start.message
+           == "The project's files don't load (their problems are above), so nothing was played.\n"
+              "A recovery copy written " + writtenText + " holds changes a session never saved. --play --recover plays it in place of the project's files, "
+              "unsaved; the first save keeps those files as they are before writing its version. --play --discard-recovery files it with the kept saves "
+              "instead. It's in '" + utf8FromPath (copyFolder) + "'.\n"
+              "Earlier versions are kept whole in .hocket/saves; to go back to one by hand, copy its project.json and clips folder into the project's folder:\n"
+              "  " + describe (kept[0]) + ": '" + scene.placeOf (kept[0]) + "'");
+    CHECK (filesIn (scene.saved.folder) == before);
+    CHECK (copy.find());
+}
+
+TEST_CASE ("--recover on a folder whose files don't load starts the session as the recovery copy, unsaved; the first save keeps those files first")
+{
+    BrokenScene scene;
+    auto copy = scene.copy();
+
+    auto start = storage::startUnloadable (copy, scene.saved.folder, storage::RecoveryChoice::recover);
+
+    REQUIRE (start.proceed);
+    REQUIRE (start.recovered);
+    REQUIRE (start.folder);
+    CHECK (*start.recovered == scene.lost);
+    CHECK (start.message
+           == "The project's files don't load, so the session starts as the recovery copy written " + writtenText
+                  + ", unsaved: the first save keeps the files on disk as they are, as a kept save, then writes this version.");
+
+    CommandBus bus (std::move (*start.recovered));
+    bus.markUnsaved();
+    bus.setStorage (&*start.folder);
+    CHECK (bus.hasUnsavedChanges());
+    CHECK (bus.history().empty());
+
+    // The copy holds the session already, and stays until a save.
+    storage::RecoveryKeeper keeper (bus, *start.folder, copy, true);
+    keeper.poll (Clock::time_point {} + 1h);
+    keeper.poll (Clock::time_point {} + 1h + 4s);
+    REQUIRE (copy.find());
+    CHECK (projectFilesOf (copy.find()->folder) == scene.lostFiles);
+
+    // The files on disk are as the session found them, so the save needs no overwrite.
+    const auto result = bus.save ({}, lee);
+    REQUIRE (result.ok);
+    REQUIRE (result.kept);
+    CHECK (readTextFile (scene.saved.file (result.kept->folder + "/project.json")) == scene.brokenJson);
+    CHECK (loaded (scene.saved.folder) == scene.lost);
+
+    keeper.poll (Clock::time_point {} + 1h + 5s);
+    CHECK_FALSE (copy.find());
+}
+
+TEST_CASE ("--discard-recovery on a folder whose files don't load files the copy with the kept saves, and plays nothing")
+{
+    BrokenScene scene;
+    auto copy = scene.copy();
+
+    const auto start = storage::startUnloadable (copy, scene.saved.folder, storage::RecoveryChoice::discard);
+
+    CHECK_FALSE (start.proceed);
+    const auto kept = storage::ProjectFolder::asItIs (scene.saved.folder).keptSaves();
+    REQUIRE (kept.size() == 2);
+    CHECK (kept[1].info.discardedRecovery);
+    CHECK_FALSE (copy.find());
+    CHECK (start.message
+           == "Filed the recovery copy written " + writtenText + " as " + describe (kept[1]) + ".\n"
+              "The project's files don't load (their problems are above), so nothing was played.\n"
+              "Earlier versions are kept whole in .hocket/saves; to go back to one by hand, copy its project.json and clips folder into the project's folder:\n"
+              "  " + describe (kept[1]) + ": '" + scene.placeOf (kept[1]) + "'\n"
+              "  " + describe (kept[0]) + ": '" + scene.placeOf (kept[0]) + "'");
+}
+
+TEST_CASE ("when the project's files don't load and there's no recovery copy or kept save, --play says to mend them by hand")
+{
+    RecoveryScene scene;
+    auto copy = scene.copy();
+    writeFile (scene.saved.file ("project.json"), "oops");
+
+    const auto start = storage::startUnloadable (copy, scene.saved.folder, storage::RecoveryChoice::recover);
+
+    CHECK_FALSE (start.proceed);
+    CHECK (start.message
+           == "The project's files don't load (their problems are above), so nothing was played.\n"
+              "--recover: there's no recovery copy of this project.\n"
+              "There's no recovery copy and no kept save of it: mend its files by hand. --check lists their problems.");
+}
+
+TEST_CASE ("a recovery copy that doesn't read, of a folder that doesn't load either, can only be filed")
+{
+    RecoveryScene scene;
+    auto copy = scene.copy();
+    auto files = scene.files();
+    files["clips/bass.notes"] = "@length 4bars\n\n1.1 not-a-note 1/4\n";
+    REQUIRE (copy.write (files).empty());
+    writeFile (scene.saved.file ("project.json"), "oops");
+
+    const auto start = storage::startUnloadable (copy, scene.saved.folder, storage::RecoveryChoice::recover);
+
+    CHECK_FALSE (start.proceed);
+    CHECK (contains (start.message, "\nA recovery copy written " + writtenText + " holds changes a session never saved, but it doesn't read as a project "
+                                    "either: clips/bass.notes:3:"));
+    CHECK (contains (start.message, ". --play --discard-recovery files it with the kept saves, where its files can be looked at and mended. It's in '"));
 }

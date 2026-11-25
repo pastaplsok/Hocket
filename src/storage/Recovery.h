@@ -54,6 +54,27 @@ namespace hocket::storage
     // nothing the project's files don't is removed, whatever the choice.
     RecoveryStart startRecovery (RecoveryCopy& copy, ProjectFolder& folder, const project::Project& loaded, RecoveryChoice choice);
 
+    struct UnloadableStart
+    {
+        bool proceed = false; // false: don't play; the message says why, and what there is to go back to
+        std::string message;
+
+        // With proceed: the session's project, the recovery copy's, which
+        // starts unsaved (CommandBus::markUnsaved), and the folder as it is,
+        // to save into (ProjectFolder::asItIs).
+        std::optional<project::Project> recovered;
+        std::optional<ProjectFolder> folder;
+    };
+
+    // At the start of a session whose project's files don't load (a hand edit
+    // broke project.json, say), once their problems have been printed. With
+    // --recover and a copy that reads, the session starts as the copy, unsaved
+    // (Lee, 2026-11-22): there's no loadable project for an undo to go back
+    // to. Otherwise nothing plays, and the message says where the recovery
+    // copy and the kept saves are, and how to reach them; --discard-recovery
+    // files the copy with the kept saves first.
+    UnloadableStart startUnloadable (RecoveryCopy& copy, const std::filesystem::path& folder, RecoveryChoice choice);
+
     // Keeps the session's recovery copy up to date: writes it once changes
     // have stopped for settleTime (or have gone on for longestWait), and
     // removes it once nothing is unsaved.

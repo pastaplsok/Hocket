@@ -55,14 +55,31 @@ namespace hocket::platform
 
     // Puts the file `from` in place of `to` in one step: anything opening `to`
     // finds the old file or the new one, never neither, nor part of one. `to`
-    // need not exist. Returns once the move is on the disk; returns what went
-    // wrong, or empty. On Windows it fails while another program has `to` open
-    // without letting others delete it, as some editors do.
+    // need not exist. Returns what went wrong, or empty. On Windows it fails
+    // while another program has `to` open without letting others delete it,
+    // as some editors do.
+    //
+    // A crash or power cut leaves the rename done or not, never half-done.
+    // Windows doesn't promise a rename is on the disk when it returns, so
+    // this then flushes `to` at its new name, which on NTFS writes the
+    // rename out too. That's best effort (`to` held open by another program
+    // can't be flushed), so a power cut at that moment may still undo it.
+    // Renames on one volume reach the disk in the order they were made.
     std::string replaceFile (const std::filesystem::path& from, const std::filesystem::path& to);
 
-    // Moves a file, but never over another: fails if `to` exists. Returns
-    // what went wrong, or empty.
+    // Moves a file or folder, but never over another: fails if `to` exists.
+    // Returns what went wrong, or empty. Flushed at its new name as
+    // replaceFile's is, with the same caveat.
     std::string moveFile (const std::filesystem::path& from, const std::filesystem::path& to);
+
+    // The longest path the OS takes without long-path support: 260 UTF-16
+    // units on Windows, the terminating null included.
+    inline constexpr std::size_t shortPathLimit = 260;
+
+    // Whether this process can use paths longer than that. On Windows, only
+    // when its manifest says it's long-path aware (cmake/LongPathAware.manifest)
+    // and Windows' long-path setting (LongPathsEnabled) is on. Always true elsewhere.
+    bool longPathsEnabled();
 
     // The CPU time the calling thread has used so far, user and kernel, in
     // seconds, precise to microseconds: next to wall-clock time, it tells a

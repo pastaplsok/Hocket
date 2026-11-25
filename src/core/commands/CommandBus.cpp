@@ -608,6 +608,17 @@ std::vector<HistoryEntry> CommandBus::changesTo (std::string_view file) const
     return entries;
 }
 
+std::vector<HistoryEntry> CommandBus::structureChanges() const
+{
+    std::vector<HistoryEntry> entries;
+
+    for (auto i = done.size(); i-- > 0;)
+        if (std::ranges::any_of (done[i].edits.forward, [] (const Edit& edit) { return ! std::holds_alternative<edits::SetNotes> (edit); }))
+            entries.push_back (done[i].info);
+
+    return entries;
+}
+
 std::optional<OpenTransaction> CommandBus::openTransaction() const
 {
     if (! transaction)

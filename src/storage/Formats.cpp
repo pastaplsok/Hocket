@@ -104,6 +104,19 @@ std::string windowsSafeName (std::string_view text, std::size_t maxUnits)
     return name;
 }
 
+std::uint64_t fnv1a64 (std::string_view text)
+{
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+
+    for (const auto c : text)
+    {
+        hash ^= static_cast<unsigned char> (c);
+        hash *= 0x100000001b3ull;
+    }
+
+    return hash;
+}
+
 std::string utcTimeText (commands::SaveTime time)
 {
     return std::format ("{:%Y-%m-%dT%H:%M:%SZ}", time);

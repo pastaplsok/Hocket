@@ -157,6 +157,11 @@ std::string moveFile (const std::filesystem::path& from, const std::filesystem::
     return {};
 }
 
+bool longPathsEnabled()
+{
+    return true; // no 260-character limit to lift
+}
+
 std::optional<double> currentThreadCpuSeconds()
 {
     timespec time {};

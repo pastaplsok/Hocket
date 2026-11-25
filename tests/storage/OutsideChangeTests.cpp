@@ -129,6 +129,41 @@ TEST_CASE ("every kind of outside change a save would overwrite is named")
     CHECK (loaded (saved.folder) == bus.project());
 }
 
+TEST_CASE ("with project.json gone, a save with overwrite still keeps every file it replaces first")
+{
+    SavedProject saved;
+    REQUIRE (saved.bus->execute (WriteClip { "clp-bass", newBass }, claude).ok);
+    writeFile (saved.file ("clips/bass.notes"), byHand);
+    std::filesystem::remove (saved.file ("project.json")); // moved away, say, or a checkout
+
+    CHECK_FALSE (saved.bus->save ({}, claude).ok);
+    const auto result = saved.bus->save ({ {}, true }, claude);
+
+    REQUIRE (result.ok);
+    REQUIRE (result.kept);
+    CHECK (result.kept->info.changedOutside);
+    CHECK (readTextFile (saved.file (result.kept->folder + "/clips/bass.notes")) == byHand);
+    CHECK_FALSE (std::filesystem::exists (saved.file (result.kept->folder + "/project.json")));
+    CHECK (result.message == "saved: wrote clips/bass.notes and project.json; the version it replaced is kept as " + describe (*result.kept));
+    CHECK (loaded (saved.folder) == saved.bus->project());
+}
+
+TEST_CASE ("a save that only adds files replaces nothing, so it keeps nothing")
+{
+    SavedProject saved;
+    std::filesystem::remove (saved.file ("project.json"));
+    std::filesystem::remove (saved.file ("clips/bass.notes"));
+    std::filesystem::remove (saved.file ("clips/beat.notes"));
+    std::filesystem::remove (saved.file ("clips/fill.notes"));
+
+    const auto result = saved.bus->save ({ {}, true }, claude);
+
+    REQUIRE (result.ok);
+    CHECK_FALSE (result.kept);
+    CHECK (saved.bus->keptSaves().empty());
+    CHECK (loaded (saved.folder) == saved.bus->project());
+}
+
 TEST_CASE ("a file whose date changed, but whose text the save wouldn't change, doesn't stop it")
 {
     SavedProject saved;
@@ -234,6 +269,7 @@ TEST_CASE ("--watch takes project.json saved outside Hocket in as one command re
     CHECK (reports[0].file == "project.json");
     CHECK (reports[0].ok);
     CHECK (reports[0].message == "#2 project.json saved outside Hocket. Changes: the tempo (174 BPM to 96 BPM); changed trk-bass");
+    CHECK_FALSE (reports[0].warning); // Claude's unsaved change is to the fill's notes, which stay
     CHECK (bus.project() == edited);
     CHECK (project::clipFileText (bus.project(), "clips/fill.notes") == claudesFill);
     CHECK (bus.history().front().author == lee);
@@ -247,6 +283,36 @@ TEST_CASE ("--watch takes project.json saved outside Hocket in as one command re
     // Both files were read, so the next save writes over neither as an outside change.
     CHECK (bus.save ({}, lee).ok);
     CHECK (loaded (saved.folder) == edited);
+}
+
+TEST_CASE ("--watch's project.json warns when it replaces a change to the project that wasn't saved, naming it and the entry to undo")
+{
+    SavedProject saved;
+    auto& bus = *saved.bus;
+    storage::WatchedFolder watched (bus, *saved.projectFolder, lee);
+    const auto start = Clock::now();
+    CHECK (watched.poll (start).empty());
+
+    // Claude adds a clip with notes, unsaved, so on no disk; then Lee changes
+    // the tempo in project.json as it is on disk.
+    REQUIRE (bus.execute (AddClip { "trk-bass", "5.1", ClipText { newBass }, "clp-verse" }, claude).ok);
+    const auto withClaudesClip = bus.project();
+    auto text = *readTextFile (saved.file ("project.json"));
+    text.replace (text.find ("\"tempo\": 174"), 12, "\"tempo\": 96");
+    writeFile (saved.file ("project.json"), text);
+
+    CHECK (watched.poll (start + 50ms).empty());
+    const auto reports = watched.poll (start + 300ms);
+
+    REQUIRE (reports.size() == 1);
+    CHECK (reports[0].ok);
+    CHECK (reports[0].warning.value_or ("")
+           == "warning: this save of project.json replaced changes made to the project since it was last loaded or saved (the latest: #1 \"added clip "
+              "clp-verse on trk-bass at 5.1 (1 note)\" by Claude). They weren't saved, so the file didn't have them. Undoing #2 brings them back.");
+    CHECK (project::findClip (bus.project(), "clp-verse") == nullptr);
+
+    REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+    CHECK (bus.project() == withClaudesClip);
 }
 
 TEST_CASE ("--watch reads project.json with a clip file saved outside at the same time, and takes both in at once")
@@ -301,6 +367,43 @@ TEST_CASE ("--watch reports a project.json that doesn't read once; the session c
     CHECK (readTextFile (saved.file (overwritten.kept->folder + "/project.json")) == "{ \"format\": \"hocket-project\", oops");
     CHECK (watched.poll (start + 1100ms).empty());
     CHECK (watched.poll (start + 1500ms).empty());
+}
+
+TEST_CASE ("--watch tries a project.json again once a clip file it names is saved after it")
+{
+    SavedProject saved;
+    auto& bus = *saved.bus;
+    storage::WatchedFolder watched (bus, *saved.projectFolder, lee);
+    const auto start = Clock::now();
+    CHECK (watched.poll (start).empty());
+
+    // Lee's project.json names a new clip whose file isn't saved yet.
+    auto edited = bus.project();
+    edited.tracks[1].clips.push_back ({ "clp-bass-2", "clips/bass-2.notes", 4 * 3840 });
+    edited.notesFiles["clips/bass-2.notes"] = *notes::parse (newBass).clip;
+    const auto files = project::write (edited);
+    writeFile (saved.file ("project.json"), files.at ("project.json"));
+
+    CHECK (watched.poll (start + 50ms).empty());
+    const auto refused = watched.poll (start + 300ms);
+    REQUIRE (refused.size() == 1);
+    CHECK_FALSE (refused[0].ok);
+    CHECK (refused[0].message.ends_with ("\nIt's read again once it, or a clip file it names, is saved."));
+    CHECK (watched.poll (start + 600ms).empty());
+
+    // Then the clip file: read with it, once it has settled.
+    writeFile (saved.file ("clips/bass-2.notes"), files.at ("clips/bass-2.notes"));
+    CHECK (watched.poll (start + 650ms).empty());
+    const auto taken = watched.poll (start + 900ms);
+
+    REQUIRE (taken.size() == 1);
+    CHECK (taken[0].file == "project.json");
+    CHECK (taken[0].ok);
+    CHECK (bus.project() == edited);
+    CHECK (watched.poll (start + 1200ms).empty());
+
+    // Both read, so the next save takes neither for an outside change.
+    CHECK (bus.save ({}, lee).ok);
 }
 
 TEST_CASE ("--watch's clip save warns when it replaces a change that wasn't saved, and not when it was")

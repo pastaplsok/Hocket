@@ -3,6 +3,7 @@
 
 #include "common/TemporaryFolder.h"
 #include "core/Paths.h"
+#include "core/project/FileStamp.h"
 #include "platform/Platform.h"
 
 #include <doctest/doctest.h>
@@ -66,6 +67,33 @@ TEST_CASE ("replaceFile puts one file in place of another, or where none was")
 
     CHECK (readTextFile (to) == "new");
     CHECK_FALSE (std::filesystem::exists (from));
+}
+
+TEST_CASE ("replaceFile and moveFile keep a file's stamp, and flushing the rename changes no date: saves tell their own files by it")
+{
+    const testing::TemporaryFolder folder (testing::unicodeName);
+    const auto from = in (folder, "neu " + testing::unicodeName);
+    const auto to = in (folder, "alt " + testing::unicodeName);
+
+    REQUIRE (platform::writeFileToDisk (from, "new").empty());
+    REQUIRE (platform::writeFileToDisk (to, "old text").empty());
+    std::filesystem::last_write_time (from, std::filesystem::last_write_time (from) - std::chrono::hours (1));
+    const auto stamp = project::FileStamp::of (from);
+
+    REQUIRE (platform::replaceFile (from, to).empty());
+    CHECK (project::FileStamp::of (to) == stamp);
+
+    const auto moved = in (folder, "moved " + testing::unicodeName);
+    REQUIRE (platform::moveFile (to, moved).empty());
+    CHECK (project::FileStamp::of (moved) == stamp);
+
+    // A folder, as kept saves and recovery copies are renamed.
+    const auto inside = in (folder, "copy") / "project.json";
+    std::filesystem::create_directories (inside.parent_path());
+    REQUIRE (platform::writeFileToDisk (inside, "{}").empty());
+    const auto insideStamp = project::FileStamp::of (inside);
+    REQUIRE (platform::moveFile (inside.parent_path(), in (folder, "kept")).empty());
+    CHECK (project::FileStamp::of (in (folder, "kept") / "project.json") == insideStamp);
 }
 
 TEST_CASE ("moveFile never moves a file over another")

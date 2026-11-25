@@ -204,6 +204,11 @@ namespace
         for (const auto& error : result.errors)
             std::cerr << hocket::project::formatDiagnostic (error) << "\n";
 
+        // It changes nothing, so it only says so; --play finishes it, or
+        // says why it can't (SPEC §4.5).
+        if (const auto note = hocket::storage::describeInterruptedSave (hocket::pathFromUtf8 (folder)); ! note.empty())
+            std::cerr << note << "\n";
+
         if (! result.project)
             return 1;
 
@@ -520,39 +525,6 @@ namespace
         }
 
         const auto folder = hocket::pathFromUtf8 (options.folder);
-        // Where saves go (SPEC §4.5), noting each file's stamp as it's read,
-        // so a save never overwrites a change made outside Hocket unasked.
-        // Made before the bus, so it outlives it.
-        auto [loaded, projectFolder] = hocket::storage::ProjectFolder::open (folder);
-
-        for (const auto& error : loaded.errors)
-            std::cerr << hocket::project::formatDiagnostic (error) << "\n";
-
-        if (! loaded.project)
-            return 1;
-
-        // Kit folders Hocket can't use, then tracks whose kit can't play.
-        auto kits = installedKits();
-
-        for (const auto& problem : kits.problems())
-            std::cerr << "Note: " << problem << "\n";
-
-        reportKits (*loaded.project, kits);
-
-        // From here on, Ctrl+C (or Ctrl+Break, or closing the window) stops
-        // --play cleanly. Before play starts, that's at the next place it can
-        // stop: once the device has opened, or while the kits load, closing
-        // the device on the way out (step 8).
-        hocket::catchInterrupts();
-
-        const auto stoppedBeforePlaying = [] (std::string_view when)
-        {
-            if (! hocket::interruptRequested())
-                return false;
-
-            std::cout << "stopped before playing" << when << std::endl;
-            return true;
-        };
 
         // Clients find the API through the token file, so only one Hocket at a time can serve it.
         const auto tokenFile = hocket::api::defaultTokenFilePath();
@@ -576,7 +548,9 @@ namespace
         };
 
         // Held until --play ends, so another --play starting now can't also
-        // find none running. Taken first: the checks below take seconds.
+        // find none running. Taken first, before anything on disk changes:
+        // no other Hocket can then be saving into the folder, or writing its
+        // recovery copy.
         std::error_code folderError;
         std::filesystem::create_directories (tokenFile->parent_path(), folderError);
         const auto lockFile = hocket::api::instanceLockFile (*tokenFile);
@@ -594,6 +568,26 @@ namespace
         if (reportRunning())
             return 1;
 
+        // A save a crash interrupted part-way (SPEC §4.5): finished as it
+        // meant, all of it, before the folder is read. One that can't be, or
+        // whose finishing fails part-way, stops --play: a session started on
+        // the folder would be playing, and saving over, half of it.
+        const auto finished = hocket::storage::finishInterruptedSave (folder);
+
+        if (! finished.message.empty())
+            (finished.proceed() ? std::cout : std::cerr) << finished.message << std::endl;
+
+        if (! finished.proceed())
+            return 1;
+
+        // Where saves go (SPEC §4.5), noting each file's stamp as it's read,
+        // so a save never overwrites a change made outside Hocket unasked.
+        // Made before the bus, so it outlives it.
+        auto [loaded, projectFolder] = hocket::storage::ProjectFolder::open (folder);
+
+        for (const auto& error : loaded.errors)
+            std::cerr << hocket::project::formatDiagnostic (error) << "\n";
+
         // A recovery copy an earlier session left (SPEC §4.5): looked for once
         // no other Hocket can be writing it. Plain --play stops if it holds
         // unsaved changes, before opening the device.
@@ -606,13 +600,54 @@ namespace
         }
 
         hocket::storage::RecoveryCopy recoveryCopy (*recoveryFolder, folder);
-        auto recoveryStart = hocket::storage::startRecovery (recoveryCopy, *projectFolder, *loaded.project, options.recovery);
+        hocket::storage::RecoveryStart recoveryStart;
+        std::optional<hocket::project::Project> startProject;
+        auto startsUnsaved = false;
+
+        if (loaded.project)
+        {
+            recoveryStart = hocket::storage::startRecovery (recoveryCopy, *projectFolder, *loaded.project, options.recovery);
+            startProject = std::move (loaded.project);
+        }
+        else
+        {
+            // Files that don't load: what there is to go back to, and with
+            // --recover, the recovery copy in their place, unsaved.
+            auto unloadable = hocket::storage::startUnloadable (recoveryCopy, folder, options.recovery);
+            recoveryStart = { unloadable.proceed, std::move (unloadable.message) };
+            startProject = std::move (unloadable.recovered);
+            projectFolder = std::move (unloadable.folder);
+            startsUnsaved = true;
+        }
 
         if (! recoveryStart.message.empty())
             (recoveryStart.proceed ? std::cout : std::cerr) << recoveryStart.message << std::endl;
 
         if (! recoveryStart.proceed)
             return 1;
+
+        // Kit folders Hocket can't use, then tracks whose kit can't play.
+        auto kits = installedKits();
+
+        for (const auto& problem : kits.problems())
+            std::cerr << "Note: " << problem << "\n";
+
+        reportKits (*startProject, kits);
+
+        // From here on, Ctrl+C (or Ctrl+Break, or closing the window) stops
+        // --play cleanly. Before play starts, that's at the next place it can
+        // stop: once the device has opened, or while the kits load, closing
+        // the device on the way out (step 8).
+        hocket::catchInterrupts();
+
+        const auto stoppedBeforePlaying = [] (std::string_view when)
+        {
+            if (! hocket::interruptRequested())
+                return false;
+
+            std::cout << "stopped before playing" << when << std::endl;
+            return true;
+        };
 
         // Opens the device used last time, or the system default. Tracktion
         // keeps its settings in %APPDATA%\Hocket\Settings.xml.
@@ -661,10 +696,14 @@ namespace
         // The person at the DAW: one fixed identity, so no session ID (SPEC §3.1).
         const hocket::commands::Author localUser { options.user };
 
-        hocket::commands::CommandBus bus (std::move (*loaded.project));
+        hocket::commands::CommandBus bus (std::move (*startProject));
         bus.setKitCatalog (&kits); // made before the bus, so it outlives it
         bus.setStorage (&*projectFolder);
         bus.setOutputMeter (&master); // made before the bus, so it outlives it
+
+        // Started as the recovery copy, since the files don't load: not what's on disk.
+        if (startsUnsaved)
+            bus.markUnsaved();
 
         // --recover: the copy's changes, as one entry the person can undo,
         // unsaved, before the Edit is built, so it's built with them.
@@ -681,7 +720,7 @@ namespace
             std::cout << "Recovered: " << recovered.message << std::endl;
         }
 
-        hocket::storage::RecoveryKeeper recoveryKeeper (bus, *projectFolder, recoveryCopy, recoveryStart.recovered.has_value());
+        hocket::storage::RecoveryKeeper recoveryKeeper (bus, *projectFolder, recoveryCopy, recoveryStart.recovered.has_value() || startsUnsaved);
         const RecoveryFinish recoveryFinish { recoveryKeeper };
 
         // The drum samplers' kits load on the library's thread, and play waits

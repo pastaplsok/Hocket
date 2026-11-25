@@ -1,6 +1,7 @@
 #include "core/project/Rules.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <set>
@@ -474,11 +475,24 @@ std::optional<std::string> clipPlacementProblem (const Project& project, const T
     return message;
 }
 
+bool isWindowsDeviceName (std::string_view name)
+{
+    constexpr std::array<std::string_view, 4> devices { "con", "prn", "aux", "nul" };
+
+    if (std::ranges::find (devices, name) != devices.end())
+        return true;
+
+    // com0 to com9 and lpt0 to lpt9.
+    return name.size() == 4 && (name.starts_with ("com") || name.starts_with ("lpt")) && name[3] >= '0' && name[3] <= '9';
+}
+
 std::string unusedClipFile (const Project& project, std::string_view clipId)
 {
     const auto words = std::string (clipId.substr (idPrefix (IdKind::clip).size()));
 
-    for (int number = 1;; ++number)
+    // A device name is taken, as far as Windows is concerned: "aux.notes" is
+    // the AUX device on Windows 10, whatever comes after the dot.
+    for (int number = isWindowsDeviceName (words) ? 2 : 1;; ++number)
     {
         auto file = "clips/" + words + (number == 1 ? std::string() : "-" + std::to_string (number)) + ".notes";
 
