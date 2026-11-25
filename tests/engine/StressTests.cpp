@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <thread>
@@ -568,18 +569,20 @@ namespace
         project::Project finalProject;                      // after the changes
         std::chrono::duration<double> longestLockHold {};    // EditSync's of JUCE's audio callback lock
         int lastChangeSample = 0;                           // about where in `out` the last change was sent
+        int restFrom = 0;                                   // with `rest`: the first sample sure to play the last change
     };
 
     // Plays a bar untouched, then sends `count` commands at 20 a second, then
     // plays to the end of the bar after the last. `before` runs once the Edit
     // exists, and gives the recorders it added, whose MIDI the run keeps;
-    // `after` runs once the changes are sent. With `kits` (opened), the bus
-    // and the drum samplers use them, and play waits for them to load.
-    // `atEnd` runs once playback is over, before the Edit goes.
+    // `after` runs once the changes are sent, and after `rest` samples more
+    // with the last change in the graph, from run.restFrom. With `kits`
+    // (opened), the bus and the drum samplers use them, and play waits for
+    // them to load. `atEnd` runs once playback is over, before the Edit goes.
     StressRun stressWith (project::Project project, int count, const std::function<commands::Command (int)>& change,
                           const std::function<std::vector<MidiRecorder*> (engine::EditSync&)>& before = {},
                           const std::function<void (commands::CommandBus&)>& after = {}, Kits* kits = nullptr,
-                          const std::function<void (engine::EditSync&)>& atEnd = {})
+                          const std::function<void (engine::EditSync&)>& atEnd = {}, int rest = 0)
     {
         FakeAudioDevice device;
         commands::CommandBus bus (std::move (project));
@@ -595,7 +598,7 @@ namespace
         const auto recorders = before ? before (sync) : std::vector<MidiRecorder*> {};
         REQUIRE (timedPlay (bus, lee).ok);
 
-        AudioThread audio (device, 4.0 + count * 0.05 + 4.0);
+        AudioThread audio (device, 4.0 + count * 0.05 + 4.0 + rest / FakeAudioDevice::sampleRate);
         runMessagesUntil ([&audio] { return audio.blocksPlayed() * blockSize >= barSamples; });
 
         StressRun run;
@@ -612,6 +615,16 @@ namespace
 
         run.changesTook = std::chrono::duration<double> (Clock::now() - start).count();
         run.lastChangeSample = audio.blocksPlayed() * blockSize;
+
+        // The last change in the graph now, rather than on Tracktion's timer:
+        // a block may be playing the graph before it, but the one after that
+        // starts with it.
+        if (rest > 0)
+        {
+            sync.edit().dispatchPendingUpdatesSynchronously();
+            run.restFrom = (audio.blocksPlayed() + 2) * blockSize;
+            runMessagesUntil ([&audio, end = run.restFrom + rest] { return audio.blocksPlayed() * blockSize >= end; });
+        }
 
         if (after)
             after (bus);
@@ -679,18 +692,57 @@ namespace
 
 TEST_CASE ("stress: clips moved 20 a second, in place and between tracks, during playback")
 {
-    // Round and round: to 2.1, across to the pad, to 1.1 there, back to the lead at 1.1.
+    // Round and round: to 2.1, across to the pad, to 1.1 there, back to the
+    // lead at 1.1, where the 100th move leaves it for a whole pass of the
+    // song before it's removed.
     const std::array<std::pair<const char*, const char*>, 4> moves { { { "2.1", "" }, { "2.1", "trk-pad" }, { "1.1", "" }, { "1.1", "trk-lead" } } };
+    constexpr int pass = 2 * barSamples; // the bass's two bars
     const auto run = stressWith (structureProject ({ makeClip ("clp-move", 0, shortNotes) }), 100,
                                  [&moves] (int i) { return commands::MoveClip { "clp-move", moves[static_cast<std::size_t> (i % 4)].first, moves[static_cast<std::size_t> (i % 4)].second }; },
                                  [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1), &MidiRecorder::addTo (sync.edit(), 2) }; },
-                                 [] (commands::CommandBus& bus) { REQUIRE (bus.execute (commands::RemoveClip { "clp-move" }, claude).ok); });
+                                 [] (commands::CommandBus& bus) { REQUIRE (bus.execute (commands::RemoveClip { "clp-move" }, claude).ok); },
+                                 nullptr, {}, pass);
 
     checkHeldNotes (run, 100);
     REQUIRE (run.midi.size() == 2);
-    CHECK (std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; }) > 10); // the clip did play
     checkNothingLeftOn (run.midi[0], "trk-lead");
     checkNothingLeftOn (run.midi[1], "trk-pad");
+
+    const auto struck = [&run] (int from, int to)
+    {
+        std::vector<MidiRecorder::Event> ons;
+        std::ranges::copy_if (run.midi[0], std::back_inserter (ons), [from, to] (const auto& e) { return e.note >= 0 && e.on && e.sample >= from && e.sample < to; });
+        return ons;
+    };
+
+    // How many notes the lead got while the clip moved depends on when each
+    // move reached the audio, so it's reported, not checked. Each move makes
+    // the clip anew, and a clip made where the playhead is inside one of its
+    // notes strikes that note there and then (Tracktion's LoopingMidiNode has
+    // no earlier node to take its sounding notes from): most of these are
+    // strikes like that, a 50 ms stay against 250 ms notes. Checked as "more
+    // than 10", it failed now and then with 10, and nothing missing (bug
+    // sweep, area 2).
+    MESSAGE ("notes the lead got while the clip moved: " << struck (run.firstBlock * blockSize, run.lastChangeSample).size());
+
+    // Where the moves left it, the lead at 1.1, the clip played a whole pass:
+    // E3 at 1.1 and G3 at 1.3, each once, at its start, and nothing else.
+    const auto rested = struck (run.restFrom, run.restFrom + pass);
+    CHECK (rested.size() == 2);
+
+    struct Expected
+    {
+        int note;
+        int place; // in the pass, in samples
+    };
+
+    for (const auto expected : { Expected { 52, 0 }, Expected { 55, 2 * beatSamples } })
+    {
+        CAPTURE (expected.note);
+        const auto start = run.restFrom + ((expected.place - run.restFrom) % pass + pass) % pass;
+        const auto atStart = std::ranges::count_if (rested, [&expected, start] (const auto& e) { return e.note == expected.note && std::abs (static_cast<int> (e.sample) - start) <= 2; });
+        CHECK_MESSAGE (atStart == 1, "the notes struck in the pass after the moves: " << rested.size() << ", from sample " << run.restFrom);
+    }
 }
 
 TEST_CASE ("stress: clips added and removed 20 a second during playback")
