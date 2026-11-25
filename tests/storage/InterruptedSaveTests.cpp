@@ -246,6 +246,12 @@ namespace
         return saves.back().folder;
     }
 
+    // .hocket/saving.json as the message gives it, to delete by hand: its full path.
+    std::string markerAsPrinted (const SavedProject& saved)
+    {
+        return utf8FromPath (std::filesystem::absolute (saved.file (std::string (storage::savingMarkerFile))).make_preferred());
+    }
+
     // A save that can't be finished: nothing on disk changes, --play stops,
     // and the message says why and where both versions are; --check says so too.
     void checkBlocked (SavedProject& saved, std::string_view why, std::string_view whereOld)
@@ -261,7 +267,8 @@ namespace
         CHECK (contains (finished.message, why));
         CHECK (contains (finished.message, whereOld));
         CHECK (contains (finished.message, storage::temporarySuffix));
-        CHECK (contains (finished.message, "delete .hocket/saving.json, the save's record: the next --play then plays the files as they are"));
+        CHECK (contains (finished.message, "then delete '" + markerAsPrinted (saved) + "', which only records the save. The next --play then sets the "
+                                           ".hocket-saving files aside in unused/, keeping their paths, and plays the project's files as they are now"));
 
         const auto note = storage::describeInterruptedSave (saved.folder);
         CHECK (note.starts_with ("Note: "));
@@ -592,6 +599,8 @@ TEST_CASE ("review 2: a marker that can't be read changes nothing: the save's ne
     CHECK (contains (finished.message, "The version before the save is most likely the newest kept save, save #1"));
     CHECK (contains (finished.message, "The save's new texts not yet in place are beside their files: project.json.hocket-saving, .hocket/save.json.hocket-saving, "
                                        "clips/bass.notes.hocket-saving and clips/verse.notes.hocket-saving."));
+    CHECK (contains (finished.message, "\nIf another program is holding a file, close it there, and the next --play finishes the save. Otherwise, to go on "
+                                       "without finishing it, take what you want from those files, then delete '" + markerAsPrinted (saved) + "'"));
 
     // Once it's let go, the next open finishes the save.
     checkNextOpen (saved.folder, whole);
@@ -620,6 +629,34 @@ TEST_CASE ("review 3: a file the save replaces that changed since it stopped sto
     checkBlocked (saved, ": project.json changed after the save stopped.", "The version before the save is kept whole in '" + keptFolderOf (saved) + "'.");
     CHECK (std::filesystem::exists (saved.file ("clips/fill.notes")));
     CHECK (project::load (saved.folder).project);
+
+    // What --play prints, word for word: why, where both versions are, the exact file to delete, and what the next --play does then.
+    CHECK (storage::finishInterruptedSave (saved.folder).message
+           == "A save by Claude, begun " + localTimeText (std::chrono::floor<std::chrono::seconds> (saved.now))
+                  + ", was interrupted part-way, and can't be finished as it meant, so nothing on disk was changed, and nothing was played: "
+                    "project.json changed after the save stopped.\n"
+                    "The version before the save is kept whole in '" + keptFolderOf (saved) + "'. The save's new texts not yet in place are beside "
+                    "their files: clips/bass.notes.hocket-saving, clips/verse.notes.hocket-saving, project.json.hocket-saving and "
+                    ".hocket/save.json.hocket-saving.\n"
+                    "To go on without finishing it, take what you want from those files, then delete '" + markerAsPrinted (saved)
+                  + "', which only records the save. The next --play then sets the .hocket-saving files aside in unused/, keeping their paths, "
+                    "and plays the project's files as they are now (or, if they don't load, says so and where the kept saves are, and plays nothing).");
+}
+
+TEST_CASE ("a save that can't be finished, with a file already in place, says the files the next --play plays are part the save's")
+{
+    SavedProject saved;
+    const auto oldProjectJson = *readTextFile (saved.file ("project.json"));
+    makeChanges (*saved.bus);
+    saved.projectFolder->setStepHook (crashAt (Step::Kind::swap, 1)); // bass in place
+    REQUIRE_FALSE (saved.bus->save ({}, claude).ok);
+    writeFile (saved.file ("project.json"), oldProjectJson + "\n");
+
+    checkBlocked (saved, ": project.json changed after the save stopped.", "kept whole in '" + keptFolderOf (saved) + "'");
+
+    const auto message = storage::finishInterruptedSave (saved.folder).message;
+    CHECK (contains (message, " It had put clips/bass.notes in place.\n"));
+    CHECK (contains (message, "and plays the project's files as they are now, clips/bass.notes as the save put it (or, if they don't load"));
 }
 
 TEST_CASE ("a file the save had put in place, changed since, stops finishing")

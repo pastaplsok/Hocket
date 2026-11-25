@@ -1608,6 +1608,7 @@ namespace
         std::vector<std::size_t> toMove;      // marker->unused still to move
         std::vector<std::string> inPlace;     // files the save had put in place
         std::vector<std::string> temporaries; // its new texts still beside their files, as "<file>.hocket-saving"
+        bool held = false;                    // a file couldn't be read: another program may be holding it, which passes
     };
 
     std::filesystem::path markerPathIn (const std::filesystem::path& folder)
@@ -1631,6 +1632,7 @@ namespace
         if (! text)
         {
             plan.unreadable = "it can't be read (another program may be holding it)";
+            plan.held = true;
             return plan;
         }
 
@@ -1684,6 +1686,7 @@ namespace
                 if (! nowText)
                 {
                     plan.problems.push_back ("couldn't read " + entry.file + " to check that the kept save holds it (another program may be holding it)");
+                    plan.held = true;
                     continue;
                 }
 
@@ -1771,6 +1774,26 @@ namespace
         return text;
     }
 
+    // The marker as the person would find it, to delete by hand: its full path.
+    std::filesystem::path markerToDelete (const std::filesystem::path& folder)
+    {
+        std::error_code error;
+        auto marker = std::filesystem::absolute (markerPathIn (folder), error);
+        return (error ? markerPathIn (folder) : marker).make_preferred();
+    }
+
+    // What the next --play plays once the marker's gone: the files as they
+    // are, part the save's if it had put any in place.
+    std::string asTheyAre (const FinishPlan& plan)
+    {
+        auto text = std::string ("the project's files as they are now");
+
+        if (! plan.inPlace.empty())
+            text += ", " + listed (plan.inPlace, 10) + " as the save put " + (plan.inPlace.size() == 1 ? "it" : "them");
+
+        return text;
+    }
+
     // A save that can't be finished, and what `consequence` that has.
     std::string blockedMessage (const std::filesystem::path& folder, const FinishPlan& plan, std::string_view consequence)
     {
@@ -1779,9 +1802,12 @@ namespace
 
         return save + " was interrupted part-way, and can't be finished as it meant, " + std::string (consequence) + ": " + why + ".\n"
              + whereTheVersionsAre (folder, plan) + "\n"
-             + "Once you've taken what you want from them, delete " + std::string (savingMarkerFile)
-             + ", the save's record: the next --play then plays the files as they are, setting the .hocket-saving files aside in "
-             + std::string (unusedFolderName) + "/.";
+             + (plan.held ? "If another program is holding a file, close it there, and the next --play finishes the save. Otherwise, to go on without "
+                            "finishing it, "
+                          : "To go on without finishing it, ")
+             + "take what you want from those files, then delete '" + utf8FromPath (markerToDelete (folder)) + "', which only records the save. "
+             + "The next --play then sets the .hocket-saving files aside in " + std::string (unusedFolderName) + "/, keeping their paths, and plays "
+             + asTheyAre (plan) + " (or, if they don't load, says so and where the kept saves are, and plays nothing).";
     }
 }
 
@@ -1925,8 +1951,9 @@ std::string describeInterruptedSave (const std::filesystem::path& folder)
     {
         const auto plan = planFinish (folder);
 
+        // "A save ..." as a note: "Note: a save ...".
         if (! plan.marker || ! plan.problems.empty())
-            return "Note: " + blockedMessage (folder, plan, "so --play won't play it until that's sorted out");
+            return "Note: a" + blockedMessage (folder, plan, "so --play won't play it until that's sorted out").substr (1);
 
         return "Note: a save " + whoAndWhen (*plan.marker) + ", was interrupted part-way (" + std::string (savingMarkerFile)
              + " is there), so the folder may hold part of it. --play finishes it before playing.";
