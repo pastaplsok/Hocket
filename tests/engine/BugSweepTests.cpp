@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <thread>
 
 using namespace hocket;
@@ -138,7 +139,7 @@ TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or
 //==============================================================================
 // Finding 2: a kit that wasn't there when a track's sampler asked for it
 // stayed silent until a restart, even once installed and assigned again.
-TEST_CASE ("sweep: a kit installed after its track asked for it is loaded once it's there" * doctest::should_fail())
+TEST_CASE ("sweep: a kit installed after its track asked for it is loaded once it's there")
 {
     Kits kits;
     kits.open(); // no kits yet
@@ -163,7 +164,7 @@ TEST_CASE ("sweep: a kit installed after its track asked for it is loaded once i
     REQUIRE (bus.execute (commands::Stop {}, lee).ok);
 }
 
-TEST_CASE ("sweep: a user kit that's broken when a track asks for it is loaded once it's fixed" * doctest::should_fail())
+TEST_CASE ("sweep: a user kit that's broken when a track asks for it is loaded once it's fixed")
 {
     Kits kits;
     kits.write ("fixed", { { "kick", kick, { tone (2000, 0.05, 0.5f) } } });
@@ -188,7 +189,7 @@ TEST_CASE ("sweep: a user kit that's broken when a track asks for it is loaded o
 //==============================================================================
 // Finding 4: a user kit's kit.json saved after the catalog read it, but
 // before a track first used it, played as the catalog read it, for good.
-TEST_CASE ("sweep: a user kit's kit.json saved before its first use is taken in" * doctest::should_fail())
+TEST_CASE ("sweep: a user kit's kit.json saved before its first use is taken in")
 {
     Kits kits;
     kits.write ("k", { { "kick", kick, { tone (2000, 0.05, 0.5f) }, "0dB" } });
@@ -213,7 +214,7 @@ TEST_CASE ("sweep: a user kit's kit.json saved before its first use is taken in"
     CHECK (gains.back() == doctest::Approx (0.251189f)); // -12 dB
 }
 
-TEST_CASE ("sweep: a track taking a watched kit doesn't hide a change from the tracks already playing it" * doctest::should_fail())
+TEST_CASE ("sweep: a track taking a watched kit doesn't hide a change from the tracks already playing it")
 {
     Kits kits;
     kits.write ("k", { { "kick", kick, { tone (2000, 0.05, 0.5f) }, "0dB" } });
@@ -243,7 +244,7 @@ TEST_CASE ("sweep: a track taking a watched kit doesn't hide a change from the t
 // loader thread caught its exception, so the process ended. A sample at a
 // rate it can't take is refused when the kit is read; anything that goes
 // wrong while a kit loads leaves it silent, saying why.
-TEST_CASE ("sweep: a kit with a sample at a rate the converter can't take can't be used, and says why" * doctest::should_fail())
+TEST_CASE ("sweep: a kit with a sample at a rate the converter can't take can't be used, and says why")
 {
     Kits kits;
     kits.write ("lowrate", { { "kick", kick, { tone (50, 0.5, 0.5f) } } }, 100.0);
@@ -254,8 +255,7 @@ TEST_CASE ("sweep: a kit with a sample at a rate the converter can't take can't 
     CHECK (found.problem.find ("100 Hz") != std::string::npos);
 }
 
-TEST_CASE ("sweep: a kit that can't be converted to the rate it's asked for is silent, with why, and the process carries on"
-           * doctest::skip() /* until it's fixed, this ends the test run: --no-skip runs it */)
+TEST_CASE ("sweep: a kit that can't be converted to the rate it's asked for is silent, with why, and the process carries on")
 {
     Kits kits;
     kits.write ("k", { { "kick", kick, { tone (2000, 0.05, 0.5f) } } });
@@ -272,4 +272,86 @@ TEST_CASE ("sweep: a kit that can't be converted to the rate it's asked for is s
     const auto& report = kits.catalog->find ("user/k").kit->loaded;
     REQUIRE (report.problems.size() == 1);
     CHECK (report.problems.front().find ("couldn't be loaded") != std::string::npos);
+    CHECK (report.failed.find ("libsamplerate can't convert from 44100") != std::string::npos);
+
+    // The library carries on: at a rate it can convert to, the kit plays.
+    const auto again = kits.library->subscribe ("user/k", 48000.0, [&delivered] (std::unique_ptr<engine::PlayableKit> kit) { delivered.push_back (std::move (kit)); });
+    kits.library->waitUntilIdle();
+    REQUIRE (delivered.size() == 2);
+    CHECK (delivered.back()->pieceOn (kick) != nullptr);
+}
+
+//==============================================================================
+// Smaller, by reading: the cache kept every version of every sample it had
+// loaded, for the session. It keeps only what a kit still uses.
+TEST_CASE ("sweep: the kit library's cache keeps only samples a kit still uses")
+{
+    Kits kits;
+    kits.write ("k", { { "kick", kick, { tone (2000, 0.05, 0.5f) } } });
+    kits.open();
+
+    // As a sampler does: it keeps the kit it plays, and lets the one before go.
+    std::unique_ptr<engine::PlayableKit> playing;
+    const auto subscription = kits.library->subscribe ("user/k", 44100.0, [&playing] (std::unique_ptr<engine::PlayableKit> kit) { playing = std::move (kit); });
+    kits.library->waitUntilIdle();
+    CHECK (kits.library->counts().cached == 1);
+
+    const auto lookTwice = [&kits]
+    {
+        kits.library->checkForChanges();
+        kits.library->checkForChanges();
+        kits.library->waitUntilIdle();
+    };
+
+    // The sample saved again, three times: each new version is decoded, and
+    // the one before goes once the kit that used it has.
+    for (int save = 1; save <= 3; ++save)
+    {
+        CAPTURE (save);
+        std::this_thread::sleep_for (20ms);
+        kits.write ("k", { { "kick", kick, { tone (2000 + save * 10, 0.05, 0.5f) } } });
+        lookTwice();
+        REQUIRE (playing != nullptr);
+        CHECK (playing->pieceOn (kick)->length == static_cast<std::size_t> (2000 + save * 10));
+        CHECK (kits.library->counts().cached <= 2); // this version, and perhaps the last until its kit had gone
+    }
+
+    // A level, in kit.json alone, which decodes nothing: by now only the
+    // latest version is kept.
+    std::this_thread::sleep_for (20ms);
+    const auto manifest = kits.userFolder / pathFromUtf8 ("k") / pathFromUtf8 ("kit.json");
+    std::string text;
+    {
+        std::ifstream in (manifest, std::ios::binary);
+        text.assign (std::istreambuf_iterator<char> (in), {});
+    }
+    text.replace (text.find ("\"0dB\""), 5, "\"-3dB\"");
+    std::ofstream (manifest, std::ios::binary) << text;
+    const auto decodedBefore = kits.library->counts().decodes;
+    lookTwice();
+    CHECK (kits.library->counts().decodes == decodedBefore);
+    CHECK (playing->pieceOn (kick)->gain == doctest::Approx (0.707946f));
+    CHECK (kits.library->counts().cached == 1);
+}
+
+// Smaller, by reading: a drum sampler kept a raw pointer to its library, and
+// would call into it after it had ended. It holds a weak reference.
+TEST_CASE ("sweep: a drum sampler whose kit library has ended plays nothing, and carries on")
+{
+    Kits kits;
+    kits.write ("k", { { "kick", kick, { tone (2000, 0.05, 0.5f) } } });
+    kits.open();
+    commands::CommandBus bus (makeProject ({ drumsTrack ("user/k", {}) }));
+    bus.setKitCatalog (&*kits.catalog);
+    engine::EditSync sync (testEngine(), bus, &*kits.library);
+    kits.library->waitUntilIdle();
+
+    auto& sampler = samplerOf (sync);
+    kits.library.reset();
+
+    // At a new rate it asks its library again: there's none now.
+    sampler.initialise ({ tracktion::TimePosition(), 48000.0, 256 });
+    CHECK (sampler.kitRate() == 48000.0);
+    sampler.setKit (nullptr, "user/k");
+    CHECK (sampler.kitName() == "user/k");
 }

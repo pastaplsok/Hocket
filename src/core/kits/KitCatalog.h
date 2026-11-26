@@ -46,7 +46,21 @@ namespace hocket::kits
         std::vector<std::string> problems;
         std::vector<Loud> overFullScale;
 
+        // Why the kit couldn't be loaded at all, so it plays nothing, as if
+        // it were missing; empty when it loaded.
+        std::string failed;
+
         bool operator== (const LoadReport&) const = default;
+    };
+
+    // A file's size and modified time, to tell when it changes (SPEC §8.4).
+    struct FileStamp
+    {
+        bool exists = false;
+        std::uintmax_t size = 0;
+        std::int64_t modified = 0; // in the file system's own ticks
+
+        bool operator== (const FileStamp&) const = default;
     };
 
     struct Kit
@@ -61,16 +75,12 @@ namespace hocket::kits
         std::string problem;
 
         LoadReport loaded; // from the latest load of its samples
-    };
 
-    // A file's size and modified time, to tell when it changes (SPEC §8.4).
-    struct FileStamp
-    {
-        bool exists = false;
-        std::uintmax_t size = 0;
-        std::int64_t modified = 0; // in the file system's own ticks
-
-        bool operator== (const FileStamp&) const = default;
+        // The stamps of kit.json and each sample (as stampsOf orders them),
+        // each taken just before the manifest read it: a change made since,
+        // even before the kit was first used, shows as a difference. Empty
+        // for a kit add()ed.
+        std::vector<FileStamp> stamps;
     };
 
     FileStamp stampOf (const std::filesystem::path& file);

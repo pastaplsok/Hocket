@@ -40,7 +40,7 @@ DrumSamplerPlugin::~DrumSamplerPlugin()
 //==============================================================================
 void DrumSamplerPlugin::setKit (KitLibrary* newLibrary, std::string newKit)
 {
-    if (newLibrary == library && newKit == kit)
+    if (newLibrary == library.get() && newKit == kit)
         return;
 
     library = newLibrary;
@@ -56,6 +56,7 @@ void DrumSamplerPlugin::subscribe (double rate)
     subscribedRate = rate;
     subscription = {}; // the last request, and any delivery still to come for it, goes
 
+    // A library that has ended is none.
     if (library == nullptr || kit.empty())
         return;
 

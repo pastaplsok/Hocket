@@ -207,6 +207,10 @@ namespace
         if (found.kit == nullptr)
             return doubleQuoted (kitName) + " on " + track.id + ": " + found.problem + ", so the track is silent";
 
+        // Installed, but it couldn't be loaded: as if missing (SPEC §8.4).
+        if (! found.kit->loaded.failed.empty())
+            return doubleQuoted (kitName) + " on " + track.id + ": it couldn't be loaded: " + found.kit->loaded.failed + ", so the track is silent";
+
         const auto& kit = *found.kit;
         auto text = kit.name + " on " + track.id + " (" + kits::KitCatalog::describeSource (kit) + "; " + kit.manifest.description + "): ";
 
@@ -307,6 +311,10 @@ namespace
 
         if (found.kit == nullptr)
             return "None of these notes sound: " + found.problem + ", so " + track.id + " is silent.";
+
+        if (! found.kit->loaded.failed.empty())
+            return "None of these notes sound: kit " + doubleQuoted (found.kit->name) + " couldn't be loaded: " + found.kit->loaded.failed + ", so " + track.id
+                 + " is silent.";
 
         std::map<int, std::pair<notes::Accidental, std::size_t>> silent; // pitch -> spelling, count
 

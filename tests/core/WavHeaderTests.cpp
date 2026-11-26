@@ -132,7 +132,7 @@ TEST_CASE ("WAV headers: what a kit can't use is refused, saying why")
 
 // Bug sweep, area 2, finding 3: libsamplerate takes ratios from 1/256 to 256,
 // and a sample at a rate it couldn't take ended the process as its kit loaded.
-TEST_CASE ("WAV headers: a sample rate outside 8 to 384 kHz is refused, saying why" * doctest::should_fail())
+TEST_CASE ("WAV headers: a sample rate outside 8 to 384 kHz is refused, saying why")
 {
     for (const std::uint32_t rate : { 8000u, 11025u, 44100u, 192000u, 384000u })
     {

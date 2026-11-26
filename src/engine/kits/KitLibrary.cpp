@@ -65,6 +65,13 @@ namespace
             return {};
         }
 
+        // As the header reader holds them, for a header it couldn't read.
+        if (const auto rateProblem = kits::sampleRateProblem (reader->sampleRate))
+        {
+            problem = "is" + rateProblem->substr (std::string_view ("it's").size());
+            return {};
+        }
+
         if (reader->lengthInSamples <= 0 || static_cast<double> (reader->lengthInSamples) / reader->sampleRate > kits::maxSampleSeconds)
         {
             // JUCE opens a file whose data chunk claims more than the file
@@ -193,17 +200,22 @@ void KitLibrary::load (std::uint64_t subscription)
 {
     auto& entry = entries.at (subscription);
     Job job { nextJob++, subscription, entry.kitName, entry.rate };
+    entry.missing = true;
 
     if (const auto found = catalog.find (entry.kitName); found.kit != nullptr && ! found.kit->folder.empty())
     {
         job.folder = found.kit->folder;
         job.manifest = found.kit->manifest;
+        entry.missing = false;
 
-        // The user's kits are watched for changes; bundled ones never change (SPEC §8.4).
-        if (found.kit->source == kits::Source::user)
+        // The user's kits are watched for changes; bundled ones never change
+        // (SPEC §8.4). From the files as the catalog read them, so a change
+        // saved since is seen; a kit already watched is left as it is, so a
+        // change it hasn't taken in yet still reaches the tracks playing it.
+        if (found.kit->source == kits::Source::user && ! watches.contains (entry.kitName))
         {
             auto& watch = watches[entry.kitName];
-            watch.loaded = watch.seen = kits::stampsOf (*found.kit);
+            watch.loaded = watch.seen = found.kit->stamps.empty() ? kits::stampsOf (*found.kit) : found.kit->stamps;
         }
     }
 
@@ -275,7 +287,12 @@ void KitLibrary::checkForChanges()
     {
         const auto* kit = catalog.refresh (name).kit;
         auto& watch = watches[name];
-        watch.loaded = watch.seen = kits::stampsOf (*kit);
+        watch.seen = kits::stampsOf (*kit);
+
+        // As the catalog read them, so a change saved straight after is
+        // taken in at the next looks; as they are now when they can't be used,
+        // so it isn't tried again until they change.
+        watch.loaded = kit->problem.empty() && ! kit->stamps.empty() ? kit->stamps : watch.seen;
 
         if (! kit->problem.empty())
         {
@@ -290,6 +307,53 @@ void KitLibrary::checkForChanges()
 
         for (const auto& [id, entry] : entries)
             if (entry.kitName == name)
+                load (id);
+    }
+
+    lookForMissingKits();
+}
+
+void KitLibrary::lookForMissingKits()
+{
+    std::vector<std::string> names;
+
+    for (const auto& [id, entry] : entries)
+        if (entry.missing && std::ranges::find (names, entry.kitName) == names.end())
+            names.push_back (entry.kitName);
+
+    std::erase_if (appearing, [&names] (const auto& kit) { return std::ranges::find (names, kit.first) == names.end(); });
+
+    for (const auto& name : names)
+    {
+        // Lists the kit folders again while it isn't there.
+        const auto found = catalog.find (name);
+
+        if (found.kit == nullptr || found.kit->folder.empty())
+        {
+            appearing.erase (name);
+            continue;
+        }
+
+        // There, and the same on two looks in a row: its files have settled.
+        const auto now = kits::stampsOf (*found.kit);
+
+        if (const auto seen = appearing.find (name); seen == appearing.end() || seen->second != now)
+        {
+            appearing.insert_or_assign (name, now);
+            continue;
+        }
+
+        appearing.erase (name);
+
+        // The files as they are now, which the catalog may have read a moment ago.
+        if (const auto* kit = catalog.refresh (name).kit; kit == nullptr || ! kit->problem.empty())
+            continue;
+
+        if (notify)
+            notify ("kit " + inQuotes (name) + " is there now; loading it");
+
+        for (const auto& [id, entry] : entries)
+            if (entry.missing && entry.kitName == name)
                 load (id);
     }
 }
@@ -365,17 +429,57 @@ void KitLibrary::loaderLoop()
             busy = true;
         }
 
-        auto result = build (job);
+        // Nothing that goes wrong here may end the process: the kit can't be
+        // loaded, and plays nothing, saying why.
+        Result result;
+
+        try
+        {
+            result = build (job);
+        }
+        catch (const std::exception& e)
+        {
+            result = failed (job, e.what());
+        }
+        catch (...)
+        {
+            result = failed (job, "something went wrong");
+        }
+
+        // What no kit uses any more: a sample replaced since, or a kit no
+        // track plays. Only this thread copies from the cache, so a count of
+        // one is the cache's alone, and stays so.
+        std::erase_if (cache, [] (const auto& entry) { return entry.second.audio.use_count() == 1; });
 
         {
             const std::scoped_lock lock (mutex);
             done.push_back (std::move (result));
+            loaderCounts.cached = cache.size();
             busy = false;
         }
 
         idle.notify_all();
         triggerAsyncUpdate();
     }
+}
+
+KitLibrary::Result KitLibrary::failed (const Job& job, const std::string& why)
+{
+    Result result { job.id, job.subscription, job.kitName };
+    result.complete = false;
+    result.report.failed = why;
+    result.report.problems.push_back ("it couldn't be loaded: " + why);
+
+    try
+    {
+        result.kit = PlayableKit::silent (job.rate);
+    }
+    catch (...)
+    {
+        // At a rate no kit can have, none: a sampler takes only kits at its rate.
+    }
+
+    return result;
 }
 
 KitLibrary::Result KitLibrary::build (const Job& job)
