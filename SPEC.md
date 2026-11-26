@@ -2,7 +2,7 @@
 
 > **Hocket** (n.): a medieval technique where one melody is split between two voices, each playing while the other rests. Two players building one line together.
 
-> Status: **Draft v0.28** — 2026-11-24
+> Status: **Draft v0.29** — 2026-11-25
 > Authors: Lee + Claude
 > Sections marked **TBD** are still open and will be filled in as design discussions continue.
 
@@ -100,15 +100,17 @@ Why our model and not Tracktion's:
 
 Keeping the Edit in sync with our model is the area most likely to produce early bugs.
 - Requirement: round-trip tests — load text → Hocket model → save text must produce byte-identical output for canonical files.
-- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then (on the drum sampler, whose pieces are one-shots, its sound rings on, §5.2), and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through.
+- Requirement: sync tests — after a command applies, the Edit matches the model (checked by offline render), and a change made during playback is heard without stopping or retriggering held notes (checked by playing through a simulated audio device). A note the change takes away while it's sounding ends then (on the drum sampler, whose pieces are one-shots, its sound rings on, §5.2), and no rewrite, however fast, leaves a note on; a note the change adds starts the next time the playhead reaches its start, not part-way through. That holds on every instrument, whether the note is added to a clip that's playing or comes with a clip that's added, moved, or brought back by undo (Lee, 2026-11-25). Like any change, it takes a moment to reach the audio, a few milliseconds and a block or two, so a note starting within that moment starts on the next pass.
 - Requirement: property/fuzz tests on the serializer.
-- When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place is struck there. That's while looping: with loop off, playback stops instead, since the song played once has reached its end.
+- When a change during playback ends the song before the playhead (the last clip removed while it plays, say), playback wraps as if the loop had always been that length, landing on the same beat of the bar so the pulse carries on, rather than jumping to 1.1. A note that would be sounding at the new place isn't struck: like any note, it starts when the playhead next reaches its start (Lee, 2026-11-25; until then a wrap struck it). The same goes for a wrap into a new loop region (§3.1). That's while looping: with loop off, playback stops instead, since the song played once has reached its end.
 - A tempo change during playback keeps the playhead on its beat, so its place in the bar, and the notes sounding carry on. A new time signature keeps the playhead at the same time, as it keeps every clip and note (§4.4).
 - While a loop region plays once (loop off), the Edit's clips end at the region's end, and those that start at or after it are left out, so nothing after it is heard before the transport stops (§3.1). Every way out of playing once (reaching the end, stop, loop on, a new region or none) gives the clips their own ends back. The sync tests compare the Edit with the model cut off in the same place, worked out on their own.
 
 **What Milestone 0 found in Tracktion.** Its stress tests found two Tracktion bugs that only show when a clip changes many times a second during playback. Both were invisible at ordinary editing speed, which is exactly the speed an AI client doesn't keep to.
 - Notes left on for good: a MIDI clip that uses Tracktion's proxy sequence (the default) keeps no record of sounding notes when its graph is rebuilt. Hocket's clips don't use the proxy.
 - Now and then, a whole block of silence: a graph rebuild took the lock the audio thread needs. Hocket builds Tracktion from its own public fork, which carries the fix (DEPENDENCIES.md).
+
+**What a note starting only at its start takes in Tracktion** (bug sweep, area 2). Tracktion's player for a clip strikes the notes the clip has sounding where the playhead is when the player is new (a clip added, or remade by a move) or the playhead jumps (a wrap, a seek), and it builds each playback graph against the last one it built, played or not, so what one graph was to do once (end the notes of a clip taken out, say) is lost if another is built over it before it plays. So during playback the sync layer leaves out of the Edit the notes that would be struck part-way through, and puts them back once a block has played without them; and it empties a clip it takes out, so its own player ends its notes, and takes it out once a block has played so. A seek and play still strike the notes sounding where they start (§3.1).
 
 So the sync layer's tests play in real time, not just render offline, and a new kind of change to the Edit comes with a stress test of its own. Neither bug has been reported upstream; each Tracktion update checks whether upstream has fixed them on its own (DEPENDENCIES.md, "Updating Tracktion").
 

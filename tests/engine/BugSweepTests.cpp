@@ -61,7 +61,7 @@ namespace
 // has no node before it to take sounding notes from). SPEC §3.3: a note a
 // change adds starts the next time the playhead reaches its start, on every
 // instrument. Each change comes at 1.2, inside a note that starts at 1.1.
-TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or brought back by undo, waits for its notes' starts" * doctest::should_fail())
+TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or brought back by undo, waits for its notes' starts")
 {
     using Change = std::function<commands::Result (commands::CommandBus&)>;
 
@@ -112,7 +112,8 @@ TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or
         INFO (result.message);
         REQUIRE (result.ok);
         sync.edit().dispatchPendingUpdatesSynchronously(); // as the app's message thread would, straight after
-        device.play (3 * barSamples); // round to 1.2 again
+        letEditSettle (device, sync);
+        device.play (3 * barSamples - 3 * blockSize); // round to 1.2 again
 
         const auto nextPass = 3 * barSamples;
 

@@ -122,7 +122,7 @@ TEST_CASE ("live: a seek while stopped is where play starts")
     CHECK (onceNear (times (events, c3, true), 2 * barSamples));
 }
 
-TEST_CASE ("live: a loop region set while playing wraps the playhead into it, keeping its place in the bar, and loops it" * doctest::should_fail())
+TEST_CASE ("live: a loop region set while playing wraps the playhead into it, keeping its place in the bar, and loops it")
 {
     FakeAudioDevice device;
     commands::CommandBus bus (markedProject());
@@ -137,9 +137,8 @@ TEST_CASE ("live: a loop region set while playing wraps the playhead into it, ke
     device.play (changeAt);
     const auto result = run (bus, sync, commands::SetLoopRegion { "3.1", "4.1" });
     CHECK (result.message == "loop region 3.1 to 4.1 (1 bar), was the whole song; the playhead was at 1.3, outside the loop region, so it wrapped to 3.3");
-    device.play (4 * FakeAudioDevice::blockSize);
-    runMessages (20);
-    device.play (2 * quarter + 2 * barSamples - 4 * FakeAudioDevice::blockSize);
+    letEditSettle (device, sync);
+    device.play (2 * quarter + 2 * barSamples - 3 * FakeAudioDevice::blockSize);
 
     const auto events = recorder.recorded();
     INFO (history (events));
@@ -297,7 +296,12 @@ namespace
             CHECK (leadClips() == 0);
         }
 
-        int leadClips() { return tracktion::getAudioTracks (sync.edit())[1]->getClips().size(); }
+        // Not counting those on their way out, emptied (EditSync::endingClips).
+        int leadClips()
+        {
+            const auto clips = tracktion::getAudioTracks (sync.edit())[1]->getClips();
+            return static_cast<int> (std::ranges::count_if (clips, [] (tracktion::Clip* clip) { return ! clip->getName().endsWith (" (ending)"); }));
+        }
 
         // Samples played since play started.
         int played() const { return device.output().buffer.getNumSamples(); }
@@ -396,7 +400,7 @@ TEST_CASE ("live: loop on while a loop region plays once makes its clips whole a
     CHECK (struckFrom (once.lead.recorded(), 0).empty());
 }
 
-TEST_CASE ("live: a new loop region while one plays once moves where the clips end, and a playhead outside it wraps in, with loop off too" * doctest::should_fail())
+TEST_CASE ("live: a new loop region while one plays once moves where the clips end, and a playhead outside it wraps in, with loop off too")
 {
     PlayingOnce once;
 
@@ -414,9 +418,7 @@ TEST_CASE ("live: a new loop region while one plays once moves where the clips e
            == "loop region 1.1 to 2.1 (1 bar), was 3.1 to 5.1; the playhead was at 3.2, outside the loop region, so it wrapped to 1.2");
     CHECK (once.leadClips() == 0);
 
-    once.device.play (4 * FakeAudioDevice::blockSize);
-    runMessages (5);
-    once.device.play (3 * quarter + 4 * FakeAudioDevice::blockSize);
+    once.device.play (3 * quarter + 8 * FakeAudioDevice::blockSize);
     checkEditMatches (once.sync, once.bus);
     runMessages (20);
     CHECK (once.bus.isPlaying() == false);

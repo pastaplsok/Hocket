@@ -105,8 +105,10 @@ namespace
         target.setPosition ({ target.edit.tempoSequence.toTime (clipBeats (project, clip, endBy)) });
     }
 
-    // Makes the Tracktion clip match the model's: position, length and notes.
-    void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip, std::optional<notes::Ticks> endBy)
+    // Makes the Tracktion clip match the model's: position, length and notes,
+    // but for those `held` (EditSync::heldNotes).
+    void writeClip (tracktion::MidiClip& target, const project::Project& project, const project::Clip& clip, std::optional<notes::Ticks> endBy,
+                    const std::vector<EditSync::HeldNote>* held)
     {
         placeClip (target, project, clip, endBy);
 
@@ -117,8 +119,18 @@ namespace
         sequence.clear (nullptr);
 
         for (const auto& note : hocket::project::notesOf (project, clip).notes)
-            sequence.addNote (note.pitch, beatPosition (note.start), beatDuration (note.length), note.velocity, 0, nullptr);
+            if (held == nullptr || std::ranges::find (*held, EditSync::HeldNote { note.start, note.pitch }) == held->end())
+                sequence.addNote (note.pitch, beatPosition (note.start), beatDuration (note.length), note.velocity, 0, nullptr);
     }
+
+    // How far the playhead may move between working out which notes it may
+    // land inside and the graph having them left out: Tracktion building its
+    // graph once, and a block, with room to spare. Notes held back that it
+    // didn't land inside are put back a block or two later, before they start.
+    constexpr double aheadSeconds = 0.25;
+
+    // How often held notes and emptied clips are looked at, to settle them.
+    constexpr int settleIntervalMs = 5;
 }
 
 //==============================================================================
@@ -136,9 +148,9 @@ public:
 
     ~AudioLock()
     {
-        const auto held = std::chrono::steady_clock::now() - start;
+        const auto hold = std::chrono::steady_clock::now() - start;
         lock.exit();
-        sync.longestLockHold = std::max (sync.longestLockHold, held);
+        sync.longestLockHold = std::max (sync.longestLockHold, hold);
     }
 
     AudioLock (const AudioLock&) = delete;
@@ -229,6 +241,8 @@ void EditSync::changed (const commands::Change& change)
     // so each is synced against the finished project. Tracktion rebuilds its
     // playback graph on the next message-thread callback and swaps it in
     // without stopping.
+    settleOncePlayed();
+
     std::visit ([this] (const auto& c)
     {
         using Kind = std::decay_t<decltype (c)>;
@@ -261,6 +275,7 @@ void EditSync::changed (const commands::Change& change)
     // can move the end of the song. A loop region, and so clipsEndBy, stays
     // where it is in the music.
     updateLoop (Outside::wrapWhileLooping);
+    finishChanges();
 }
 
 void EditSync::updateLoop (Outside outside)
@@ -298,15 +313,67 @@ void EditSync::updateLoop (Outside outside)
 
     const auto loop = tracktion::toSamples (range, sampleRate);
     const auto wrap = looping || outside == Outside::wrap;
+    const auto loopLength = std::max<std::int64_t> (1, loop.getLength());
+    const auto wrapOf = [&loop, loopLength] (std::int64_t at) { return loop.getStart() + juce::negativeAwareModulo (at - loop.getStart(), loopLength); };
+
+    // A wrap is a jump, so Tracktion's players end the notes sounding, and
+    // strike those sounding where it lands, part-way through. SPEC §3.3 has
+    // a note sound only when the playhead reaches its start (Lee,
+    // 2026-11-25), so those are left out of the Edit until the wrap's first
+    // block has played. Where it lands depends on where the playhead is when
+    // it's made, below, and they must be out of the graph before then: so
+    // the notes sounding anywhere it could land in the next moment are left
+    // out first, and those not sounding where it does land go back after.
+    HeldByClip taken;
+
+    if (wrap && isPlaying())
+    {
+        const auto now = playHead->getPosition();
+        const auto soon = now + static_cast<std::int64_t> (aheadSeconds * sampleRate);
+        const auto ticks = [this, sampleRate] (std::int64_t a, std::int64_t b) { return commands::TickRange { ticksAt (a, sampleRate), ticksAt (b, sampleRate) }; };
+
+        // Each stretch the playhead may be in that's outside the loop, wrapped into it.
+        const auto holdWhereWrapped = [&] (std::int64_t from, std::int64_t to)
+        {
+            if (to - from >= loopLength)
+                return holdNotesSounding (ticks (loop.getStart(), loop.getEnd()), taken);
+
+            const auto a = wrapOf (from);
+            const auto b = wrapOf (to);
+
+            if (a <= b)
+                return holdNotesSounding (ticks (a, b), taken);
+
+            holdNotesSounding (ticks (a, loop.getEnd()), taken);
+            holdNotesSounding (ticks (loop.getStart(), b), taken);
+        };
+
+        if (now < loop.getStart())
+            holdWhereWrapped (now, std::min (soon, loop.getStart() - 1));
+
+        if (soon >= loop.getEnd())
+            holdWhereWrapped (std::max (now, loop.getEnd()), soon);
+
+        // Out of the graph before the wrap.
+        if (! taken.empty())
+        {
+            for (const auto& [clipId, notes] : taken)
+                syncClip (clipId);
+
+            clearTracktionUndo();
+            tracktionEdit->dispatchPendingUpdatesSynchronously();
+        }
+    }
+
     std::int64_t place = 0;
     std::int64_t wrapped = 0;
+    std::int64_t nextBlock = 0;
 
     {
         const AudioLock audioLock (*this);
         place = playHead->getPosition();
-        wrapped = ! wrap || loop.contains (place)
-                    ? place
-                    : loop.getStart() + juce::negativeAwareModulo (place - loop.getStart(), std::max<std::int64_t> (1, loop.getLength()));
+        nextBlock = playHead->getReferenceSampleRange().getEnd();
+        wrapped = ! wrap || loop.contains (place) ? place : wrapOf (place);
 
         // The playhead counts its place from where it was last set, by remainder
         // of the loop's length, so the place is set even when it doesn't move:
@@ -328,7 +395,73 @@ void EditSync::updateLoop (Outside outside)
 
     // Worked out once the lock is let go: a new tempo map may be built.
     if (wrapped != place)
-        lastWrap = commands::PlayheadWrap { ticksAt (place, sampleRate), ticksAt (wrapped, sampleRate) };
+    {
+        const auto landed = ticksAt (wrapped, sampleRate);
+        lastWrap = commands::PlayheadWrap { ticksAt (place, sampleRate), landed };
+
+        // Those it didn't land inside go back now, in the graph Tracktion
+        // builds next; the rest once a block after the wrap's first has
+        // started (settleNow).
+        HeldByClip notThere;
+        const auto& project = bus.project();
+        constexpr auto never = std::numeric_limits<notes::Ticks>::max();
+
+        for (const auto& [clipId, notes] : taken)
+        {
+            const auto* clip = hocket::project::findClip (project, clipId);
+
+            if (clip == nullptr)
+            {
+                notThere[clipId] = notes;
+                continue;
+            }
+
+            const auto& clipNotes = hocket::project::notesOf (project, *clip).notes;
+
+            for (const auto& note : notes)
+            {
+                const auto source = std::ranges::find_if (clipNotes, [&note] (const notes::Note& n) { return n.start == note.start && n.pitch == note.pitch; });
+                auto soundsThere = false;
+
+                if (source != clipNotes.end())
+                {
+                    const auto start = clip->start + source->start;
+                    const auto end = std::min ({ start + source->length, hocket::project::clipEnd (project, *clip), clipsEndBy.value_or (never) });
+                    soundsThere = start < landed && end > landed;
+                }
+
+                if (! soundsThere)
+                    notThere[clipId].push_back (note);
+            }
+        }
+
+        const auto count = [] (const auto& byClip)
+        {
+            std::size_t n = 0;
+
+            for (const auto& [clipId, notes] : byClip)
+                n += notes.size();
+
+            return n;
+        };
+
+        const auto landedInside = count (taken) > count (notThere);
+        releaseHeldNotes (notThere, false);
+
+        // Any held from before wait for this wrap's first block too.
+        if (landedInside)
+            heldStretches.push_back ({ landed, landed });
+
+        if (! held.empty())
+        {
+            settledFrom = std::max (settledFrom, nextBlock + blockSize());
+            unsettled = true;
+        }
+    }
+    else
+    {
+        releaseHeldNotes (taken, false);
+    }
 
     if (progress.running)
         takeProgressBaseline();
@@ -598,10 +731,22 @@ void EditSync::removeTrack (const std::string& trackId)
     if (found == tracks.end())
         return;
 
-    // Its clips go with it.
+    // Its clips go with it, and their notes with its instrument.
     const tracktion::ClipTrack* track = found->second.track.get();
-    std::erase_if (clips, [track] (const auto& clip) { return clip.second->getTrack() == track; });
 
+    for (auto clip = clips.begin(); clip != clips.end();)
+    {
+        if (clip->second->getTrack() != track)
+        {
+            ++clip;
+            continue;
+        }
+
+        held.erase (clip->first);
+        clip = clips.erase (clip);
+    }
+
+    std::erase_if (ending, [track] (const tracktion::MidiClip::Ptr& clip) { return clip->getTrack() == track; });
     tracktionEdit->deleteTrack (found->second.track.get());
     tracks.erase (found);
 }
@@ -629,6 +774,17 @@ void EditSync::syncClip (const std::string& clipId)
     }
 
     auto found = clips.find (clipId);
+
+    // Held notes the clip no longer has are no longer held.
+    if (const auto heldHere = held.find (clipId); heldHere != held.end())
+    {
+        const auto& clipNotes = hocket::project::notesOf (project, *source).notes;
+        std::erase_if (heldHere->second, [&clipNotes] (const HeldNote& note)
+                       { return std::ranges::none_of (clipNotes, [&note] (const notes::Note& n) { return n.start == note.start && n.pitch == note.pitch; }); });
+
+        if (heldHere->second.empty())
+            held.erase (heldHere);
+    }
 
     // Moved: this one goes, and a new one is made in its place. Tracktion's
     // LoopingMidiNode hands a clip's sounding notes to the next graph, so a
@@ -666,9 +822,26 @@ void EditSync::syncClip (const std::string& clipId)
         // (DEPENDENCIES.md, "Updating Tracktion").
         midiClip->setUsesProxy (false);
         found = clips.emplace (clipId, midiClip).first;
+
+        // A clip's player that's new strikes the notes sounding where the
+        // playhead is, part-way through; one the graph already has waits for
+        // each note's start (SPEC §3.3). So during playback, the notes
+        // sounding anywhere the playhead may be before the graph has the clip
+        // are left out, and go in once a block has played it (settleNow).
+        if (const auto [playHead, sampleRate] = currentPlayHead(); playHead != nullptr && isPlaying())
+        {
+            HeldByClip taken;
+            const auto ahead = placesAhead (*playHead, sampleRate);
+
+            for (const auto& stretch : ahead)
+                holdNotesSounding (stretch, taken, &clipId);
+
+            if (! taken.empty())
+                heldStretches.insert (heldStretches.end(), ahead.begin(), ahead.end());
+        }
     }
 
-    writeClip (*found->second, project, *source, clipsEndBy);
+    writeClip (*found->second, project, *source, clipsEndBy, heldIn (clipId));
 }
 
 void EditSync::removeClip (const std::string& clipId)
@@ -678,8 +851,197 @@ void EditSync::removeClip (const std::string& clipId)
     if (found == clips.end())
         return;
 
-    found->second->removeFromParent();
+    const auto clip = found->second;
     clips.erase (found);
+    held.erase (clipId);
+
+    // During playback its own player ends the notes it has sounding: emptied
+    // now, and taken out once a block has played it so (settleNow).
+    if (isPlaying())
+    {
+        clip->getSequence().clear (nullptr);
+        clip->setName (juceString (clipId) + " (ending)");
+        ending.push_back (clip);
+        unsettled = true;
+        return;
+    }
+
+    clip->removeFromParent();
+}
+
+const std::vector<EditSync::HeldNote>* EditSync::heldIn (const std::string& clipId) const
+{
+    const auto found = held.find (clipId);
+    return found != held.end() ? &found->second : nullptr;
+}
+
+void EditSync::holdNotesSounding (commands::TickRange where, HeldByClip& taken, const std::string* onlyClip)
+{
+    const auto& project = bus.project();
+    constexpr auto never = std::numeric_limits<notes::Ticks>::max();
+
+    for (const auto& track : project.tracks)
+    {
+        for (const auto& clip : track.clips)
+        {
+            if ((onlyClip != nullptr && clip.id != *onlyClip) || ! clips.contains (clip.id))
+                continue; // not in the Edit: it starts after clipsEndBy
+
+            const auto clipEndsAt = std::min (hocket::project::clipEnd (project, clip), clipsEndBy.value_or (never));
+            const auto* already = heldIn (clip.id);
+            std::vector<HeldNote> more;
+
+            for (const auto& note : hocket::project::notesOf (project, clip).notes)
+            {
+                const auto start = clip.start + note.start;
+                const auto end = std::min (start + note.length, clipEndsAt);
+                const HeldNote which { note.start, note.pitch };
+
+                if (start < where.end && end > where.start && (already == nullptr || std::ranges::find (*already, which) == already->end()))
+                    more.push_back (which);
+            }
+
+            if (more.empty())
+                continue;
+
+            auto& clipHeld = held[clip.id];
+            clipHeld.insert (clipHeld.end(), more.begin(), more.end());
+            auto& clipTaken = taken[clip.id];
+            clipTaken.insert (clipTaken.end(), more.begin(), more.end());
+            unsettled = true;
+        }
+    }
+}
+
+std::vector<commands::TickRange> EditSync::placesAhead (tracktion::graph::PlayHead& playHead, double sampleRate) const
+{
+    const auto now = playHead.getPosition();
+    const auto margin = static_cast<std::int64_t> (aheadSeconds * sampleRate);
+    const auto ticks = [this, sampleRate] (std::int64_t a, std::int64_t b) { return commands::TickRange { ticksAt (a, sampleRate), ticksAt (b, sampleRate) }; };
+
+    if (! playHead.isLooping())
+        return { ticks (now, now + margin) };
+
+    // Within the loop, past its end round to its start.
+    const auto loop = playHead.getLoopRange();
+    const auto length = std::max<std::int64_t> (1, loop.getLength());
+
+    if (margin >= length)
+        return { ticks (loop.getStart(), loop.getEnd()) };
+
+    const auto from = loop.getStart() + juce::negativeAwareModulo (now - loop.getStart(), length);
+    const auto to = from + margin;
+
+    if (to <= loop.getEnd())
+        return { ticks (from, to) };
+
+    return { ticks (from, loop.getEnd()), ticks (loop.getStart(), loop.getStart() + (to - loop.getEnd())) };
+}
+
+void EditSync::releaseHeldNotes (const HeldByClip& notes, bool build)
+{
+    if (notes.empty())
+        return;
+
+    for (const auto& [clipId, released] : notes)
+    {
+        if (const auto found = held.find (clipId); found != held.end())
+        {
+            std::erase_if (found->second, [&released] (const HeldNote& note) { return std::ranges::find (released, note) != released.end(); });
+
+            if (found->second.empty())
+                held.erase (found);
+        }
+
+        if (clips.contains (clipId))
+            syncClip (clipId);
+    }
+
+    if (held.empty())
+        heldStretches.clear();
+
+    clearTracktionUndo();
+
+    if (build)
+        tracktionEdit->dispatchPendingUpdatesSynchronously();
+}
+
+void EditSync::releaseAllHeldNotes()
+{
+    releaseHeldNotes (HeldByClip (held), true);
+}
+
+int EditSync::blockSize() const
+{
+    return std::max (1, tracktionEdit->engine.getDeviceManager().getBlockSize());
+}
+
+void EditSync::finishChanges()
+{
+    if (! std::exchange (unsettled, false))
+        return;
+
+    if (! isPlaying())
+    {
+        settleNow();
+        return;
+    }
+
+    needsBaseline = true;
+    settleTimer.startTimer (settleIntervalMs);
+}
+
+void EditSync::settleTimerTick()
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    // Tracktion builds its graph on a 1 ms timer, which has fired by now: the
+    // block after the next to start comes after one that played it.
+    if (std::exchange (needsBaseline, false) && playHead != nullptr && isPlaying())
+    {
+        settledFrom = std::max (settledFrom, playHead->getReferenceSampleRange().getEnd() + blockSize());
+        return;
+    }
+
+    settleOncePlayed();
+}
+
+void EditSync::settleOncePlayed()
+{
+    if (held.empty() && ending.empty())
+    {
+        settleTimer.stopTimer();
+        needsBaseline = false;
+        return;
+    }
+
+    // Stopped, nothing plays them.
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (playHead == nullptr || ! isPlaying())
+        settleNow();
+    else if (! needsBaseline && playHead->getReferenceSampleRange().getStart() >= settledFrom)
+        settleNow();
+}
+
+void EditSync::settleNow()
+{
+    settleTimer.stopTimer();
+    needsBaseline = false;
+
+    // Emptied, they have no notes to end: the graph without them loses nothing.
+    for (const auto& clip : std::exchange (ending, {}))
+        clip->removeFromParent();
+
+    if (held.empty())
+    {
+        clearTracktionUndo();
+        tracktionEdit->dispatchPendingUpdatesSynchronously();
+    }
+    else
+    {
+        releaseAllHeldNotes();
+    }
 }
 
 void EditSync::syncFile (const std::string& file)
@@ -705,6 +1067,10 @@ void EditSync::play()
     const auto& settings = bus.transportSettings();
     const auto start = timeOf (commands::startPosition (bus.project(), settings));
     playRequested = true;
+
+    // Play is a jump to where it starts, which strikes the notes sounding
+    // there (SPEC §3.1), so notes a wrap left out come back first.
+    settleNow();
 
     // A saved change to a user kit in use is heard from now, once it has
     // loaded, without waiting for the library's next look (SPEC §8.4).
@@ -751,8 +1117,10 @@ void EditSync::stop()
     stopTimer();
     tracktionEdit->getTransport().stop (false, false);
 
-    // Stopped first, so the clips past the region's end come back unheard.
+    // Stopped first, so the clips past the region's end, and notes a wrap
+    // left out, come back unheard.
     setClipsEnd ({});
+    settleNow();
 }
 
 bool EditSync::isPlaying() const
@@ -793,8 +1161,9 @@ void EditSync::jumpTo (notes::Ticks position)
     sampleProgress();
 
     // A jump: Tracktion's players end the notes sounding, and strike those on
-    // at the new place. The bus has put it inside what plays, so the loop
-    // doesn't clamp it.
+    // at the new place (SPEC §3.1), notes a wrap left out among them. The
+    // bus has put it inside what plays, so the loop doesn't clamp it.
+    releaseAllHeldNotes();
     playHead->setPosition (tracktion::toSamples (timeOf (position), sampleRate));
 
     if (progress.running)
@@ -873,6 +1242,7 @@ std::optional<commands::PlayheadWrap> EditSync::takeWrap()
 
 void EditSync::loopChanged()
 {
+    settleOncePlayed();
     const auto playingOnce = isPlaying() && ! bus.transportSettings().looping;
 
     // Played once, the clips end at the new end before the playhead can get
@@ -887,6 +1257,8 @@ void EditSync::loopChanged()
         startTimer (endCheckIntervalMs);
     else
         setClipsEnd ({});
+
+    finishChanges();
 }
 
 std::optional<notes::Ticks> EditSync::playOnceEnd() const
@@ -921,6 +1293,7 @@ void EditSync::setClipsEnd (std::optional<notes::Ticks> end)
     // Tracktion rebuilds its graph on a 1 ms timer, but play starts with the
     // graph it has, and while playing the playhead may be close to the end.
     tracktionEdit->dispatchPendingUpdatesSynchronously();
+    finishChanges();
 }
 
 void EditSync::timerCallback()

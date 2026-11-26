@@ -197,7 +197,7 @@ TEST_CASE ("live: when the song ends before the playhead, it wraps as if the loo
     CHECK (nearSample (firstSoundAt (out, 2 * barSamples + beatSamples), 3 * barSamples));
 }
 
-TEST_CASE ("live: a wrap into the middle of a note doesn't strike it: it starts when the playhead next reaches its start" * doctest::should_fail())
+TEST_CASE ("live: a wrap into the middle of a note doesn't strike it: it starts when the playhead next reaches its start")
 {
     // As above, with the bass's note lasting the whole bar: wrapped to 1.2
     // at 2.2, the note would be sounding there, but it isn't struck until
@@ -213,9 +213,7 @@ TEST_CASE ("live: a wrap into the middle of a note doesn't strike it: it starts 
     device.play (changeAt);
     run (bus, sync, commands::RemoveClip { "clp-later" });
 
-    // A few blocks, then the message loop, as the app runs it.
-    device.play (4 * FakeAudioDevice::blockSize);
-    juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+    letEditSettle (device, sync);
     device.play (barSamples);
 
     const auto events = midi.recorded();

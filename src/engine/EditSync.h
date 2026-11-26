@@ -16,6 +16,22 @@
 // While a loop region plays once, the Edit's clips end at the region's end
 // (clipsEndBy), so nothing after it is heard; otherwise the Edit is the model.
 //
+// A note sounds only when the playhead reaches its start (SPEC §3.3), but
+// Tracktion's players strike the notes a clip has sounding where the playhead
+// is when the clip's player is new (a clip added or remade) or the playhead
+// jumps. So those notes are left out of the Edit (heldNotes) until a block
+// has played without them, then put back (settleNow): notes added to a clip
+// the graph already has wait for their starts. For a clip made during
+// playback, that's its notes sounding anywhere the playhead may be before the
+// graph has the clip; for a wrap (updateLoop), those where it lands.
+//
+// A clip taken out during playback is emptied first, so its own player ends
+// the notes it has sounding, and leaves the Edit once a block has played
+// (endingClips). Taken out at once, only the graph Tracktion builds straight
+// after would end them (its CombiningNode does), and one built over that
+// before it played would leave them on: Tracktion builds each graph against
+// the last it built, played or not.
+//
 // Message thread only, like the bus.
 
 #include "core/commands/CommandBus.h"
@@ -26,12 +42,14 @@
 #include <tracktion_engine/tracktion_engine.h>
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace hocket::engine
 {
@@ -65,6 +83,28 @@ namespace hocket::engine
         // The longest this has held JUCE's audio callback lock, during which
         // no audio block can start (CLAUDE.md): for the stress tests.
         std::chrono::steady_clock::duration longestAudioLockHold() const { return longestLockHold; }
+
+        // A note of a clip: its start in the clip, and its pitch, which
+        // together say which (SPEC §5.4).
+        struct HeldNote
+        {
+            notes::Ticks start = 0;
+            int pitch = 0;
+
+            friend bool operator== (const HeldNote&, const HeldNote&) = default;
+        };
+
+        // The notes left out of the Edit's clips, by clip ID, until a block
+        // has played without them, and the stretches of the song where the
+        // playhead was, or would be, when they were: each held note sounds
+        // somewhere in one of them (its start before the stretch's end, its
+        // end after the stretch's start). For tests (checkEditMatches).
+        const std::map<std::string, std::vector<HeldNote>, std::less<>>& heldNotes() const { return held; }
+        const std::vector<commands::TickRange>& heldWhere() const { return heldStretches; }
+
+        // Clips taken out during playback, emptied, until a block has played
+        // them so: each is named after the clip, with " (ending)". For tests.
+        const std::vector<tracktion::MidiClip::Ptr>& endingClips() const { return ending; }
 
     private:
         // A Hocket track in the Edit, the plugins its devices made, by device
@@ -127,6 +167,69 @@ namespace hocket::engine
         Progress progress;
         ProgressTimer progressTimer { *this };
         std::optional<commands::PlayheadWrap> lastWrap; // for takeWrap
+
+        // Notes left out of the Edit (holdNotesSounding), and clips taken out
+        // during playback, emptied (removeClip), until the audio thread has
+        // played a block that way: the block that starts at settledFrom (a
+        // sample of the playhead's reference count) comes after one that did.
+        // A timer settles them as soon as it can (settleNow).
+        std::map<std::string, std::vector<HeldNote>, std::less<>> held;
+        std::vector<commands::TickRange> heldStretches;
+        std::vector<tracktion::MidiClip::Ptr> ending;
+        std::int64_t settledFrom = 0;
+        bool unsettled = false;     // since the last finishChanges
+        bool needsBaseline = false; // settledFrom is to be worked out once Tracktion has built the graph
+
+        class SettleTimer final : public juce::Timer
+        {
+        public:
+            explicit SettleTimer (EditSync& owner) : sync (owner) {}
+            void timerCallback() override { sync.settleTimerTick(); }
+
+        private:
+            EditSync& sync;
+        };
+
+        SettleTimer settleTimer { *this };
+
+        using HeldByClip = std::map<std::string, std::vector<HeldNote>, std::less<>>;
+
+        // Adds to `held`, and to `taken`, the notes in the Edit's clips (or
+        // only `onlyClip`) sounding anywhere in `where` (their start before
+        // its end, their end after its start). The caller rewrites the clips.
+        void holdNotesSounding (commands::TickRange where, HeldByClip& taken, const std::string* onlyClip = nullptr);
+
+        // The stretches of the song the playhead may play in the next moment,
+        // within its loop: where a clip made now may first be played.
+        std::vector<commands::TickRange> placesAhead (tracktion::graph::PlayHead&, double sampleRate) const;
+
+        // Puts these held notes back in the Edit, and with `build`, builds
+        // the graph at once; otherwise Tracktion does, on its timer.
+        void releaseHeldNotes (const HeldByClip& notes, bool build);
+        void releaseAllHeldNotes();
+
+        // At the end of a change, a play, a stop or a loop change: when it
+        // held notes back or emptied clips, starts the timer that settles
+        // them once a block has played; not playing, settles them at once.
+        void finishChanges();
+
+        // The timer: first works out from which block they can settle, once
+        // Tracktion has built the graph with them; then settles them once the
+        // audio thread has started that block.
+        void settleTimerTick();
+
+        // Settles them now if a block has played with them, or if not playing.
+        void settleOncePlayed();
+
+        // Puts the held notes back, takes the emptied clips out, and builds
+        // the graph.
+        void settleNow();
+
+        // The device's block size, in samples.
+        int blockSize() const;
+
+        // This clip's held notes, or nullptr.
+        const std::vector<HeldNote>* heldIn (const std::string& clipId) const;
 
         void sampleProgress();           // adds what has played to progress.ticks, and takes a new baseline
         void takeProgressBaseline();

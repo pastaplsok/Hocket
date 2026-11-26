@@ -616,11 +616,12 @@ namespace
         run.changesTook = std::chrono::duration<double> (Clock::now() - start).count();
         run.lastChangeSample = audio.blocksPlayed() * blockSize;
 
-        // The last change in the graph now, rather than on Tracktion's timer:
-        // a block may be playing the graph before it, but the one after that
-        // starts with it.
+        // The last change in the graph now, rather than on Tracktion's timer,
+        // with anything EditSync held back put back: a block may be playing
+        // the graph before it, but the one after that starts with it.
         if (rest > 0)
         {
+            runMessagesUntil ([&sync] { return sync.heldNotes().empty() && sync.endingClips().empty(); });
             sync.edit().dispatchPendingUpdatesSynchronously();
             run.restFrom = (audio.blocksPlayed() + 2) * blockSize;
             runMessagesUntil ([&audio, end = run.restFrom + rest] { return audio.blocksPlayed() * blockSize >= end; });
@@ -747,7 +748,10 @@ TEST_CASE ("stress: clips moved 20 a second, in place and between tracks, during
 
 TEST_CASE ("stress: clips added and removed 20 a second during playback")
 {
-    const auto run = stressWith (structureProject(), 100,
+    // Added at 1.1 and 2.1 in turn, each removed 50 ms later; the 101st is
+    // added at 1.1 and left for a whole pass of the song before it's removed.
+    constexpr int pass = 2 * barSamples; // the bass's two bars
+    const auto run = stressWith (structureProject(), 101,
                                  [] (int i) -> commands::Command
                                  {
                                      if (i % 2 == 1)
@@ -755,14 +759,39 @@ TEST_CASE ("stress: clips added and removed 20 a second during playback")
 
                                      return commands::AddClip { "trk-lead", i % 4 == 0 ? "1.1" : "2.1", commands::ClipText { denseNotes }, "clp-new", {} };
                                  },
-                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1) }; });
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1) }; },
+                                 [] (commands::CommandBus& bus) { REQUIRE (bus.execute (commands::RemoveClip { "clp-new" }, claude).ok); },
+                                 nullptr, {}, pass);
 
-    checkHeldNotes (run, 100);
+    checkHeldNotes (run, 101);
     REQUIRE (run.midi.size() == 1);
-    const auto played = std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; });
-    MESSAGE ("notes the added clips played: " << played);
-    CHECK (played > 10); // they did play
     checkNothingLeftOn (run.midi[0], "trk-lead");
+
+    // While they came and went, a note sounded only if its start came during
+    // a clip's 50 ms: how many depends on timing, so it's reported, not
+    // checked. Struck part-way through, they used to be most of them (bug
+    // sweep, area 2).
+    const auto struck = [&run] (int from, int to)
+    {
+        std::vector<MidiRecorder::Event> ons;
+        std::ranges::copy_if (run.midi[0], std::back_inserter (ons), [from, to] (const auto& e) { return e.note >= 0 && e.on && e.sample >= from && e.sample < to; });
+        return ons;
+    };
+
+    MESSAGE ("notes the added clips played while they came and went: " << struck (run.firstBlock * blockSize, run.lastChangeSample).size());
+
+    // The last one played a whole pass: E3 on each sixteenth of bar 1, each
+    // once, at its start, and nothing else.
+    const auto rested = struck (run.restFrom, run.restFrom + pass);
+    CHECK (rested.size() == 16);
+
+    for (int sixteenth = 0; sixteenth < 16; ++sixteenth)
+    {
+        CAPTURE (sixteenth);
+        const auto place = static_cast<int> (std::lround (sixteenth * beatSamples / 4.0));
+        const auto start = run.restFrom + ((place - run.restFrom) % pass + pass) % pass;
+        CHECK (std::ranges::count_if (rested, [start] (const auto& e) { return e.note == 52 && std::abs (static_cast<int> (e.sample) - start) <= 2; }) == 1);
+    }
 }
 
 TEST_CASE ("stress: tracks with a synth added and removed 20 a second during playback")

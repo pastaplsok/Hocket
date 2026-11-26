@@ -307,6 +307,13 @@ namespace hocket::testing
     // not asked of EditSync, so it can't hide a mismatch.
     void checkEditMatches (engine::EditSync&, const commands::CommandBus&);
 
+    // What the app's message loop does after a change during playback, in a
+    // test that plays the device itself: EditSync puts back the notes it held
+    // back and takes out the clips it emptied, once a block has played so
+    // (EditSync::heldNotes, endingClips). Plays three blocks, running the
+    // message loop after the first and the third.
+    void letEditSettle (FakeAudioDevice&, engine::EditSync&);
+
     // The notes the synth is left holding after these events, by JUCE's rules:
     // a note-on for a note already on retriggers it, and a note-off for one
     // that's off is ignored.

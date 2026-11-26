@@ -110,6 +110,16 @@ namespace
     }
 }
 
+void letEditSettle (FakeAudioDevice& device, engine::EditSync& sync)
+{
+    device.play (FakeAudioDevice::blockSize);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    device.play (2 * FakeAudioDevice::blockSize);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+    CHECK (sync.heldNotes().empty());
+    CHECK (sync.endingClips().empty());
+}
+
 void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
 {
     auto& edit = sync.edit();
@@ -215,7 +225,25 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
             if (clip.start < clipsEndBy)
                 expectedClips.push_back (&clip);
 
-        const auto trackClips = track.getClips();
+        // And clips taken out during playback, emptied, until a block has
+        // played them so (EditSync::endingClips): each is one of EditSync's,
+        // named for its clip with " (ending)", and has no notes.
+        auto trackClips = track.getClips();
+        const auto& ending = sync.endingClips();
+
+        for (int c = trackClips.size(); --c >= 0;)
+        {
+            auto* clip = dynamic_cast<tracktion::MidiClip*> (trackClips[c]);
+
+            if (clip == nullptr || std::ranges::find (ending, clip, &tracktion::MidiClip::Ptr::get) == ending.end())
+                continue;
+
+            CAPTURE (clip->getName().toStdString());
+            CHECK (clip->getName().endsWith (" (ending)"));
+            CHECK (clip->getSequence().getNumNotes() == 0);
+            trackClips.remove (c);
+        }
+
         REQUIRE (static_cast<std::size_t> (trackClips.size()) == expectedClips.size());
 
         for (const auto* clip : expectedClips)
@@ -232,13 +260,38 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
             CHECK (midi->getPosition().getStart().inSeconds() == doctest::Approx (secondsOf (clip->start, project)));
             CHECK (midi->getPosition().getEnd().inSeconds() == doctest::Approx (secondsOf (end, project)));
 
-            // Every note, even those past the end, which the clip's end cuts off.
+            // Every note, even those past the end, which the clip's end cuts
+            // off; but for those EditSync holds back until a block has played
+            // without them (SPEC §3.3), each of which must sound where the
+            // playhead was, or would be, when they were: where a wrap landed,
+            // or just ahead when a clip was made.
             using Note = std::tuple<int, double, double, int>; // pitch, start, length, velocity
             std::vector<Note> expected;
             std::vector<Note> actual;
+            const auto heldHere = sync.heldNotes().find (clip->id);
+            const auto& stretches = sync.heldWhere();
 
             for (const auto& note : project::notesOf (project, *clip).notes)
-                expected.emplace_back (note.pitch, beatsOf (note.start), beatsOf (note.length), note.velocity);
+            {
+                const auto isHeld = heldHere != sync.heldNotes().end()
+                                 && std::ranges::find (heldHere->second, engine::EditSync::HeldNote { note.start, note.pitch }) != heldHere->second.end();
+
+                if (! isHeld)
+                {
+                    expected.emplace_back (note.pitch, beatsOf (note.start), beatsOf (note.length), note.velocity);
+                    continue;
+                }
+
+                const auto start = clip->start + note.start;
+                const auto noteEnd = std::min (start + note.length, end);
+                CAPTURE (note.pitch);
+                CAPTURE (start);
+                CHECK_MESSAGE (std::ranges::any_of (stretches, [start, noteEnd] (commands::TickRange at) { return start < at.end && noteEnd > at.start; }),
+                               "a note held back that doesn't sound where the playhead was when it was");
+            }
+
+            if (heldHere != sync.heldNotes().end())
+                CHECK (heldHere->second.size() + expected.size() == project::notesOf (project, *clip).notes.size());
 
             for (const auto* note : midi->getSequence().getNotes())
                 actual.emplace_back (note->getNoteNumber(), note->getStartBeat().inBeats(), note->getLengthBeats().inBeats(), note->getVelocity());
@@ -247,6 +300,14 @@ void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
             std::ranges::sort (actual);
             CHECK (actual == expected);
         }
+    }
+
+    // Only clips the Edit has hold notes back.
+    for (const auto& [clipId, notes] : sync.heldNotes())
+    {
+        CAPTURE (clipId);
+        CHECK (project::findClip (project, clipId) != nullptr);
+        CHECK_FALSE (notes.empty());
     }
 
     CHECK (sync.loopRange().getStart().inSeconds() == doctest::Approx (secondsOf (played.start, project)));
