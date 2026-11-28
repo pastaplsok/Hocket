@@ -627,15 +627,15 @@ std::optional<OpenTransaction> CommandBus::openTransaction() const
     return OpenTransaction { transaction->author, transaction->name, transaction->part, ! transaction->edits.empty() };
 }
 
-int CommandBus::addListener (std::function<void (const Change&)> listener)
+int CommandBus::addListener (std::function<void (const Change&)> listener, std::function<void()> afterChanges)
 {
-    listeners.emplace_back (nextListenerId, std::move (listener));
+    listeners.push_back ({ nextListenerId, std::move (listener), std::move (afterChanges) });
     return nextListenerId++;
 }
 
 void CommandBus::removeListener (int listenerId)
 {
-    std::erase_if (listeners, [listenerId] (const auto& listener) { return listener.first == listenerId; });
+    std::erase_if (listeners, [listenerId] (const Listener& listener) { return listener.id == listenerId; });
 }
 
 void CommandBus::setTransport (Transport* newTransport)
@@ -679,8 +679,15 @@ std::optional<bool> CommandBus::isPlaying() const
 
 void CommandBus::notify (const std::vector<Change>& changes)
 {
+    if (changes.empty())
+        return;
+
     for (const auto& change : changes)
         for (const auto& listener : listeners)
-            listener.second (change);
+            listener.changed (change);
+
+    for (const auto& listener : listeners)
+        if (listener.afterChanges)
+            listener.afterChanges();
 }
 }

@@ -37,10 +37,12 @@ namespace
         return found;
     }
 
-    // Why the kit in `folder` can't be used, or empty if it can, with its manifest.
-    std::string readKit (const std::filesystem::path& folder, Manifest& manifest)
+    // Why the kit in `folder` can't be used, or empty if it can, with its
+    // manifest, and the stamps of its files just before they were read.
+    std::string readKit (const std::filesystem::path& folder, Manifest& manifest, std::vector<FileStamp>& stamps)
     {
         const auto manifestFile = folder / pathFromUtf8 (std::string (manifestFileName));
+        std::vector<FileStamp> read { stampOf (manifestFile) };
         const auto text = readTextFile (manifestFile);
 
         if (! text)
@@ -83,14 +85,19 @@ namespace
         std::string unusable;
 
         for (const auto& piece : parsed.manifest->pieces)
+        {
+            read.push_back (stampOf (folder / pathFromUtf8 (piece.file)));
+
             if (const auto header = readWavHeader (folder / pathFromUtf8 (piece.file)))
                 if (const auto problem = sampleFormatProblem (*header))
                     unusable += (unusable.empty() ? "" : "; ") + inQuotes (piece.file) + " (piece " + inQuotes (piece.name) + "): " + *problem;
+        }
 
         if (! unusable.empty())
             return "a sample can't be played: " + unusable;
 
         manifest = std::move (*parsed.manifest);
+        stamps = std::move (read);
         return {};
     }
 }
@@ -168,14 +175,16 @@ Lookup KitCatalog::refresh (std::string_view name)
 
     auto& kit = found->second;
     Manifest manifest;
+    std::vector<FileStamp> stamps;
 
-    if (auto why = readKit (kit.folder, manifest); ! why.empty())
+    if (auto why = readKit (kit.folder, manifest, stamps); ! why.empty())
     {
         kit.problem = why;
     }
     else
     {
         kit.manifest = std::move (manifest);
+        kit.stamps = std::move (stamps);
         kit.problem.clear();
     }
 
@@ -243,11 +252,12 @@ void KitCatalog::scanFolder (const std::filesystem::path& folder, Source source)
             continue;
 
         Manifest manifest;
+        std::vector<FileStamp> stamps;
 
-        if (auto why = readKit (kitFolder, manifest); ! why.empty())
+        if (auto why = readKit (kitFolder, manifest, stamps); ! why.empty())
             broken.insert_or_assign (name, utf8FromPath (kitFolder) + ": " + why);
         else
-            usable.insert_or_assign (name, Kit { name, source, kitFolder, std::move (manifest) });
+            usable.insert_or_assign (name, Kit { name, source, kitFolder, std::move (manifest), {}, {}, std::move (stamps) });
     }
 }
 

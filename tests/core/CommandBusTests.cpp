@@ -683,6 +683,27 @@ TEST_CASE ("removed listeners hear nothing more")
     CHECK (heard == std::vector<std::string> { "clips/a.notes" });
 }
 
+// The engine takes a command's changes together (EditSync's gate, SPEC §3.3).
+TEST_CASE ("a listener hears that a command's changes are done once it has heard them all, and not for a command that changed nothing")
+{
+    CommandBus bus (makeProject());
+    std::vector<std::string> heard;
+    bus.addListener ([&heard] (const Change& change) { heard.push_back (std::get<NotesChanged> (change).file); }, [&heard] { heard.push_back ("done"); });
+
+    bus.execute (WriteClip { "clp-a", twoNotes }, claude);
+    bus.execute (WriteClip { "clp-a", twoNotes }, claude); // already so
+    CHECK (heard == std::vector<std::string> { "clips/a.notes", "done" });
+
+    bus.beginTransaction (claude, "both");
+    bus.execute (WriteClip { "clp-a", threeNotes }, claude);
+    bus.execute (WriteClip { "clp-b", "@length 1bar\n\n1.1 A1 1/4 v100\n" }, claude);
+    bus.commitTransaction (claude);
+    heard.clear();
+
+    bus.undo (lee, UndoScope::anyAuthor);
+    CHECK (heard == std::vector<std::string> { "clips/b.notes", "clips/a.notes", "done" });
+}
+
 namespace
 {
     // Records the transport commands it's given.

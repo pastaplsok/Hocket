@@ -103,9 +103,11 @@ namespace hocket::commands
 
         // Called with each change, after every command, undo, redo and
         // rollback, once all of its edits have applied, so a listener sees
-        // the project whole. Returns an ID for removeListener. Listeners
-        // mustn't add or remove listeners.
-        int addListener (std::function<void (const Change&)> listener);
+        // the project whole; then, with `afterChanges`, once they've all been
+        // called, so a listener can take a command's changes together.
+        // Returns an ID for removeListener. Listeners mustn't add or remove
+        // listeners.
+        int addListener (std::function<void (const Change&)> listener, std::function<void()> afterChanges = {});
         void removeListener (int listenerId);
 
         // Where transport commands go. Pass nullptr to remove it; a transport that
@@ -219,7 +221,14 @@ namespace hocket::commands
         std::optional<Transaction> transaction;
         std::optional<Gesture> gesture;
         int nextEntryId = 1;
-        std::vector<std::pair<int, std::function<void (const Change&)>>> listeners;
+        struct Listener
+        {
+            int id = 0;
+            std::function<void (const Change&)> changed;
+            std::function<void()> afterChanges;
+        };
+
+        std::vector<Listener> listeners;
         int nextListenerId = 1;
         Transport* transport = nullptr;
         OutputMeter* outputMeter = nullptr;

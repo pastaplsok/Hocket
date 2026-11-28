@@ -130,6 +130,26 @@ TEST_CASE ("WAV headers: what a kit can't use is refused, saying why")
     CHECK (contains (*kits::sampleFormatProblem (*readBytes (adpcm, adpcm.size() + 128)), "it's a compressed or unusual format (format 2)"));
 }
 
+// Bug sweep, area 2, finding 3: libsamplerate takes ratios from 1/256 to 256,
+// and a sample at a rate it couldn't take ended the process as its kit loaded.
+TEST_CASE ("WAV headers: a sample rate outside 8 to 384 kHz is refused, saying why")
+{
+    for (const std::uint32_t rate : { 8000u, 11025u, 44100u, 192000u, 384000u })
+    {
+        CAPTURE (rate);
+        auto header = pcmHeader (1, rate, 16, 128);
+        CHECK_FALSE (kits::sampleFormatProblem (*readBytes (header, header.size() + 128)));
+    }
+
+    for (const std::uint32_t rate : { 100u, 7999u, 384001u })
+    {
+        CAPTURE (rate);
+        auto header = pcmHeader (1, rate, 16, 128);
+        const auto problem = kits::sampleFormatProblem (*readBytes (header, header.size() + 128));
+        CHECK (problem == "it's at " + std::to_string (rate) + " Hz; kits' samples are at 8 to 384 kHz, so export it at a rate between them");
+    }
+}
+
 TEST_CASE ("WAV headers: a file the header reader can't make sense of is left to the decoder")
 {
     // An RF64 file (64-bit sizes), and a data chunk whose size was never filled in.

@@ -48,8 +48,8 @@ namespace hocket::engine
 
         // Plays `kit` (as a project names it) from `library`, loaded at the
         // rate this plays at: the kit it had plays on until the new one has
-        // loaded. A library of none plays nothing. The library must outlive
-        // this, or end first: a library that ends cuts this off.
+        // loaded. A library of none plays nothing, and so does one that has
+        // ended: this holds it by a weak reference, so either may end first.
         void setKit (KitLibrary* library, std::string kit);
 
         // The kit asked for, as a project names it.
@@ -89,7 +89,7 @@ namespace hocket::engine
         DrumVoices drumVoices;
 
         // Message thread's.
-        KitLibrary* library = nullptr;
+        juce::WeakReference<KitLibrary> library;
         std::string kit;
         double subscribedRate = 0.0;
         KitLibrary::Subscription subscription;

@@ -11,8 +11,16 @@
 //   converts nothing, and a replaced sample converts only itself.
 // - The user's kits in use are watched, every half second and when asked
 //   (as play starts): a saved change is delivered once the files stop
-//   changing. A change that can't be used delivers nothing, so the last
-//   version plays on, and the catalog keeps the reason for the overview.
+//   changing, even one saved after the catalog read the kit but before it
+//   was first used. A change that can't be used delivers nothing, so the
+//   last version plays on, and the catalog keeps the reason for the overview.
+// - A kit that couldn't play when asked for (not installed, or broken) is
+//   looked for again at each look, and loaded once it's there and its files
+//   have stopped changing.
+// - Nothing that goes wrong on the loader thread ends the process: a kit that
+//   can't be loaded plays nothing, as if missing, with the reason in the
+//   catalog's load report.
+// - The cache keeps only samples a kit still uses.
 //
 // Message thread only, but for the loader thread inside. It must outlive its
 // subscriptions' use: the subscriptions it outlives are cut off.
@@ -104,6 +112,7 @@ namespace hocket::engine
             std::uint64_t conversions = 0; // samples converted to another rate
             std::uint64_t reused = 0;      // samples found in the cache
             std::uint64_t deliveries = 0;
+            std::uint64_t cached = 0;      // samples in the cache after the latest load
         };
 
         Counts counts() const;
@@ -139,6 +148,7 @@ namespace hocket::engine
             Subscription* handle = nullptr;
             std::uint64_t latestJob = 0;
             bool delivered = false;
+            bool missing = false; // the catalog had no kit to play: a silent one was asked for
         };
 
         // A watched kit's files: as last loaded, and as last seen.
@@ -157,6 +167,10 @@ namespace hocket::engine
         kits::KitCatalog& catalog;
         std::map<std::uint64_t, Entry> entries; // by subscription
         std::map<std::string, Watch, std::less<>> watches; // user kits in use, by name
+
+        // Kits missing when asked for, found again on the latest look: their
+        // files' stamps then, to see they've stopped changing.
+        std::map<std::string, std::vector<kits::FileStamp>, std::less<>> appearing;
         std::function<void (const std::string&)> notify;
         std::uint64_t nextSubscription = 1;
         std::uint64_t nextJob = 1;
@@ -182,7 +196,16 @@ namespace hocket::engine
         void loaderLoop();
         Result build (const Job& job);
 
+        // What a job delivers when building it threw: a silent kit, and why.
+        static Result failed (const Job& job, const std::string& why);
+
+        // The missing kits in use that have appeared, and stopped changing.
+        void lookForMissingKits();
+
         void handleAsyncUpdate() override;
         void timerCallback() override;
+
+        // A drum sampler holds a weak reference, so it knows when this has gone.
+        JUCE_DECLARE_WEAK_REFERENCEABLE (KitLibrary)
     };
 }

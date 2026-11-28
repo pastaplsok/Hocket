@@ -6,7 +6,7 @@ What `--play` does, in full: moved here from CLAUDE.md on 2026-11-27, which keep
 - With `--watch`, `project.json` or a clip file saved outside Hocket is taken in as your command (one replacing the project, or a `write_clip`), with a warning when a file's save replaces an unsaved change made through the API; Hocket's own saves aren't taken for outside changes.
 - `--user <name>` is your name in the history (default `user`).
 - If playback stops by itself (Tracktion does when its device lists change), it says so.
-- Drum kits load before it plays (it says `Loading kit ...` and `Loaded in ... ms`): bundled ones from `kits\` next to the programs, which the build copies from `assets\kits`, the user's from `Documents\Hocket\Kits`; a saved change to a user kit in use is reloaded and heard from the next hit, and `--play` says so.
+- Drum kits load before it plays (it says `Loading kit ...` and `Loaded in ... ms`): bundled ones from `kits\` next to the programs, which the build copies from `assets\kits`, the user's from `Documents\Hocket\Kits`; a saved change to a user kit in use is reloaded and heard from the next hit, and a kit a track names that wasn't there, or was broken, is loaded once it's there, and `--play` says so.
 - Over ASIO, or Windows Audio in exclusive mode, it warns that the driver may bypass the Windows volume slider, so the device's own volume control sets the level.
 - Everything plays at a master level of 0 dB, the project as it's mixed, unless `--master-volume <dB>` (e.g. `-6dB`) says otherwise; renders don't include it.
 - A Ctrl+C before play starts (while the device opens or the kits load) stops it with `stopped before playing`.

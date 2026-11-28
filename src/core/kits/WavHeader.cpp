@@ -165,6 +165,9 @@ std::optional<std::string> sampleFormatProblem (const WavHeader& header)
     if (header.channels > 2)
         return "it has " + std::to_string (header.channels) + " channels; a kit's samples are mono or stereo";
 
+    if (auto problem = sampleRateProblem (header.sampleRate))
+        return problem;
+
     if (header.frames)
     {
         const auto seconds = static_cast<double> (*header.frames) / header.sampleRate;
@@ -183,5 +186,13 @@ std::optional<std::string> sampleFormatProblem (const WavHeader& header)
     }
 
     return {};
+}
+
+std::optional<std::string> sampleRateProblem (double sampleRate)
+{
+    if (sampleRate >= minSampleRate && sampleRate <= maxSampleRate)
+        return {};
+
+    return "it's at " + std::to_string (std::llround (sampleRate)) + " Hz; kits' samples are at 8 to 384 kHz, so export it at a rate between them";
 }
 }

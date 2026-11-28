@@ -616,11 +616,12 @@ namespace
         run.changesTook = std::chrono::duration<double> (Clock::now() - start).count();
         run.lastChangeSample = audio.blocksPlayed() * blockSize;
 
-        // The last change in the graph now, rather than on Tracktion's timer:
-        // a block may be playing the graph before it, but the one after that
-        // starts with it.
+        // The last change in the graph now, rather than on Tracktion's timer,
+        // with anything EditSync held back put back: a block may be playing
+        // the graph before it, but the one after that starts with it.
         if (rest > 0)
         {
+            runMessagesUntil ([&sync] { return ! sync.changesWaiting() && sync.heldNotes().empty() && sync.endingClips().empty(); });
             sync.edit().dispatchPendingUpdatesSynchronously();
             run.restFrom = (audio.blocksPlayed() + 2) * blockSize;
             runMessagesUntil ([&audio, end = run.restFrom + rest] { return audio.blocksPlayed() * blockSize >= end; });
@@ -747,7 +748,10 @@ TEST_CASE ("stress: clips moved 20 a second, in place and between tracks, during
 
 TEST_CASE ("stress: clips added and removed 20 a second during playback")
 {
-    const auto run = stressWith (structureProject(), 100,
+    // Added at 1.1 and 2.1 in turn, each removed 50 ms later; the 101st is
+    // added at 1.1 and left for a whole pass of the song before it's removed.
+    constexpr int pass = 2 * barSamples; // the bass's two bars
+    const auto run = stressWith (structureProject(), 101,
                                  [] (int i) -> commands::Command
                                  {
                                      if (i % 2 == 1)
@@ -755,14 +759,39 @@ TEST_CASE ("stress: clips added and removed 20 a second during playback")
 
                                      return commands::AddClip { "trk-lead", i % 4 == 0 ? "1.1" : "2.1", commands::ClipText { denseNotes }, "clp-new", {} };
                                  },
-                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1) }; });
+                                 [] (engine::EditSync& sync) { return std::vector { &MidiRecorder::addTo (sync.edit(), 1) }; },
+                                 [] (commands::CommandBus& bus) { REQUIRE (bus.execute (commands::RemoveClip { "clp-new" }, claude).ok); },
+                                 nullptr, {}, pass);
 
-    checkHeldNotes (run, 100);
+    checkHeldNotes (run, 101);
     REQUIRE (run.midi.size() == 1);
-    const auto played = std::ranges::count_if (run.midi[0], [] (const auto& e) { return e.note >= 0 && e.on; });
-    MESSAGE ("notes the added clips played: " << played);
-    CHECK (played > 10); // they did play
     checkNothingLeftOn (run.midi[0], "trk-lead");
+
+    // While they came and went, a note sounded only if its start came during
+    // a clip's 50 ms: how many depends on timing, so it's reported, not
+    // checked. Struck part-way through, they used to be most of them (bug
+    // sweep, area 2).
+    const auto struck = [&run] (int from, int to)
+    {
+        std::vector<MidiRecorder::Event> ons;
+        std::ranges::copy_if (run.midi[0], std::back_inserter (ons), [from, to] (const auto& e) { return e.note >= 0 && e.on && e.sample >= from && e.sample < to; });
+        return ons;
+    };
+
+    MESSAGE ("notes the added clips played while they came and went: " << struck (run.firstBlock * blockSize, run.lastChangeSample).size());
+
+    // The last one played a whole pass: E3 on each sixteenth of bar 1, each
+    // once, at its start, and nothing else.
+    const auto rested = struck (run.restFrom, run.restFrom + pass);
+    CHECK (rested.size() == 16);
+
+    for (int sixteenth = 0; sixteenth < 16; ++sixteenth)
+    {
+        CAPTURE (sixteenth);
+        const auto place = static_cast<int> (std::lround (sixteenth * beatSamples / 4.0));
+        const auto start = run.restFrom + ((place - run.restFrom) % pass + pass) % pass;
+        CHECK (std::ranges::count_if (rested, [start] (const auto& e) { return e.note == 52 && std::abs (static_cast<int> (e.sample) - start) <= 2; }) == 1);
+    }
 }
 
 TEST_CASE ("stress: tracks with a synth added and removed 20 a second during playback")
@@ -1461,4 +1490,102 @@ TEST_CASE ("stress: kits swapped 20 a second during playback: each hit is whole 
     REQUIRE (run.midi.size() == 1);
     const auto midi = drumMidiProblems (run.midi[0], played);
     CHECK_MESSAGE (midi.empty(), midi);
+}
+
+//==============================================================================
+// Several changes inside one audio block, in real time (Lee, 2026-11-27): a
+// burst of requests a millisecond or two apart, each taking away the note
+// sounding on its own track, as one client sending edits in one turn does.
+// Only the first request's graph can be built before a block has played the
+// one before it; the rest wait, and go in together (EditSync's gate). Built
+// each over the last, played or not, all but the last burst's note-offs were
+// lost, and the notes sounded on until the loop came round.
+TEST_CASE ("stress: bursts of changes inside one audio block, each taking away a sounding note: every note ends at once")
+{
+    // At 240 BPM, a pass of the one-bar song lasts a second. Each clip holds
+    // a note through the bar; a third of the way into each pass, a burst
+    // rewrites every clip to hold the other note, taking away the one
+    // sounding, so nothing sounds until the next pass strikes the new one.
+    constexpr int tracks = 4;
+    constexpr int bursts = 10;
+    constexpr int pass = barSamples / 2;
+    constexpr int e3 = 52;
+    constexpr int g3 = 55;
+    const auto held = [] (int pass) { return std::string ("@length 1bar\n\n1.1 ") + (pass % 2 == 0 ? "E3" : "G3") + " 1/1 v100\n"; };
+
+    // No instruments: the recorders hear what the synths would.
+    std::vector<TestTrack> list;
+
+    for (int t = 0; t < tracks; ++t)
+    {
+        auto track = makeTrack ("trk-" + std::to_string (t), "Voice " + std::to_string (t), { makeClip ("clp-" + std::to_string (t), 0, held (0)) });
+        track.track.devices.clear();
+        list.push_back (std::move (track));
+    }
+
+    FakeAudioDevice device;
+    commands::CommandBus bus (makeProject (std::move (list), 240.0));
+    engine::EditSync sync (testEngine(), bus);
+    std::vector<MidiRecorder*> recorders;
+
+    for (int t = 0; t < tracks; ++t)
+        recorders.push_back (&MidiRecorder::addTo (sync.edit(), t));
+
+    sync.edit().dispatchPendingUpdatesSynchronously();
+    REQUIRE (timedPlay (bus, lee).ok);
+
+    AudioThread audio (device, bursts + 3.0);
+    std::vector<int> burstEnds; // about where in the output each burst's last request was sent
+
+    for (int burst = 0; burst < bursts; ++burst)
+    {
+        runMessagesUntil ([&audio, at = burst * pass + pass / 3] { return audio.blocksPlayed() * blockSize >= at; });
+        const auto start = Clock::now();
+
+        for (int t = 0; t < tracks; ++t)
+        {
+            // Each its own message callback, as each request is, with
+            // Tracktion's 1 ms timer free to fire between them.
+            runMessagesUntil ([due = start + t * 1500us] { return Clock::now() >= due; });
+            const auto result = bus.execute (commands::WriteClip { "clp-" + std::to_string (t), held (burst + 1) }, claude);
+            INFO ("burst " << burst << ", track " << t << ": " << result.message);
+            REQUIRE (result.ok);
+        }
+
+        burstEnds.push_back ((audio.blocksPlayed() + 1) * blockSize);
+    }
+
+    audio.stopAfter ((bursts + 1) * pass / blockSize + 2);
+    runMessagesUntil ([&audio] { return audio.isDone(); });
+    checkEditMatches (sync, bus);
+
+    const auto stressed = timing (audio.blockTimes(), 0, audio.blocksPlayed());
+    MESSAGE ("bursts of " << tracks << " changes: " << describe (stressed));
+#ifdef NDEBUG
+    CHECK (stressed.overBudget == 0);
+#endif
+
+    for (int t = 0; t < tracks; ++t)
+    {
+        CAPTURE (t);
+        const auto events = recorders[static_cast<std::size_t> (t)]->recorded();
+
+        for (int burst = 0; burst < bursts; ++burst)
+        {
+            CAPTURE (burst);
+
+            // Nothing left on a moment after the burst: a block or two for
+            // the first request, and two more for the rest, which waited.
+            std::vector<MidiRecorder::Event> upTo;
+            const auto by = burstEnds[static_cast<std::size_t> (burst)] + 6 * blockSize;
+            std::ranges::copy_if (events, std::back_inserter (upTo), [by] (const MidiRecorder::Event& e) { return e.sample < by; });
+            const auto left = notesLeftOn (upTo);
+            CHECK_MESSAGE (left.empty(), "left holding " << left.size() << " note(s); the first's last events: " << (left.empty() ? std::string() : historyOf (left.front(), upTo)));
+
+            // And the next pass strikes the note the burst wrote, at its start.
+            const auto next = (burst + 1) * pass;
+            const auto note = (burst + 1) % 2 == 0 ? e3 : g3;
+            CHECK (std::ranges::any_of (events, [next, note] (const MidiRecorder::Event& e) { return e.note == note && e.on && std::abs (e.sample - next) <= blockSize; }));
+        }
+    }
 }
