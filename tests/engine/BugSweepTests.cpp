@@ -137,6 +137,75 @@ TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or
 }
 
 //==============================================================================
+// Left open by finding 1's fix, and fixed in the same PR (Lee, 2026-11-27):
+// Tracktion builds each graph against the last one it built, played or not,
+// so a note-off that one graph was to send was lost when another was built
+// before a block played it. Several requests landing in one audio block (one
+// client sending edits in one turn, say) could leave the notes they took
+// away sounding. Each request here takes away a note that's sounding but the
+// last, which moves the song's end, and Tracktion builds after each, as its
+// 1 ms timer would between two requests, before a block plays.
+TEST_CASE ("sweep: several changes inside one audio block, each taking away a sounding note, end every note" * doctest::should_fail())
+{
+    constexpr int c2 = 36;
+    constexpr int g3 = 55;
+
+    // Each track holds a note through bar 1 of a two-bar clip, so a note left
+    // on would sound until the clip ends, at 3.1.
+    commands::CommandBus bus (makeProject ({
+        makeTrack ("trk-lead", "Lead", { makeClip ("clp-lead", 0, "@length 2bar\n\n1.1 E3 1/1 v100\n") }),
+        makeTrack ("trk-bass", "Bass", { makeClip ("clp-bass", 0, "@length 2bar\n\n1.1 C2 1/1 v100\n") }),
+        makeTrack ("trk-pad", "Pad", { makeClip ("clp-pad", 0, "@length 2bar\n\n1.1 G3 1/1 v100\n") }),
+    }));
+
+    FakeAudioDevice device;
+    engine::EditSync sync (testEngine(), bus);
+    const std::array<MidiRecorder*, 3> recorders { &MidiRecorder::addTo (sync.edit(), 0), &MidiRecorder::addTo (sync.edit(), 1),
+                                                   &MidiRecorder::addTo (sync.edit(), 2) };
+    sync.edit().dispatchPendingUpdatesSynchronously();
+    REQUIRE (timedPlay (bus, lee).ok);
+    device.play (quarter); // to 1.2: all three sounding
+
+    const commands::Command changes[] = {
+        commands::WriteClip { "clp-lead", "@length 2bar\n" },
+        commands::WriteClip { "clp-bass", "@length 2bar\n\n2.1 C2 1/4 v100\n" },
+        commands::WriteClip { "clp-pad", "@length 2bar\n" },
+        commands::AddClip { "trk-lead", "3.1", commands::ClipText { "@length 1bar\n\n1.1 C3 1/4 v100\n" }, {}, {} },
+    };
+
+    for (const auto& change : changes)
+    {
+        const auto result = bus.execute (change, claude);
+        INFO (result.message);
+        REQUIRE (result.ok);
+        sync.edit().dispatchPendingUpdatesSynchronously(); // Tracktion's 1 ms timer, between two requests
+    }
+
+    letEditSettle (device, sync);
+    checkEditMatches (sync, bus);
+    device.play (barSamples - quarter - 4 * blockSize); // to a block before 2.1
+
+    const std::pair<std::size_t, int> taken[] = { { 0, e3 }, { 1, c2 }, { 2, g3 } };
+
+    for (const auto& [track, note] : taken)
+    {
+        CAPTURE (track);
+        CAPTURE (note);
+        const auto events = recorders[track]->recorded();
+        INFO (historyOf (note, events));
+
+        // Off by 2.1, and soon after the changes: a block or two, and the
+        // block or two the later ones wait for one that has played.
+        std::vector<MidiRecorder::Event> inBar1;
+        std::ranges::copy_if (events, std::back_inserter (inBar1), [] (const MidiRecorder::Event& e) { return e.sample < barSamples - blockSize; });
+        CHECK (notesLeftOn (inBar1).empty());
+
+        const auto off = std::ranges::find_if (inBar1, [note] (const MidiRecorder::Event& e) { return e.note == note && ! e.on && e.sample >= quarter; });
+        CHECK ((off != inBar1.end() && off->sample <= quarter + 8 * blockSize));
+    }
+}
+
+//==============================================================================
 // Finding 2: a kit that wasn't there when a track's sampler asked for it
 // stayed silent until a restart, even once installed and assigned again.
 TEST_CASE ("sweep: a kit installed after its track asked for it is loaded once it's there")
