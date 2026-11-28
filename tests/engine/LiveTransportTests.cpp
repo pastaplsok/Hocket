@@ -306,10 +306,12 @@ namespace
         // Samples played since play started.
         int played() const { return device.output().buffer.getNumSamples(); }
 
-        // Sends a command, and checks the Edit after it.
+        // Sends a command, and checks the Edit once it's in: a change sent
+        // within a block or two of the last waits for it to have played.
         commands::Result send (const commands::Command& command)
         {
             auto result = run (bus, sync, command);
+            letChangesIn (device, sync);
             checkEditMatches (sync, bus);
             return result;
         }
@@ -475,10 +477,11 @@ TEST_CASE ("live: clips written, moved and added while a loop region plays once 
 
     // And the clip added is taken back.
     REQUIRE (once.bus.undo (testing::lee, commands::UndoScope::anyAuthor).ok);
-    once.sync.edit().dispatchPendingUpdatesSynchronously();
+    letChangesIn (once.device, once.sync);
     checkEditMatches (once.sync, once.bus);
 
-    once.device.play (3 * quarter + 8 * FakeAudioDevice::blockSize);
+    // Eight blocks past the end, however many the changes waited for.
+    once.device.play (barSamples + 8 * FakeAudioDevice::blockSize - once.played());
     checkEditMatches (once.sync, once.bus);
     runMessages (20);
     CHECK (once.bus.isPlaying() == false);

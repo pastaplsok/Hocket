@@ -145,7 +145,7 @@ TEST_CASE ("sweep: a clip that appears under the playhead, added, moved there or
 // away sounding. Each request here takes away a note that's sounding but the
 // last, which moves the song's end, and Tracktion builds after each, as its
 // 1 ms timer would between two requests, before a block plays.
-TEST_CASE ("sweep: several changes inside one audio block, each taking away a sounding note, end every note" * doctest::should_fail())
+TEST_CASE ("sweep: several changes inside one audio block, each taking away a sounding note, end every note")
 {
     constexpr int c2 = 36;
     constexpr int g3 = 55;

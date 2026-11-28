@@ -26,11 +26,17 @@ namespace
         checkEditMatches (sync, bus);
     }
 
-    void undoAll (CommandBus& bus, engine::EditSync& sync)
+    // With a device that's playing, each undo is let in before the check
+    // (letChangesIn).
+    void undoAll (CommandBus& bus, engine::EditSync& sync, FakeAudioDevice* device = nullptr)
     {
         while (! bus.history().empty())
         {
             REQUIRE (bus.undo (lee, UndoScope::anyAuthor).ok);
+
+            if (device != nullptr)
+                letChangesIn (*device, sync);
+
             checkEditMatches (sync, bus);
         }
     }
@@ -275,17 +281,19 @@ TEST_CASE ("sync: random replacements of the whole project during playback keep 
             else
                 replaced += bus.execute (randomReplacement (rng, bus.project()), claude).ok ? 1 : 0;
 
+            letChangesIn (device, sync);
             checkEditMatches (sync, bus);
             device.play (randomInt (rng, 0, 40) * FakeAudioDevice::blockSize);
             checkEditMatches (sync, bus);
         }
 
         const auto entries = bus.history().size();
-        undoAll (bus, sync);
+        undoAll (bus, sync, &device);
 
         for (std::size_t i = 0; i < entries; ++i)
             REQUIRE (bus.redo (lee).ok);
 
+        letChangesIn (device, sync);
         checkEditMatches (sync, bus);
     }
 
@@ -340,6 +348,7 @@ TEST_CASE ("sync: random commands during playback, with the loop region and loop
                 (void) bus.execute (randomCommand (rng, bus.project()), claude);
             }
 
+            letChangesIn (device, sync);
             checkEditMatches (sync, bus);
 
             // The playhead moves on, and now and then the message loop runs,

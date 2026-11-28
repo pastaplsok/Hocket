@@ -120,6 +120,21 @@ void letEditSettle (FakeAudioDevice& device, engine::EditSync& sync)
     CHECK (sync.endingClips().empty());
 }
 
+int letChangesIn (FakeAudioDevice& device, engine::EditSync& sync)
+{
+    int played = 0;
+
+    for (int block = 0; sync.changesWaiting() && block < 8; ++block)
+    {
+        device.play (FakeAudioDevice::blockSize);
+        played += FakeAudioDevice::blockSize;
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+    }
+
+    CHECK_FALSE (sync.changesWaiting());
+    return played;
+}
+
 void checkEditMatches (engine::EditSync& sync, const commands::CommandBus& bus)
 {
     auto& edit = sync.edit();

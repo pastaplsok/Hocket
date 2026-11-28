@@ -129,8 +129,9 @@ namespace
     // didn't land inside are put back a block or two later, before they start.
     constexpr double aheadSeconds = 0.25;
 
-    // How often held notes and emptied clips are looked at, to settle them.
-    constexpr int settleIntervalMs = 5;
+    // How often, while anything waits for a block to play, EditSync looks
+    // whether one has (catchUp).
+    constexpr int gateIntervalMs = 1;
 }
 
 //==============================================================================
@@ -209,7 +210,7 @@ EditSync::EditSync (tracktion::Engine& engine, commands::CommandBus& commandBus,
 
     syncMix();
     clearTracktionUndo();
-    listenerId = bus.addListener ([this] (const commands::Change& change) { changed (change); });
+    listenerId = bus.addListener ([this] (const commands::Change& change) { changed (change); }, [this] { changesDone(); });
     bus.setTransport (this);
 }
 
@@ -238,44 +239,47 @@ tracktion::TimePosition EditSync::timeOf (notes::Ticks position) const
 void EditSync::changed (const commands::Change& change)
 {
     // The bus announces a command's changes once all its edits have applied,
-    // so each is synced against the finished project. Tracktion rebuilds its
-    // playback graph on the next message-thread callback and swaps it in
-    // without stopping.
-    settleOncePlayed();
-
+    // so each is synced against the finished project, whatever their order.
+    // Noted here, and brought into the Edit together (changesDone, catchUp).
     std::visit ([this] (const auto& c)
     {
         using Kind = std::decay_t<decltype (c)>;
 
         if constexpr (std::is_same_v<Kind, commands::NotesChanged>)
-            syncFile (c.file);
+            waiting.files.insert (c.file);
         else if constexpr (std::is_same_v<Kind, commands::TempoChanged>)
-            syncTempo();
+            waiting.tempo = true;
         else if constexpr (requires { c.clipId; })
-            syncClip (c.clipId);
+            waiting.clips.insert (c.clipId);
         else if constexpr (std::is_same_v<Kind, commands::TrackAdded> || std::is_same_v<Kind, commands::TrackRemoved>
                            || std::is_same_v<Kind, commands::TrackMoved> || std::is_same_v<Kind, commands::TrackRenamed>
                            || std::is_same_v<Kind, commands::InstrumentChanged>)
-            syncTrack (c.trackId);
+            waiting.tracks.insert (c.trackId);
 
-        // A MixChanged is handled below, with every track's. A time signature
-        // moves nothing in time (the constructor says why the Edit's own stays
-        // 4/4); the @length it rewrites comes as a NotesChanged, and where the
-        // song now ends is handled below. A drum map changes how clips are
-        // written, not what they play.
+        // A MixChanged is handled in changesDone, with every track's. A time
+        // signature moves nothing in time (the constructor says why the
+        // Edit's own stays 4/4); the @length it rewrites comes as a
+        // NotesChanged, and where the song now ends is handled in
+        // changesDone. A drum map changes how clips are written, not what
+        // they play.
     }, change);
+}
 
-    // One track's solo changes whether the others are heard, and so does
-    // removing a soloed track, so every track's mix is checked. Only what
-    // differs is set.
+void EditSync::changesDone()
+{
+    // The mix isn't in the graph: each gain stage takes both gains as one
+    // atomic value, so it's set at once, whatever the gate. One track's solo
+    // changes whether the others are heard, and so does removing a soloed
+    // track, so every track's mix is checked. Only what differs is set; a
+    // track that's waiting to be made gets its mix when it is.
     syncMix();
-    clearTracktionUndo();
 
     // Clips added, moved or removed, a new @length or a new time signature
-    // can move the end of the song. A loop region, and so clipsEndBy, stays
+    // can move the end of the song, and the playhead may wrap now, which the
+    // bus reports with the command. A loop region, and so clipsEndBy, stays
     // where it is in the music.
     updateLoop (Outside::wrapWhileLooping);
-    finishChanges();
+    catchUp();
 }
 
 void EditSync::updateLoop (Outside outside)
@@ -323,29 +327,47 @@ void EditSync::updateLoop (Outside outside)
     // block has played. Where it lands depends on where the playhead is when
     // it's made, below, and they must be out of the graph before then: so
     // the notes sounding anywhere it could land in the next moment are left
-    // out first, and those not sounding where it does land go back after.
+    // out first, and those not sounding where it does land go back after. A
+    // playhead inside the loop now isn't wrapped, unless it reaches the loop's
+    // end in the microseconds before the lock: then it strikes them.
+    //
+    // The jump ends every note the graph has sounding, so the graph built
+    // for it may be built over one that hasn't played (the gate, in the
+    // class's comment), and what's waiting goes in with it. But for the
+    // tempo, which goes in after the jump: the wrap is worked out at the
+    // tempo the playhead plays at now.
     HeldByClip taken;
+    std::vector<commands::TickRange> wrappedStretches;
 
-    if (wrap && isPlaying())
+    if (wrap && isPlaying() && ! loop.contains (playHead->getPosition()))
     {
+        const auto changing = waiting.any();
+        bringWaitingIn (false);
+
         const auto now = playHead->getPosition();
         const auto soon = now + static_cast<std::int64_t> (aheadSeconds * sampleRate);
         const auto ticks = [this, sampleRate] (std::int64_t a, std::int64_t b) { return commands::TickRange { ticksAt (a, sampleRate), ticksAt (b, sampleRate) }; };
 
         // Each stretch the playhead may be in that's outside the loop, wrapped into it.
+        const auto holdIn = [&] (commands::TickRange stretch)
+        {
+            holdNotesSounding (stretch, taken);
+            wrappedStretches.push_back (stretch);
+        };
+
         const auto holdWhereWrapped = [&] (std::int64_t from, std::int64_t to)
         {
             if (to - from >= loopLength)
-                return holdNotesSounding (ticks (loop.getStart(), loop.getEnd()), taken);
+                return holdIn (ticks (loop.getStart(), loop.getEnd()));
 
             const auto a = wrapOf (from);
             const auto b = wrapOf (to);
 
             if (a <= b)
-                return holdNotesSounding (ticks (a, b), taken);
+                return holdIn (ticks (a, b));
 
-            holdNotesSounding (ticks (a, loop.getEnd()), taken);
-            holdNotesSounding (ticks (loop.getStart(), b), taken);
+            holdIn (ticks (a, loop.getEnd()));
+            holdIn (ticks (loop.getStart(), b));
         };
 
         if (now < loop.getStart())
@@ -354,25 +376,23 @@ void EditSync::updateLoop (Outside outside)
         if (soon >= loop.getEnd())
             holdWhereWrapped (std::max (now, loop.getEnd()), soon);
 
-        // Out of the graph before the wrap.
+        // Out of the graph before the wrap, with what was waiting.
         if (! taken.empty())
-        {
             for (const auto& [clipId, notes] : taken)
                 syncClip (clipId);
 
-            clearTracktionUndo();
-            tracktionEdit->dispatchPendingUpdatesSynchronously();
-        }
+        if (changing || ! taken.empty())
+            build();
     }
 
     std::int64_t place = 0;
     std::int64_t wrapped = 0;
-    std::int64_t nextBlock = 0;
+    juce::Range<std::int64_t> nextBlock;
 
     {
         const AudioLock audioLock (*this);
         place = playHead->getPosition();
-        nextBlock = playHead->getReferenceSampleRange().getEnd();
+        nextBlock = playHead->getReferenceSampleRange();
         wrapped = ! wrap || loop.contains (place) ? place : wrapOf (place);
 
         // The playhead counts its place from where it was last set, by remainder
@@ -399,9 +419,13 @@ void EditSync::updateLoop (Outside outside)
         const auto landed = ticksAt (wrapped, sampleRate);
         lastWrap = commands::PlayheadWrap { ticksAt (place, sampleRate), landed };
 
-        // Those it didn't land inside go back now, in the graph Tracktion
-        // builds next; the rest once a block after the wrap's first has
-        // started (settleNow).
+        if (isPlaying())
+            noteJump (nextBlock);
+
+        // Those it didn't land inside go back now, with the tempo if it was
+        // waiting, in a graph built after the jump, which may be built over
+        // the one before it; the rest once a block after the wrap's first
+        // has started (settle).
         HeldByClip notThere;
         const auto& project = bus.project();
         constexpr auto never = std::numeric_limits<notes::Ticks>::max();
@@ -445,22 +469,26 @@ void EditSync::updateLoop (Outside outside)
             return n;
         };
 
-        const auto landedInside = count (taken) > count (notThere);
-        releaseHeldNotes (notThere, false);
-
-        // Any held from before wait for this wrap's first block too.
-        if (landedInside)
+        // Any held from before wait for this wrap's first block too (noteJump).
+        if (count (taken) > count (notThere))
             heldStretches.push_back ({ landed, landed });
 
-        if (! held.empty())
-        {
-            settledFrom = std::max (settledFrom, nextBlock + blockSize());
-            unsettled = true;
-        }
+        const auto changing = ! notThere.empty() || waiting.any();
+        releaseHeldNotes (notThere);
+        bringWaitingIn();
+
+        if (changing)
+            build();
     }
-    else
+    else if (! taken.empty())
     {
-        releaseHeldNotes (taken, false);
+        // It didn't wrap after all: the playhead went into the loop while the
+        // graph was built, by its start or by the old loop's wrap, within a
+        // graph build's length of either. Those taken out stay out until a
+        // block has played (settle). With no jump, if the graph before had
+        // yet to play, a note-off it was to send is lost: the one way left,
+        // and only within those few milliseconds of a loop change.
+        heldStretches.insert (heldStretches.end(), wrappedStretches.begin(), wrappedStretches.end());
     }
 
     if (progress.running)
@@ -827,7 +855,7 @@ void EditSync::syncClip (const std::string& clipId)
         // playhead is, part-way through; one the graph already has waits for
         // each note's start (SPEC §3.3). So during playback, the notes
         // sounding anywhere the playhead may be before the graph has the clip
-        // are left out, and go in once a block has played it (settleNow).
+        // are left out, and go in once a block has played it (settle).
         if (const auto [playHead, sampleRate] = currentPlayHead(); playHead != nullptr && isPlaying())
         {
             HeldByClip taken;
@@ -856,13 +884,12 @@ void EditSync::removeClip (const std::string& clipId)
     held.erase (clipId);
 
     // During playback its own player ends the notes it has sounding: emptied
-    // now, and taken out once a block has played it so (settleNow).
+    // now, and taken out once a block has played it so (settle).
     if (isPlaying())
     {
         clip->getSequence().clear (nullptr);
         clip->setName (juceString (clipId) + " (ending)");
         ending.push_back (clip);
-        unsettled = true;
         return;
     }
 
@@ -908,7 +935,6 @@ void EditSync::holdNotesSounding (commands::TickRange where, HeldByClip& taken, 
             clipHeld.insert (clipHeld.end(), more.begin(), more.end());
             auto& clipTaken = taken[clip.id];
             clipTaken.insert (clipTaken.end(), more.begin(), more.end());
-            unsettled = true;
         }
     }
 }
@@ -938,11 +964,8 @@ std::vector<commands::TickRange> EditSync::placesAhead (tracktion::graph::PlayHe
     return { ticks (from, loop.getEnd()), ticks (loop.getStart(), loop.getStart() + (to - loop.getEnd())) };
 }
 
-void EditSync::releaseHeldNotes (const HeldByClip& notes, bool build)
+void EditSync::releaseHeldNotes (const HeldByClip& notes)
 {
-    if (notes.empty())
-        return;
-
     for (const auto& [clipId, released] : notes)
     {
         if (const auto found = held.find (clipId); found != held.end())
@@ -959,16 +982,6 @@ void EditSync::releaseHeldNotes (const HeldByClip& notes, bool build)
 
     if (held.empty())
         heldStretches.clear();
-
-    clearTracktionUndo();
-
-    if (build)
-        tracktionEdit->dispatchPendingUpdatesSynchronously();
-}
-
-void EditSync::releaseAllHeldNotes()
-{
-    releaseHeldNotes (HeldByClip (held), true);
 }
 
 int EditSync::blockSize() const
@@ -976,72 +989,139 @@ int EditSync::blockSize() const
     return std::max (1, tracktionEdit->engine.getDeviceManager().getBlockSize());
 }
 
-void EditSync::finishChanges()
+//==============================================================================
+void EditSync::catchUp()
 {
-    if (! std::exchange (unsettled, false))
-        return;
-
+    // Stopped, nothing plays the graph: everything goes in at once.
     if (! isPlaying())
     {
-        settleNow();
+        if (waiting.any() || ! held.empty() || ! ending.empty())
+            settleStopped();
+
+        gateTimer.stopTimer();
         return;
     }
 
-    needsBaseline = true;
-    settleTimer.startTimer (settleIntervalMs);
-}
+    // Held notes and emptied clips need a block played since: the jump the
+    // gate lets changes in after doesn't do for them.
+    const auto played = lastBuildHasPlayed();
+    const auto settling = played && (! held.empty() || ! ending.empty());
 
-void EditSync::settleTimerTick()
-{
-    const auto [playHead, sampleRate] = currentPlayHead();
-
-    // Tracktion builds its graph on a 1 ms timer, which has fired by now: the
-    // block after the next to start comes after one that played it.
-    if (std::exchange (needsBaseline, false) && playHead != nullptr && isPlaying())
+    if (settling || (waiting.any() && mayBuild()))
     {
-        settledFrom = std::max (settledFrom, playHead->getReferenceSampleRange().getEnd() + blockSize());
-        return;
+        if (settling)
+            settle();
+
+        bringWaitingIn();
+        build();
     }
 
-    settleOncePlayed();
-}
-
-void EditSync::settleOncePlayed()
-{
-    if (held.empty() && ending.empty())
+    // Changes the gate holds back, and notes held and clips emptied by the
+    // graph just built, which settle once it has played.
+    if (waiting.any() || ! held.empty() || ! ending.empty())
     {
-        settleTimer.stopTimer();
-        needsBaseline = false;
-        return;
-    }
-
-    // Stopped, nothing plays them.
-    const auto [playHead, sampleRate] = currentPlayHead();
-
-    if (playHead == nullptr || ! isPlaying())
-        settleNow();
-    else if (! needsBaseline && playHead->getReferenceSampleRange().getStart() >= settledFrom)
-        settleNow();
-}
-
-void EditSync::settleNow()
-{
-    settleTimer.stopTimer();
-    needsBaseline = false;
-
-    // Emptied, they have no notes to end: the graph without them loses nothing.
-    for (const auto& clip : std::exchange (ending, {}))
-        clip->removeFromParent();
-
-    if (held.empty())
-    {
-        clearTracktionUndo();
-        tracktionEdit->dispatchPendingUpdatesSynchronously();
+        if (! gateTimer.isTimerRunning())
+            gateTimer.startTimer (gateIntervalMs);
     }
     else
     {
-        releaseAllHeldNotes();
+        gateTimer.stopTimer();
     }
+}
+
+void EditSync::bringWaitingIn (bool tempo)
+{
+    auto now = std::exchange (waiting, {});
+
+    if (! tempo && now.tempo)
+    {
+        waiting.tempo = true;
+        now.tempo = false;
+    }
+
+    // Each brought in line with the model as it is now, so the order they
+    // came in doesn't matter. The clips' ends first, which syncClip follows.
+    // The tempo last: syncClip sees a clip moved by comparing its start in
+    // beats at the tempo it was placed at, and syncTempo places every clip
+    // at the new one, so a move made since wouldn't be seen after it, and
+    // the moved clip's note wouldn't end.
+    if (now.clipsEnd)
+        setClipsEnd (isPlaying() ? playOnceEnd() : std::nullopt);
+
+    for (const auto& trackId : now.tracks)
+        syncTrack (trackId);
+
+    for (const auto& clipId : now.clips)
+        syncClip (clipId);
+
+    for (const auto& file : now.files)
+        syncFile (file);
+
+    if (now.tempo)
+        syncTempo();
+
+    syncMix();
+}
+
+void EditSync::settle()
+{
+    // Emptied, and played so, they have no notes to end: the graph without
+    // them loses nothing.
+    for (const auto& clip : std::exchange (ending, {}))
+        clip->removeFromParent();
+
+    // The graph has the clips they're in, so they wait for their starts.
+    releaseHeldNotes (HeldByClip (held));
+}
+
+void EditSync::settleStopped()
+{
+    setClipsEnd ({});
+    settle();
+    bringWaitingIn();
+    build();
+    gateTimer.stopTimer();
+}
+
+void EditSync::build()
+{
+    clearTracktionUndo();
+    tracktionEdit->dispatchPendingUpdatesSynchronously();
+    jumpedSince = false;
+
+    // The audio thread sets the playhead's reference range at the start of
+    // each block, before it takes the newest graph: so the block after the
+    // one under way now plays this graph (or a newer one), and has played it
+    // whole once the block after that has started.
+    const auto [playHead, sampleRate] = currentPlayHead();
+    builtUnplayed = playHead != nullptr && isPlaying();
+
+    if (builtUnplayed)
+    {
+        builtDuring = playHead->getReferenceSampleRange();
+        playedFrom = builtDuring.getEnd() + blockSize();
+    }
+}
+
+bool EditSync::lastBuildHasPlayed() const
+{
+    const auto [playHead, sampleRate] = currentPlayHead();
+
+    if (! builtUnplayed || playHead == nullptr || ! isPlaying())
+        return true;
+
+    // The count starts again only with a new device, which stops playback
+    // anyway: not to wait for ever.
+    const auto now = playHead->getReferenceSampleRange();
+    return now.getStart() >= playedFrom || now.getStart() < builtDuring.getStart();
+}
+
+void EditSync::noteJump (juce::Range<std::int64_t> next)
+{
+    jumpedSince = true;
+    builtUnplayed = true;
+    builtDuring = next;
+    playedFrom = std::max (playedFrom, next.getEnd() + blockSize());
 }
 
 void EditSync::syncFile (const std::string& file)
@@ -1065,12 +1145,21 @@ void EditSync::play()
 {
     auto& transport = tracktionEdit->getTransport();
     const auto& settings = bus.transportSettings();
-    const auto start = timeOf (commands::startPosition (bus.project(), settings));
+    const auto wasPlaying = isPlaying();
     playRequested = true;
 
     // Play is a jump to where it starts, which strikes the notes sounding
-    // there (SPEC §3.1), so notes a wrap left out come back first.
-    settleNow();
+    // there (SPEC §3.1), so notes held back go back first, and what's
+    // waiting goes in: the jump ends every note the graph has sounding, so
+    // this graph may be built over one that hasn't played (the gate).
+    // Stopped, the emptied clips go too; playing, they wait for a block to
+    // have played (settle).
+    if (wasPlaying)
+        releaseHeldNotes (HeldByClip (held));
+    else
+        settle();
+
+    bringWaitingIn();
 
     // A saved change to a user kit in use is heard from now, once it has
     // loaded, without waiting for the library's next look (SPEC §8.4).
@@ -1081,7 +1170,10 @@ void EditSync::play()
     // which mustn't be heard while the stop comes. Before play, which starts
     // with the graph Tracktion has.
     setClipsEnd (playOnceEnd());
+    build();
 
+    // At the tempo just brought in, if it was waiting.
+    const auto start = timeOf (commands::startPosition (bus.project(), settings));
     transport.setLoopRange (loopRange());
     transport.looping = settings.looping;
     transport.setPosition (start);
@@ -1091,6 +1183,9 @@ void EditSync::play()
     // 0.1 s, and a seek can put it there.
     if (transport.getPosition() != start)
         transport.setPosition (start);
+
+    if (wasPlaying)
+        jumpedSince = true;
 
     // Loop off: play runs to the end, and stops (SPEC §3.1).
     if (! settings.looping)
@@ -1105,6 +1200,7 @@ void EditSync::play()
     // begun, so that's where it's counted from if it does.
     progress.basePlace = commands::startPosition (bus.project(), settings);
     progressTimer.startTimer (progressIntervalMs);
+    catchUp();
 }
 
 void EditSync::stop()
@@ -1117,10 +1213,9 @@ void EditSync::stop()
     stopTimer();
     tracktionEdit->getTransport().stop (false, false);
 
-    // Stopped first, so the clips past the region's end, and notes a wrap
-    // left out, come back unheard.
-    setClipsEnd ({});
-    settleNow();
+    // Stopped first, so the clips past the region's end, notes held back,
+    // and what's waiting come back unheard.
+    settleStopped();
 }
 
 bool EditSync::isPlaying() const
@@ -1161,13 +1256,28 @@ void EditSync::jumpTo (notes::Ticks position)
     sampleProgress();
 
     // A jump: Tracktion's players end the notes sounding, and strike those on
-    // at the new place (SPEC §3.1), notes a wrap left out among them. The
-    // bus has put it inside what plays, so the loop doesn't clamp it.
-    releaseAllHeldNotes();
+    // at the new place (SPEC §3.1), notes held back among them, so those go
+    // back first. The jump ends every note the graph has sounding, so this
+    // graph may be built over one that hasn't played (the gate), and what's
+    // waiting goes in with it. Emptied clips wait for a block to have played
+    // (settle). The bus has put the playhead inside what plays, so the loop
+    // doesn't clamp it.
+    if (waiting.any() || ! held.empty())
+    {
+        bringWaitingIn();
+        releaseHeldNotes (HeldByClip (held));
+        build();
+    }
+
     playHead->setPosition (tracktion::toSamples (timeOf (position), sampleRate));
+
+    if (isPlaying())
+        jumpedSince = true;
 
     if (progress.running)
         takeProgressBaseline();
+
+    catchUp();
 }
 
 void EditSync::sampleProgress()
@@ -1242,23 +1352,21 @@ std::optional<commands::PlayheadWrap> EditSync::takeWrap()
 
 void EditSync::loopChanged()
 {
-    settleOncePlayed();
     const auto playingOnce = isPlaying() && ! bus.transportSettings().looping;
 
-    // Played once, the clips end at the new end before the playhead can get
-    // there, or wraps into a new region. Looping, they get their ends back
-    // once the playhead loops, so what's past the end is never reached.
-    if (playingOnce)
-        setClipsEnd (playOnceEnd());
-
+    // Played once, the clips end at the new end, or the playhead wraps into
+    // a new region. Looping, they get their ends back, once the playhead
+    // loops, so what's past the end is never reached. In the graph built
+    // for the wrap, or else like any change (catchUp): a block or two late
+    // when the gate is shut, which matters only when the playhead is that
+    // close to the new end.
+    waiting.clipsEnd = true;
     updateLoop (Outside::wrap);
 
     if (playingOnce)
         startTimer (endCheckIntervalMs);
-    else
-        setClipsEnd ({});
 
-    finishChanges();
+    catchUp();
 }
 
 std::optional<notes::Ticks> EditSync::playOnceEnd() const
@@ -1287,13 +1395,6 @@ void EditSync::setClipsEnd (std::optional<notes::Ticks> end)
         for (const auto& clip : track.clips)
             if (hocket::project::clipEnd (project, clip) > unchangedUpTo)
                 syncClip (clip.id);
-
-    clearTracktionUndo();
-
-    // Tracktion rebuilds its graph on a 1 ms timer, but play starts with the
-    // graph it has, and while playing the playhead may be close to the end.
-    tracktionEdit->dispatchPendingUpdatesSynchronously();
-    finishChanges();
 }
 
 void EditSync::timerCallback()
@@ -1304,7 +1405,7 @@ void EditSync::timerCallback()
     if (! transport.isPlaying())
     {
         stopTimer();
-        setClipsEnd ({});
+        settleStopped();
         return;
     }
 
@@ -1330,6 +1431,6 @@ void EditSync::timerCallback()
     stopTimer();
     playRequested = false;
     transport.stop (false, false);
-    setClipsEnd ({});
+    settleStopped();
 }
 }

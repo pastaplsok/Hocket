@@ -16,21 +16,33 @@
 // While a loop region plays once, the Edit's clips end at the region's end
 // (clipsEndBy), so nothing after it is heard; otherwise the Edit is the model.
 //
+// During playback, a command's changes reach the Edit together, and only once
+// the graph Tracktion last built has played a block; changes that come before
+// then wait, and go in together (SPEC §3.3). Tracktion builds each graph
+// against the last one it built, played or not, and what a graph is to do
+// once it does when it first plays: a clip's player ends the notes a rewrite
+// took away, and a track's ends those of a clip taken out. Built over one
+// that never played, those note-offs were lost, and the notes stayed on
+// (several requests in one audio block). So every graph EditSync has Tracktion
+// build during playback waits for the last to play, but for a jump's (a seek,
+// a play, a wrap), and those after one before a block has played: the jump's
+// block ends every note the graph has sounding, so nothing is lost, and what's
+// waiting goes in with the jump. EditSync builds the graph itself (build), at
+// once, after each change it makes to the Edit, so Tracktion's own timer never
+// builds over one.
+//
 // A note sounds only when the playhead reaches its start (SPEC §3.3), but
 // Tracktion's players strike the notes a clip has sounding where the playhead
 // is when the clip's player is new (a clip added or remade) or the playhead
 // jumps. So those notes are left out of the Edit (heldNotes) until a block
-// has played without them, then put back (settleNow): notes added to a clip
-// the graph already has wait for their starts. For a clip made during
-// playback, that's its notes sounding anywhere the playhead may be before the
-// graph has the clip; for a wrap (updateLoop), those where it lands.
+// has played without them, then put back (settle): notes added to a clip the
+// graph already has wait for their starts. For a clip made during playback,
+// that's its notes sounding anywhere the playhead may be before the graph
+// has the clip; for a wrap (updateLoop), those where it lands.
 //
 // A clip taken out during playback is emptied first, so its own player ends
 // the notes it has sounding, and leaves the Edit once a block has played
-// (endingClips). Taken out at once, only the graph Tracktion builds straight
-// after would end them (its CombiningNode does), and one built over that
-// before it played would leave them on: Tracktion builds each graph against
-// the last it built, played or not.
+// (endingClips), so the graph without it has nothing left to do.
 //
 // Message thread only, like the bus.
 
@@ -47,6 +59,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,6 +118,10 @@ namespace hocket::engine
         // Clips taken out during playback, emptied, until a block has played
         // them so: each is named after the clip, with " (ending)". For tests.
         const std::vector<tracktion::MidiClip::Ptr>& endingClips() const { return ending; }
+
+        // Whether changes the bus has announced are waiting for the graph
+        // Tracktion last built to play a block. For tests.
+        bool changesWaiting() const { return waiting.any(); }
 
     private:
         // A Hocket track in the Edit, the plugins its devices made, by device
@@ -169,28 +186,46 @@ namespace hocket::engine
         std::optional<commands::PlayheadWrap> lastWrap; // for takeWrap
 
         // Notes left out of the Edit (holdNotesSounding), and clips taken out
-        // during playback, emptied (removeClip), until the audio thread has
-        // played a block that way: the block that starts at settledFrom (a
-        // sample of the playhead's reference count) comes after one that did.
-        // A timer settles them as soon as it can (settleNow).
+        // during playback, emptied (removeClip), until a block has played
+        // since: settle puts them back and takes them out.
         std::map<std::string, std::vector<HeldNote>, std::less<>> held;
         std::vector<commands::TickRange> heldStretches;
         std::vector<tracktion::MidiClip::Ptr> ending;
-        std::int64_t settledFrom = 0;
-        bool unsettled = false;     // since the last finishChanges
-        bool needsBaseline = false; // settledFrom is to be worked out once Tracktion has built the graph
 
-        class SettleTimer final : public juce::Timer
+        // What the bus has changed that the Edit doesn't have yet (changed),
+        // by what to bring in line with the model: brought in by catchUp.
+        struct Waiting
+        {
+            std::set<std::string, std::less<>> tracks, clips, files;
+            bool tempo = false;
+            bool clipsEnd = false; // clipsEndBy is to follow the transport settings
+
+            bool any() const { return tempo || clipsEnd || ! tracks.empty() || ! clips.empty() || ! files.empty(); }
+        };
+
+        Waiting waiting;
+
+        // The gate: whether the graph Tracktion last built during playback
+        // may not have played a block yet, from which block it has once that
+        // one has started (a sample of the playhead's reference count), and
+        // the count when it was built. And whether the playhead has jumped
+        // since: then another graph may be built over it.
+        bool builtUnplayed = false;
+        juce::Range<std::int64_t> builtDuring;
+        std::int64_t playedFrom = 0;
+        bool jumpedSince = false;
+
+        class GateTimer final : public juce::Timer
         {
         public:
-            explicit SettleTimer (EditSync& owner) : sync (owner) {}
-            void timerCallback() override { sync.settleTimerTick(); }
+            explicit GateTimer (EditSync& owner) : sync (owner) {}
+            void timerCallback() override { sync.catchUp(); }
 
         private:
             EditSync& sync;
         };
 
-        SettleTimer settleTimer { *this };
+        GateTimer gateTimer { *this };
 
         using HeldByClip = std::map<std::string, std::vector<HeldNote>, std::less<>>;
 
@@ -203,27 +238,41 @@ namespace hocket::engine
         // within its loop: where a clip made now may first be played.
         std::vector<commands::TickRange> placesAhead (tracktion::graph::PlayHead&, double sampleRate) const;
 
-        // Puts these held notes back in the Edit, and with `build`, builds
-        // the graph at once; otherwise Tracktion does, on its timer.
-        void releaseHeldNotes (const HeldByClip& notes, bool build);
-        void releaseAllHeldNotes();
+        // Puts these held notes back in the Edit. The caller builds.
+        void releaseHeldNotes (const HeldByClip& notes);
 
-        // At the end of a change, a play, a stop or a loop change: when it
-        // held notes back or emptied clips, starts the timer that settles
-        // them once a block has played; not playing, settles them at once.
-        void finishChanges();
+        // After a command's changes, the transport's, and on a timer while
+        // anything waits: brings what's waiting into the Edit, and settles,
+        // when the gate allows, and builds. Stopped, it always does.
+        void catchUp();
 
-        // The timer: first works out from which block they can settle, once
-        // Tracktion has built the graph with them; then settles them once the
-        // audio thread has started that block.
-        void settleTimerTick();
+        // Brings what's waiting into the Edit; the tempo only with `tempo`.
+        // The caller builds.
+        void bringWaitingIn (bool tempo = true);
 
-        // Settles them now if a block has played with them, or if not playing.
-        void settleOncePlayed();
+        // Puts all held notes back and takes the emptied clips out. Only once
+        // a block has played since they were held or emptied (or stopped),
+        // and the caller builds.
+        void settle();
 
-        // Puts the held notes back, takes the emptied clips out, and builds
-        // the graph.
-        void settleNow();
+        // Stopped: brings everything in, settles, and builds.
+        void settleStopped();
+
+        // Has Tracktion build the graph now, from the changes made to the
+        // Edit, and notes when for the gate. During playback, only when the
+        // gate allows (mayBuild) or before a jump.
+        void build();
+
+        // Whether the graph Tracktion last built has played a block, or isn't
+        // playing; and whether another may be built over it now: also once
+        // the playhead has jumped since it was built.
+        bool lastBuildHasPlayed() const;
+        bool mayBuild() const { return jumpedSince || lastBuildHasPlayed(); }
+
+        // After a jump this made, while the audio callback lock was held and
+        // `next` the playhead's reference range: settling waits for the
+        // jump's block to have played.
+        void noteJump (juce::Range<std::int64_t> next);
 
         // The device's block size, in samples.
         int blockSize() const;
@@ -236,7 +285,10 @@ namespace hocket::engine
         notes::Ticks ticksPlayed() const; // progress.ticks and what has played since the baseline
         notes::Ticks ticksAt (std::int64_t samplePosition, double sampleRate) const;
 
+        // Notes a change for catchUp, and changesDone takes a command's
+        // changes together.
         void changed (const commands::Change&);
+        void changesDone();
 
         // Each brings one thing in the Edit in line with the model: makes it,
         // changes it, or removes it.
@@ -279,9 +331,9 @@ namespace hocket::engine
 
         // Cuts the Edit's clips short at `end`, leaving out those that start
         // at or after it, or with none gives them back their own ends. Only
-        // clips that reach past either end are synced, and Tracktion's graph
-        // is rebuilt at once: play starts with the graph it has, and while
-        // playing, the playhead mustn't reach the end first.
+        // clips that reach past either end are synced. The caller builds, at
+        // once: play starts with the graph Tracktion has, and while playing,
+        // the playhead mustn't reach the end first.
         void setClipsEnd (std::optional<notes::Ticks> end);
 
         // The playhead and the sample rate it counts in; none before the
